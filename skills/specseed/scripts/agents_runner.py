@@ -737,7 +737,7 @@ def execute_actions(root, cfg, remote, actions, log):
 
 
 # --------------------------------------------------------------------------- #
-# CR respec mode (spec-change requests) — see .agent_memory_tmp CR plan + Phase 3.
+# CR respec mode (spec-change requests).
 #
 # A second, mutually-exclusive runner mode. When an urgent CR is active the runner
 # STOPS claiming work, isolates the respec on a `cr/<CR-ID>` branch off the
