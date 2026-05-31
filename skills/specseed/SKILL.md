@@ -30,8 +30,11 @@ Read user message + conversation. Pick ONE mode, commit for the session, do not 
 | Mode | Trigger | Route |
 |------|---------|-------|
 | **bootstrap** | New project, no prior spec, user wants full spec from scratch | `references/bootstrap.md` |
-| **adapt** | Existing spec present, user wants to update/extend/revise non-trivially | `references/adapt.md` |
+| **plan-next** | Existing `incremental`-bootstrapped spec; user wants to spec + break down the NEXT roadmap slice (`/specseed plan-next`, "plan the next sprint/phase"). Roadmap has un-detailed ticket titles (no folders). Append-only forward — no settled-doc changes | `references/plan-next.md` |
+| **adapt** | Existing spec present, user wants to update/extend/revise non-trivially (incl. *changing* settled docs) | `references/adapt.md` |
 | **tweak** | Tiny single-doc edit ("add this one req to SRS", "change priority of REQ-X") | `references/tweak.md` (may auto-escalate to adapt) |
+
+**plan-next vs adapt:** plan-next *extends forward* into un-specced roadmap titles (append-only, never reopens `settled` docs); adapt *changes* existing/settled specs. If unsure: does the work touch a settled doc? → adapt. Does it only add the next slice? → plan-next. See `references/plan-next.md` "Boundary".
 
 Ambiguous → ask user once which mode. Don't guess.
 
@@ -48,7 +51,7 @@ After mode picked, send ~12–15 lines:
 - Bullet: what's already there (artifacts found, named; or "none")
 - Bullet: stages this session will cover (mode-specific, brief)
 - Bullet: end deliverables (mode-specific)
-- **Bootstrap mode only:** 1 line setting expectations — "Spec phase takes a beat upfront; the trade is that implementation should be faster, more parallel, and more independent of you afterwards."
+- **Bootstrap mode only:** 1 line setting expectations — "Spec phase takes a beat upfront; the trade is that implementation should be faster, more parallel, and more independent of you afterwards. After we sketch the vision I'll propose a depth (lite / standard / incremental) so big projects don't get specced out for hours before any code."
 - 1 line: `/specseed stop` available anytime to exit cleanly (state preserved for resume)
 - 1 line: ask for initial context
 - 1 line: terse-comm switch note (see Step 0 above) — only on the very first response of the session

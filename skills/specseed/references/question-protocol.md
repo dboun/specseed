@@ -82,12 +82,14 @@ User may add/drop/reorder themes before round 1 starts. After round 1, theme cha
 
 ## Anti-max-bias rule
 
-Default LOW. Range "1–4 rounds × 4–6 Qs" is a *range*, **not a target**.
+Default LOW. Range "1–3 rounds × 4–6 Qs" is a *range*, **not a target**. **Hard cap: 3 rounds** per stage (was 4 — user interaction is the real cost, not artifacts).
 
 Sizing heuristic by task scope:
 - Small/clear: 1 round, 3–4 Qs total
 - Medium: 2 rounds × 4–5 Qs
-- Large/complex: 3–4 rounds × 5–6 Qs (rare)
+- Large/complex: 3 rounds × 5–6 Qs (rare; this is the ceiling)
+
+**Depth tier (bootstrap) tightens this further** — see `bootstrap.md` "Stage 3.5: depth selection". `lite` caps stages at 1 round; `incremental` only deep-questions the first increment's scope.
 
 **Misc-bucket rule:** if 1–2 small Qs remain that don't fit any theme, group them into a "Misc" mini-round at the END of the stage — do NOT spawn 1-Q themes.
 

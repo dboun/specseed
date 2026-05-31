@@ -46,9 +46,14 @@ Questions should be intuitive to a generic technical reader, not a domain-narrow
 
 Default: **2 rounds × 4 Qs per component**.
 Min: 1 round × 3–4 Qs (trivial components).
-Max: 4 rounds × 6 Qs (genuine megacomponent — rare).
+Max: **3 rounds × 6 Qs** (genuine megacomponent — rare; hard ceiling).
 
 Apply ranking gate (from `question-protocol.md`) before each round ≥2.
+
+**Depth tier override** (bootstrap, see `bootstrap.md` stage 3.5):
+- `lite` — 1 round × ≤4 Qs, 2 themes max. N=1 anyway.
+- `incremental` — only components the **first increment touches** get deep-questioned now. Out-of-scope components get a 1-line SRS placeholder + are deferred to `plan-next` (no questioning now). Components partially in scope: question only the in-scope behavior.
+- `standard` — as above (default).
 
 ## Don't move forward without explicit approval
 
