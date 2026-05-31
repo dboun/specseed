@@ -23,9 +23,22 @@ Agent-agnostic — works in Claude Code, Codex, or any agent harness with filesy
 
 After the first message, default to caveman-spirit terse comm (no filler, fragments OK, drop articles when unambiguous). If user says `talk normal` at any point, revert to normal English for the rest of the session. Doc-writing style is independent — always caveman-spirit regardless of comm setting.
 
+## Session-start reconnaissance (run FIRST — before mode detection)
+
+**Mode is chosen from disk evidence, not the user's words alone.** In repo mode, STAT the filesystem before committing a mode. Deterministic, in order:
+
+1. **`.specseed/memory/session_state.md` exists?** → an interrupted session. **OFFER RESUME FIRST.** Read it, tell the user "you were at `<stage>`, about to `<next>`", and ask: **resume / start fresh**. Do NOT auto-resume; do NOT ignore it and start a new flow on top. (On resume: reread this `SKILL.md`, then `session_state.md`, then re-enter the mode/stage it names.)
+2. **`.specseed/spec/` exists with content** (any `vision.md` / `*-srs.md` / `sad.md` / `sdd.md`)? → a spec is ALREADY present. **Bootstrap is OFF the table** unless the user explicitly says "start over / throw it away". Even if the user's words sound greenfield ("spec out the payments feature"), an existing tree means **adapt** (change/extend settled docs), **plan-next** (roadmap has un-detailed titles + user wants the next slice), or **tweak** (tiny edit). Name what was found, route accordingly, confirm if ambiguous — never silently bootstrap over it.
+3. **Source files present but NO `.specseed/`** → existing code, no spec ("brownfield"). No dedicated mode yet — tell the user: bootstrap can run using the code as *context*, but it will not reverse-engineer the codebase. Ask before proceeding.
+4. **Empty / near-empty, no `.specseed/`** → greenfield → **bootstrap**.
+
+**Chat mode (no writeable FS):** skip the probe; route from conversation + any artifacts the user pasted.
+
+This probe is the safety net for misrouting — it is evidence, not a guess. When it and the user's words disagree, surface the conflict and ask; do not let intent words override disk state.
+
 ## Mode detection
 
-Read user message + conversation. Pick ONE mode, commit for the session, do not drift. Auto-escalation between modes only happens where explicitly specified (see `tweak.md`).
+Read user message + conversation, **constrained by the reconnaissance above** (an existing `.specseed/spec/` forbids bootstrap; a present `session_state.md` means offer resume first). Pick ONE mode, commit for the session, do not drift. Auto-escalation between modes only happens where explicitly specified (see `tweak.md`).
 
 | Mode | Trigger | Route |
 |------|---------|-------|
@@ -195,6 +208,8 @@ Notes:
 ## Main-repo files & merge protocol
 
 The skill writes four kinds of file into the main repo (everything else goes under `.specseed/`): `README.md`, root `CLAUDE.md`, per-component `CLAUDE.md`, and top-level `AGENTS.md`. `CONTRIBUTING.md` is NOT one of them — its content (folder structure, branching, versioning, release, release gates, conventions) folds into `CLAUDE.md`.
+
+**The `.specseed/spec/` tree is protected separately** (not by this merge protocol): an existing spec tree is caught by the session-start reconnaissance (routes to adapt/plan-next, not bootstrap) and by bootstrap's own collision-guard precondition. This merge protocol governs only the four main-repo entry files below.
 
 **Inform the user** (first message of a repo-mode session, and again at session end) which of these will land in the main repo and that everything else is confined to `.specseed/`.
 

@@ -2,6 +2,8 @@
 
 Greenfield. No prior spec. Produce full `.specseed/spec/` tree (or chat artifacts in progressive delivery).
 
+**Collision guard (precondition — check before writing ANY spec file).** Bootstrap assumes greenfield. If `.specseed/spec/` already exists with content (`vision.md`, any `*-srs.md`, `sad.md`, `sdd.md`, …), **STOP** — this is not greenfield. The session-start reconnaissance (`SKILL.md`) should have routed to adapt/plan-next/tweak; if you're here anyway, surface it: "Found an existing spec at `.specseed/spec/` — bootstrap would overwrite `vision.md`/`srs.md`/`sdd.md`. Use adapt (change it), plan-next (extend it), or confirm explicit start-over." Only proceed to overwrite on an **explicit** user "start over / throw it away". Never silently clobber a settled doc. Per-file belt-and-suspenders: stages 2 / 4 / 8 must not overwrite an existing `vision.md` / `*-srs.md` / `sdd.md` without that explicit OK.
+
 Load `references/question-protocol.md` before any user-facing round.
 
 **Depth dial.** Bootstrap is not one-size. After vision + component-split (where real signal exists) it picks a **depth tier** — `lite` / `standard` / `incremental` — auto-suggested, user overrides (Stage 3.5). The tier never drops artifacts or scripts; it right-sizes **how much the user must answer and review at once**. specseed sells *better*, not faster — `lite` is not corner-cut, it's matched to a small project's real information content; `incremental` keeps full depth but only for the first increment, deferring the rest to `plan-next` mode so the user never specs 3 hours upfront. Machinery (assemble/validate/CP/sprints) is identical across tiers — only interaction load + breakdown horizon change.
