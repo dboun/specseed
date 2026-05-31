@@ -1,6 +1,6 @@
 ---
 name: specseed
-description: Documentation-driven development spec creation skill. Use whenever user wants to create, draft, update, or revise software specification artifacts — vision, SRS (Software Requirements Spec), SAD (Software Architecture Doc), ADRs, SDD, requirements JSON, tickets JSON — for greenfield projects or adapting existing codebases. Trigger on `/specseed` slash command and on phrases like "spec out", "draft requirements", "plan this project", "update the SRS", "add a requirement", "generate tickets", "design doc", "what should we build". Also trigger when user starts a new software project and discusses scope, requirements, or architecture without naming a doc — they likely need this.
+description: Documentation-driven development spec creation skill. Use whenever user wants to create, draft, update, or revise software specification artifacts — vision, SRS (Software Requirements Spec), SAD (Software Architecture Doc), ADRs, SDD, requirements JSON — plus the project-management work breakdown (ROADMAP, epics, tickets, issues) — for greenfield projects or adapting existing codebases. Trigger on `/specseed` slash command and on phrases like "spec out", "draft requirements", "plan this project", "update the SRS", "add a requirement", "generate tickets", "break into issues", "roadmap", "design doc", "what should we build". Also trigger when user starts a new software project and discusses scope, requirements, or architecture without naming a doc — they likely need this.
 ---
 
 # specseed
@@ -59,7 +59,7 @@ Then route to mode file.
 
 - `references/question-protocol.md` — question round format, action prompts, no-noise rule, anti-max-bias, memory cadence, auto-skip rule for obvious Qs
 - `references/component-questions.md` — per-component probing subroutine
-- `references/ticket-formation.md` — INVEST, vertical slices, critical path, spike post-completion, sizing heuristics
+- `references/work-breakdown.md` — roadmap + epic/ticket/issue formation: INVEST, vertical slices, critical path (ticket tier), spike post-completion, sizing heuristics
 
 ## Memory protocol
 
@@ -112,7 +112,7 @@ AGENTS.md                       # one line: "Read ./CLAUDE.md. In dirs you work 
 # ---- .specseed/ (all spec artifacts + runtime) ----
 .specseed/
 ├── memory.md                   # session scratch — deleted at end; preserved on /specseed stop
-├── spec/
+├── spec/                       # the WHAT/WHY/HOW layer (requirements & design)
 │   ├── vision.md
 │   ├── sad.md
 │   ├── adr.csv                 # columns: Decision,Justification
@@ -120,35 +120,57 @@ AGENTS.md                       # one line: "Read ./CLAUDE.md. In dirs you work 
 │   ├── sdd.md                  # OR per-component (<component>-sdd.md)
 │   ├── cross-cutting-srs.md    # OPTIONAL — virtual component for cross-cutting concerns
 │   ├── reqs.json               # generated from SRS tables
-│   ├── tickets.json            # source of truth (NOT generated from md)
-│   ├── milestones.md           # OPTIONAL — only if user asks
 │   └── deployment.md           # OPTIONAL — only if Operations theme flagged in component questioning
-├── ticket_tracking/
-│   └── <ticket_id>/
-│       ├── plan.md
-│       ├── spec_concern.md     # OPTIONAL — written by impl agent if settled doc looks wrong mid-ticket
-│       └── step_reports/
-│           └── <X>_<step>_<desc>.md
-└── scripts/                    # may grow subfolders as more tooling is added
-    ├── requirements_generate_json.py   # parses SRS table rows → reqs.json
-    ├── requirements_analyze.py         # USER-PROVIDED — cycle/orphan detection
-    ├── tickets_validate.py     # schema + ID uniqueness + dangling-ref checks
-    ├── tickets_analyze.py      # USER-PROVIDED — critical path, build order
-    ├── ticket_info.py          # ticket info + linked reqs lookup
-    ├── claim_ticket.py         # atomic flock-based claim + stale-claim recovery
-    ├── verification_map.py     # inverse map: reqs → tickets → test files
-    └── drift_check.py          # mechanical spec-vs-reality drift surface
+└── project_management/         # the WORK layer: epics → tickets → issues (3 tiers, always present)
+    ├── ROADMAP.md              # phases → subsections → epics → ticket titles w/ "(X/Y complete)" issue counts
+    ├── epics/
+    │   └── <EPIC-NNNN>/
+    │       └── <EPIC-NNNN>.md  # frontmatter + NON-TECHNICAL prose (goal / outcome / why)
+    ├── tickets/
+    │   └── <PROJ-NNNN>/
+    │       └── <PROJ-NNNN>.md  # PM tier: frontmatter (satisfies_reqs, depends_on=critical path, issues, epic)
+    │                           #          + prose (story, description, PRODUCT-level acceptance criteria)
+    ├── issues/
+    │   └── <FEAT-NNNN>/        # TECHNICAL tier — the claimable/executable unit (absorbs old ticket_tracking/)
+    │       ├── <FEAT-NNNN>.md  # frontmatter (component, effort_hours, artifacts, claim fields, ticket parent)
+    │       │                   # + prose (TECHNICAL acceptance criteria, notes)
+    │       ├── plan.md
+    │       ├── spec_concern.md # OPTIONAL — written by impl agent if a settled doc looks wrong mid-issue
+    │       └── step_reports/
+    │           └── <X>_<step>_<desc>.md
+    ├── tickets.json            # GENERATED by tickets_assemble.py (folders are source of truth, NOT this)
+    └── issues.json             # GENERATED by issues_assemble.py (folders are source of truth, NOT this)
+
+# ---- .specseed/scripts/ ----
+scripts/                        # may grow subfolders as more tooling is added
+├── requirements_generate_json.py   # parses SRS table rows → reqs.json
+├── requirements_analyze.py         # USER-PROVIDED — req cycle/orphan detection
+├── issues_assemble.py              # issue folders → issues.json
+├── tickets_assemble.py             # ticket folders → tickets.json (derives effort + X/Y counts from issues)
+├── issues_validate.py              # issue-tier schema/refs/claim-invariant checks
+├── tickets_validate.py             # ticket-tier schema/refs/cycle checks (kept SEPARATE — see below)
+├── tickets_analyze.py              # USER-PROVIDED — ticket critical path + build order
+├── issue_info.py                   # issue + parent ticket + reqs joined from parent ticket
+├── claim_issue.py                  # atomic issue claim; no-arg auto-picks next ready issue; --skip; stale recovery
+├── roadmap_render.py               # bump "(X/Y complete)" counts on ticket lines in ROADMAP.md from tickets.json
+├── verification_map.py             # inverse map: req → ticket → issues → test files
+└── drift_check.py                  # mechanical spec-vs-reality drift surface
 ```
 
 Notes:
-- **No `test_plan.md`.** Verification traceability lives in ticket `artifacts.tests` field; `verification_map.py` produces the inverse map (req → tests) on demand. SRS does NOT carry a `verified_by` column — that data would duplicate and drift.
-- `milestones.md` and `deployment.md` are optional and created only when explicitly relevant.
-- `cross-cutting-srs.md` is optional — bootstrap proposes it only when context indicates cross-cutting concerns materially matter (security, observability, i18n, accessibility). Treated as a virtual component by all machinery (ID prefix `SRS-CC-NNN`, tickets, analyzers).
-- `tickets.json` is source of truth (no source markdown). Skill writes it directly during bootstrap and updates it in adapt/tweak.
+- **Three work tiers, always present:** `epic → ticket → issue`. **Epics + tickets are PM / non-technical** (outcomes, user-visible value). **Issues are technical** — the unit an agent claims and executes (carry `artifacts`, `effort_hours`, `plan.md`, `step_reports/`). An issue MAY belong to a ticket; a ticket MAY belong to an epic. There is NO separate "story" tier — a user story is a section inside a ticket's prose body.
+- **Folders are the source of truth.** Each entity = a folder with a main `<id>.md`: YAML-ish **frontmatter** (machine fields) + markdown **prose** body (human text). `tickets.json` / `issues.json` are GENERATED by the assemble scripts — never hand-author them. Frontmatter is flat `key: value`; structured values (lists, objects) use inline JSON.
+- **Critical path runs at the TICKET tier**, not issues. `depends_on` on tickets is the analyzed DAG (`tickets_analyze.py`). Issues may carry optional intra-ticket `depends_on` for local ordering. Per-ticket `effort_hours` is DERIVED (summed from child issues) by `tickets_assemble.py`.
+- **Requirements live on TICKETS** (`satisfies_reqs`), not issues — a ticket is the unit of user-visible value that fulfills a requirement. Tests live on ISSUES (`artifacts.tests`). Verification therefore walks `req → ticket → issues → tests` (`verification_map.py`).
+- **No `test_plan.md`.** SRS does NOT carry a `verified_by` column — that data would duplicate and drift.
+- `deployment.md` is optional and created only when explicitly relevant. (Project grouping/sequencing is handled by ROADMAP phases; sprints may come later. No `milestones.md`.)
+- `cross-cutting-srs.md` is optional — bootstrap proposes it only when context indicates cross-cutting concerns materially matter (security, observability, i18n, accessibility). Treated as a virtual component by all machinery (ID prefix `SRS-CC-NNN`).
 - `reqs.json` IS generated from SRS markdown tables (humans edit SRS, script extracts).
-- `spec_concern.md` is written by the **implementation agent** (not this skill) when it discovers a settled doc looks wrong during ticket execution. Adapt mode picks these up as valid triggers — see `references/adapt.md` stage 2.
-- `claim_ticket.py` replaces the raw `jq` claim one-liner in `CLAUDE.md`. Uses `fcntl.flock` for atomic read-verify-write; auto-recovers stale claims (default >3h old). Lock acquisition has a short timeout (default 10s) so a stuck/dead process can't block claims indefinitely. Lock itself releases on process exit.
-- `drift_check.py` is a mechanical drift detector — runs as part of adapt mode assessment, optionally before impl agents claim long-running tickets.
+- **Assemble before analyze/claim/validate.** After editing any ticket/issue folder: run `issues_assemble.py` then `tickets_assemble.py` (ticket effort + counts are summed from issues, so issues go first), then the validators / `tickets_analyze.py` / `claim_issue.py`.
+- **`tickets_*` and `issues_*` scripts are deliberately separate** (separate assemble, separate validate). Tickets and issues may live in different stores once tool integrations land; each tier validates the refs it can resolve and degrades gracefully when the other tier is absent.
+- `spec_concern.md` is written by the **implementation agent** (not this skill) when it discovers a settled doc looks wrong during issue execution. Adapt mode picks these up as valid triggers — see `references/adapt.md` stage 2.
+- `claim_issue.py` replaces any raw `jq` claim. Uses `fcntl.flock` for atomic read-verify-write on `issues.json`; auto-recovers stale claims (default >3h old); no-arg call auto-picks the next ready issue and claims it in the same locked op; `--skip <ids>` excludes issues (lightweight parallel-agent support). Lock releases on process exit.
+- `drift_check.py` is a mechanical drift detector — runs as part of adapt mode assessment, optionally before impl agents claim long-running issues.
 
 ## Main-repo files & merge protocol
 
@@ -171,12 +193,12 @@ This applies in both bootstrap (stage 11) and adapt/tweak when these files are (
 
 **Contract, not enforcement.** Settled is a soft-frozen marker honored by agents using this skill's `CLAUDE.md` template. The filesystem does not block edits. Other agents, scripts, or humans can edit settled docs freely — and doing so desyncs traceability (adapt mode assumes settled = stable). If your runtime doesn't follow the contract, the safety guarantees here don't apply.
 
-After srs/sdd/sad/vision are **settled** (soft-frozen with user approval), the *implementation* agent (running via `CLAUDE.md` to pick up tickets) MUST NOT edit them. Only this skill can revise them, via adapt mode.
+After srs/sdd/sad/vision are **settled** (soft-frozen with user approval), the *implementation* agent (running via `CLAUDE.md` to pick up issues) MUST NOT edit them. Only this skill can revise them, via adapt mode.
 
-If the implementation agent finds a settled doc looks wrong mid-ticket, it MUST:
-1. Mark its current ticket `status: "blocked"`
-2. Write `.specseed/ticket_tracking/<ticket_id>/spec_concern.md` describing what's wrong, why, and what it would change
-3. Tell the user: **"Use `/specseed adapt` to address spec concern: .specseed/ticket_tracking/<id>/spec_concern.md"**
+If the implementation agent finds a settled doc looks wrong mid-issue, it MUST:
+1. Mark its current issue `status: "blocked"`
+2. Write `.specseed/project_management/issues/<issue_id>/spec_concern.md` describing what's wrong, why, and what it would change
+3. Tell the user: **"Use `/specseed adapt` to address spec concern: .specseed/project_management/issues/<id>/spec_concern.md"**
 
 The implementation agent does NOT edit the settled doc itself, ever. Adapt mode is the only path through. When adapt mode reopens a settled doc, it logs to `adr.csv`.
 
@@ -186,8 +208,8 @@ The implementation agent does NOT edit the settled doc itself, ever. Adapt mode 
 
 ## Carry-forward (post-rewrite)
 
-- [ ] Implementation bodies for `requirements_generate_json.py`, `tickets_validate.py`, `ticket_info.py`, `drift_check.py`, `claim_ticket.py`, `verification_map.py` (currently spec-only stubs)
-- [ ] User-provided analyzers (`requirements_analyze.py`, `tickets_analyze.py`) — pending receipt. User to remove `requirements_analyze.py` check 4 (verification gaps) since `verified_by` no longer in reqs.json.
+- [ ] User-provided analyzers (`requirements_analyze.py`, `tickets_analyze.py`) — `tickets_analyze.py` now runs on the assembled `project_management/tickets.json` (per-ticket `effort_hours` is derived from child issues). User to remove `requirements_analyze.py` check 4 (verification gaps) since `verified_by` no longer in reqs.json.
+- ROADMAP `(X/Y complete)` counts: `roadmap_render.py` bumps them in-place from `tickets.json` (`issues_done`/`issues_total`). Runs in the issue finish flow (after `tickets_assemble.py`) and the adapt/tweak cascades; `--check` reports drift without writing. Counts are display-only — `claim_issue.py` derives unblocking from `issues.json`, not ROADMAP.
 - [ ] Templates folder for vision/sad/srs/sdd skeletons (deferred)
 - [ ] Evals / test cases for the skill itself (deferred)
 - [ ] `spec_concern.md` template — for now, format is documented in `references/CLAUDE_template.md`

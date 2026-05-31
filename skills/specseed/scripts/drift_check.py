@@ -4,17 +4,18 @@ drift_check.py [source_root]
 Best-effort mechanical drift between spec and code. Advisory only — exits 0
 regardless of warnings.
 
+Reads .specseed/spec/reqs.json + .specseed/project_management/issues.json.
+Issues are the technical tier, so test/touch artifacts live there (not on
+tickets). Run issues_assemble.py first so issues.json is current.
+
 Checks:
-  1. Ticket `artifacts.tests` paths missing on disk
+  1. Issue `artifacts.tests` paths missing on disk
   2. Settled spec docs (frontmatter `settled: true`) predating recent git
-     commits to source paths referenced by tickets in their scope.
+     commits to source paths in issues' `artifacts.touches` (per component).
      Skipped if git unavailable.
-  3. Test files on disk under `tests/` / `test/` / `__tests__/` not
-     referenced by any ticket's `artifacts.tests`
-  4. Python files with route-decorator patterns (e.g. `@x.get("/path")`)
-     whose path string doesn't appear in any SRS req text. Heuristic.
-     Python-only — disable with `--no-handler-check` if irrelevant
-     (CLI tools, libraries, non-Python projects, etc.).
+  3. Test files on disk not referenced by any issue's `artifacts.tests`
+  4. Python route handlers whose path string doesn't appear in any SRS req
+     text. Heuristic, Python-only — disable with --no-handler-check.
 
 Flags:
   --no-git              skip check 2
@@ -29,41 +30,34 @@ import json
 import re
 import subprocess
 import sys
-from datetime import datetime, timedelta
+from datetime import timedelta, datetime
 from pathlib import Path
 
-STALE_COMMIT_THRESHOLD = 3   # commits since settle = "significant"
+STALE_COMMIT_THRESHOLD = 3
 
 TEST_FILE_RE = re.compile(
     r"^(test_.+\.py|.+_test\.py|.+\.test\.[jt]sx?|.+\.spec\.[jt]sx?)$"
 )
-
-# Python route-decorator pattern. Matches @<obj>.<verb>("path", ...).
-# Heuristic — covers common cases, not exhaustive.
 ROUTE_RE = re.compile(
     r'@\w+\.(get|post|put|patch|delete|route)\s*\(\s*["\']([^"\']+)["\']',
     re.IGNORECASE,
 )
-
 SKIP_DIRS = {
     ".venv", "venv", "env", "node_modules", ".git", "__pycache__",
-    ".pytest_cache", ".mypy_cache", "build", "dist", ".tox", "spec",
+    ".pytest_cache", ".mypy_cache", "build", "dist", ".tox", ".specseed",
 }
 
 
 def git_available(repo_root):
     try:
-        r = subprocess.run(
-            ["git", "rev-parse", "--git-dir"],
-            cwd=repo_root, capture_output=True, timeout=5,
-        )
+        r = subprocess.run(["git", "rev-parse", "--git-dir"],
+                           cwd=repo_root, capture_output=True, timeout=5)
         return r.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
 
 
 def parse_frontmatter(text):
-    """Minimal YAML-ish frontmatter. Returns dict or None."""
     if not (text.startswith("---\n") or text.startswith("---\r\n")):
         return None
     start = 4 if text.startswith("---\n") else 5
@@ -79,7 +73,6 @@ def parse_frontmatter(text):
 
 
 def parse_settled_at(s):
-    """Accept YYYY-MM-DD or full ISO timestamp."""
     if not s:
         return None
     try:
@@ -93,35 +86,25 @@ def parse_settled_at(s):
 
 
 def infer_component(doc_path):
-    """`api-srs.md` -> 'api'; `srs.md` / `sad.md` -> None (apply to all)."""
-    stem = doc_path.stem
-    m = re.match(r"^(.+)-(srs|sdd|sad)$", stem)
+    m = re.match(r"^(.+)-(srs|sdd|sad)$", doc_path.stem)
     return m.group(1) if m else None
 
 
-# ---------- checks ----------
-
-def check_missing_tests(tickets, repo_root, warnings):
-    for tid, t in tickets.items():
-        for path in (t.get("artifacts") or {}).get("tests", []) or []:
+def check_missing_tests(issues, repo_root, warnings):
+    for iid, e in issues.items():
+        for path in (e.get("artifacts") or {}).get("tests", []) or []:
             if not (repo_root / path).exists():
-                warnings.append({
-                    "kind": "missing_test_file",
-                    "ref": path,
-                    "referenced_by": f"{tid} (artifacts.tests)",
-                })
+                warnings.append({"kind": "missing_test_file", "ref": path,
+                                 "referenced_by": f"{iid} (artifacts.tests)"})
 
 
-def check_settled_vs_git(spec_dir, tickets, repo_root, warnings):
+def check_settled_vs_git(spec_dir, issues, repo_root, warnings):
     if not git_available(repo_root):
         return False
-
-    # component -> touches paths
-    comp_paths = {}
-    all_paths = set()
-    for t in tickets.values():
-        comp = t.get("component")
-        touches = (t.get("artifacts") or {}).get("touches", []) or []
+    comp_paths, all_paths = {}, set()
+    for e in issues.values():
+        comp = e.get("component")
+        touches = (e.get("artifacts") or {}).get("touches", []) or []
         all_paths.update(touches)
         if comp:
             comp_paths.setdefault(comp, set()).update(touches)
@@ -137,38 +120,29 @@ def check_settled_vs_git(spec_dir, tickets, repo_root, warnings):
         settled_dt = parse_settled_at(fm.get("settled_at"))
         if not settled_dt:
             continue
-
         comp = infer_component(doc)
         paths = comp_paths.get(comp, all_paths) if comp else all_paths
         if not paths:
             continue
-
         since = (settled_dt + timedelta(days=1)).strftime("%Y-%m-%d")
         try:
-            r = subprocess.run(
-                ["git", "log", f"--since={since}", "--oneline", "--", *paths],
-                cwd=repo_root, capture_output=True, timeout=20, text=True,
-            )
+            r = subprocess.run(["git", "log", f"--since={since}", "--oneline", "--", *paths],
+                               cwd=repo_root, capture_output=True, timeout=20, text=True)
         except (subprocess.TimeoutExpired, FileNotFoundError):
             continue
-
         commits = [l for l in r.stdout.splitlines() if l.strip()]
         if len(commits) >= STALE_COMMIT_THRESHOLD:
-            warnings.append({
-                "kind": "stale_settled_doc",
-                "doc": str(doc),
-                "settled_at": fm.get("settled_at"),
-                "evidence": f"{len(commits)} commits to related paths since",
-            })
+            warnings.append({"kind": "stale_settled_doc", "doc": str(doc),
+                             "settled_at": fm.get("settled_at"),
+                             "evidence": f"{len(commits)} commits to related paths since"})
     return True
 
 
-def check_orphan_tests(repo_root, tickets, warnings):
+def check_orphan_tests(repo_root, issues, warnings):
     referenced = set()
-    for t in tickets.values():
-        for path in (t.get("artifacts") or {}).get("tests", []) or []:
+    for e in issues.values():
+        for path in (e.get("artifacts") or {}).get("tests", []) or []:
             referenced.add(Path(path).as_posix())
-
     found = set()
     for d in ("tests", "test", "__tests__"):
         root = repo_root / d
@@ -180,21 +154,15 @@ def check_orphan_tests(repo_root, tickets, warnings):
                     found.add(f.relative_to(repo_root).as_posix())
                 except ValueError:
                     pass
-
     for path in sorted(found - referenced):
-        warnings.append({
-            "kind": "unreferenced_test_file",
-            "ref": path,
-            "detail": "test file on disk not referenced by any ticket",
-        })
+        warnings.append({"kind": "unreferenced_test_file", "ref": path,
+                         "detail": "test file on disk not referenced by any issue"})
 
 
 def check_orphan_handlers(repo_root, reqs, warnings):
-    """Heuristic, Python-only. No-op cleanly on non-Python projects."""
     all_text = " ".join((r.get("text", "") for r in reqs.values())).lower()
     if not all_text:
         return
-
     for py in repo_root.rglob("*.py"):
         if any(p in SKIP_DIRS for p in py.parts):
             continue
@@ -204,20 +172,14 @@ def check_orphan_handlers(repo_root, reqs, warnings):
         except (OSError, ValueError):
             continue
         for m in ROUTE_RE.finditer(text):
-            method = m.group(1).upper()
-            route = m.group(2)
-            route_lc = route.lower()
+            method, route = m.group(1).upper(), m.group(2)
             stripped = route.lstrip("/").lower()
-            if route_lc in all_text or (stripped and stripped in all_text):
+            if route.lower() in all_text or (stripped and stripped in all_text):
                 continue
-            warnings.append({
-                "kind": "unreferenced_handler",
-                "ref": f"{rel.as_posix()} :: {method} {route}",
-                "detail": "route path not mentioned in any SRS req text",
-            })
+            warnings.append({"kind": "unreferenced_handler",
+                             "ref": f"{rel.as_posix()} :: {method} {route}",
+                             "detail": "route path not mentioned in any SRS req text"})
 
-
-# ---------- main ----------
 
 def main():
     p = argparse.ArgumentParser()
@@ -229,56 +191,38 @@ def main():
 
     repo_root = Path(args.source_root).resolve()
     spec_dir = repo_root / ".specseed" / "spec"
-    tickets_path = spec_dir / "tickets.json"
+    issues_path = repo_root / ".specseed" / "project_management" / "issues.json"
     reqs_path = spec_dir / "reqs.json"
 
-    if not tickets_path.exists():
-        print(f"ERROR: {tickets_path} not found", file=sys.stderr)
+    if not issues_path.exists():
+        print(f"ERROR: {issues_path} not found (run issues_assemble.py)", file=sys.stderr)
         sys.exit(2)
     if not reqs_path.exists():
         print(f"ERROR: {reqs_path} not found", file=sys.stderr)
         sys.exit(2)
-
     try:
-        tickets = json.loads(tickets_path.read_text(encoding="utf-8"))
+        issues = json.loads(issues_path.read_text(encoding="utf-8"))
         reqs = json.loads(reqs_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as e:
         print(f"ERROR: malformed JSON: {e}", file=sys.stderr)
         sys.exit(2)
 
-    warnings = []
-    checks_run = 0
-    git_used = False
-
-    check_missing_tests(tickets, repo_root, warnings)
-    checks_run += 1
-
+    warnings, checks_run, git_used = [], 0, False
+    check_missing_tests(issues, repo_root, warnings); checks_run += 1
     if not args.no_git:
-        git_used = check_settled_vs_git(spec_dir, tickets, repo_root, warnings)
+        git_used = check_settled_vs_git(spec_dir, issues, repo_root, warnings)
         if git_used:
             checks_run += 1
-
-    check_orphan_tests(repo_root, tickets, warnings)
-    checks_run += 1
-
+    check_orphan_tests(repo_root, issues, warnings); checks_run += 1
     if not args.no_handler_check:
-        check_orphan_handlers(repo_root, reqs, warnings)
-        checks_run += 1
+        check_orphan_handlers(repo_root, reqs, warnings); checks_run += 1
 
     if args.quiet and not warnings:
         print("OK")
         sys.exit(0)
-
-    print(json.dumps({
-        "ok": True,
-        "errors": [],
-        "warnings": warnings,
-        "stats": {
-            "checks_run": checks_run,
-            "n_warnings": len(warnings),
-            "git_available": git_used,
-        },
-    }, indent=2))
+    print(json.dumps({"ok": True, "errors": [], "warnings": warnings,
+                      "stats": {"checks_run": checks_run, "n_warnings": len(warnings),
+                                "git_available": git_used}}, indent=2))
     sys.exit(0)
 
 

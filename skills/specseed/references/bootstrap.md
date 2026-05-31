@@ -15,10 +15,11 @@ Load `references/question-protocol.md` before any user-facing round.
 7. Settle SRS (propose + confirm)
 8. ADRs + SDD (parallel, after settle)
 9. `reqs.json` generation + cycle resolution (run `requirements_generate_json.py`, then `requirements_analyze.py`; resolve cycles if any)
-10. Ticket formation + validation + critical path (use `ticket-formation.md`; run `tickets_validate.py` + `tickets_analyze.py`)
-11. Write main-repo entry files (merge protocol if any already exist): `README.md` + `CLAUDE.md` (from `references/CLAUDE_template.md`, with `CONTRIBUTING` content folded into its `## Project conventions` section) + `AGENTS.md` + per-component `CLAUDE.md` (if N>1). No separate `CONTRIBUTING.md`
-12. Optional artifacts (`milestones.md`, `deployment.md`) if triggered
-13. Session end (clean `memory.md`)
+10. **ROADMAP draft + discussion gate** — phases → epics → ticket TITLES, discussed with user BEFORE detailed formation (use `work-breakdown.md`)
+11. Work breakdown: flesh tickets + form issues + assemble + validate + critical path (use `work-breakdown.md`; run the assemble scripts, `tickets_validate.py` + `issues_validate.py` + `tickets_analyze.py`)
+12. Write main-repo entry files (merge protocol if any already exist): `README.md` + `CLAUDE.md` (from `references/CLAUDE_template.md`, with `CONTRIBUTING` content folded into its `## Project conventions` section) + `AGENTS.md` + per-component `CLAUDE.md` (if N>1). No separate `CONTRIBUTING.md`
+13. Optional artifacts (`deployment.md`) if triggered
+14. Session end (clean `memory.md`)
 
 ---
 
@@ -137,7 +138,7 @@ Per component (or single `.specseed/spec/srs.md` if N=1), draft the SRS immediat
 
 Reqs must be: atomic (one testable claim), independent in phrasing ("system shall X", not "after Y, system shall…"), verifiable (clear pass/fail), traceable.
 
-Group reqs by feature/area inside the SRS file (with `##` subheadings). ID is the unit of verification, not the unit of work — tickets are the work units, formed later.
+Group reqs by feature/area inside the SRS file (with `##` subheadings). ID is the unit of verification, not the unit of work — the work units (tickets → issues) are formed later in the work-breakdown stage.
 
 **Chat mode:** deliver each `<component>-srs.md` (or `srs.md`) as artifact as it completes.
 
@@ -259,29 +260,66 @@ When `requirements_analyze.py` reports a cycle, present 3 standard moves via `qu
 
 ---
 
-## Stage 10: Ticket formation + validation + critical path
+## Stage 10: ROADMAP draft + discussion gate
 
-Use `references/ticket-formation.md`.
+Use `references/work-breakdown.md` ("ROADMAP" section).
 
-### Form
+Now that reqs exist, draft the PM-level map BEFORE detailing any work:
 
-Skill writes `.specseed/spec/tickets.json` directly (NOT generated from markdown — JSON is source of truth here, see SKILL.md output hierarchy notes).
+Write `.specseed/project_management/ROADMAP.md` with:
+- **Phases** (`## Phase 1 — <name>` — logical stages, not necessarily quarters)
+- **Subsections** per phase (areas), at least one listing **epics** with sub-lists of **ticket TITLES**
 
-### Validate
+At this stage tickets are TITLES + short comments only — no bodies, no issues yet.
 
-After writing, run `.specseed/scripts/tickets_validate.py` — schema + ID uniqueness + dangling-ref checks. Fix any reported issues before proceeding.
+**Discussion gate (required).** Present the draft roadmap — phases, epics, ticket titles, comments — and discuss with the user. Adjust phases / epic grouping / ticket split per feedback. Do NOT proceed to detailed formation until the user approves the roadmap shape.
 
-### Critical path
+Write the approved structure → `memory.md` under `## Roadmap`.
 
-Run `.specseed/scripts/tickets_analyze.py` (user-provided) — returns critical path + build order. Show critical path to user.
-
-User may rebalance ticket grouping if critical path is unreasonably long (often a sign of overly narrow tickets or artificial dependencies).
-
-**Chat mode:** deliver `tickets.json` as artifact + remind user to run both scripts locally if they have them.
+**Chat mode:** deliver `ROADMAP.md` as artifact; gate on user approval before stage 11.
 
 ---
 
-## Stage 11: Main-repo entry files
+## Stage 11: Work breakdown — flesh tickets + form issues + validate + critical path
+
+Use `references/work-breakdown.md`.
+
+### Form
+
+Create the folder tree under `.specseed/project_management/`:
+- `epics/<EPIC-NNNN>/<EPIC-NNNN>.md` — frontmatter + non-technical prose (goal/why/success)
+- `tickets/<PROJ-NNNN>/<PROJ-NNNN>.md` — frontmatter (`satisfies_reqs`, `depends_on`=critical path, `issues`, `epic`) + prose (story, description, product acceptance criteria)
+- `issues/<FEAT-NNNN>/<FEAT-NNNN>.md` — frontmatter (`component`, `effort_hours`, `artifacts`, claim fields, `ticket` parent) + prose (technical acceptance criteria, notes)
+
+Folders are source of truth. Decompose each ticket into INVEST issues (vertical slices, sizing checks). Back-link tickets ⟷ issues.
+
+### Assemble + validate
+
+Run in this order (ticket effort + counts are summed from issues, so issues first):
+```bash
+python .specseed/scripts/issues_assemble.py
+python .specseed/scripts/tickets_assemble.py
+python .specseed/scripts/issues_validate.py
+python .specseed/scripts/tickets_validate.py
+```
+Fix any reported errors before proceeding.
+
+### Critical path
+
+Run `.specseed/scripts/tickets_analyze.py .specseed/project_management/tickets.json` (user-provided) — returns ticket critical path + build order. Show critical path to user. Rebalance ticket grouping if unreasonably long (often overly narrow tickets or artificial deps).
+
+### Refresh ROADMAP counts
+
+```bash
+python .specseed/scripts/roadmap_render.py
+```
+Bumps each ticket title's `(X/Y complete)` annotation in `ROADMAP.md` from `tickets.json` (`issues_done`/`issues_total`).
+
+**Chat mode:** deliver the folder set + generated `tickets.json`/`issues.json` as artifacts; remind user to run the assemble/validate/analyze scripts locally.
+
+---
+
+## Stage 12: Main-repo entry files
 
 These are the ONLY files written outside `.specseed/`. Before writing any of them, **for each that already exists on disk, follow the merge protocol** in `SKILL.md` ("Main-repo files & merge protocol"): read the existing file, default to replacing with the skill's version, but scan for project-specific additions worth keeping and offer to append them; never destroy user content without explicit OK. **Tell the user** which of these will be placed in the main repo and that everything else stays under `.specseed/`.
 
@@ -325,14 +363,15 @@ Read ./CLAUDE.md. In dirs you work on, read corresponding CLAUDE.md files in the
 
 ---
 
-## Stage 12: Optional artifacts
+## Stage 13: Optional artifacts
 
-- **`.specseed/spec/milestones.md`** — only if user asked for milestones during context pre-stage or later. Lists named milestones (M1, M2, ...) with target dates if any + list of ticket IDs in each. Tickets may carry a `milestone` field referencing these
 - **`.specseed/spec/deployment.md`** — only if Operations theme was flagged during a component questioning round (see stage 4 note). Covers operational procedures, runbooks, deployment commands. Distinct from SAD's Deployment topology section (that's *where things run*; this is *how to run them*)
+
+(Project grouping/sequencing lives in `ROADMAP.md` phases. Sprints may be added later.)
 
 ---
 
-## Stage 13: Session end
+## Stage 14: Session end
 
 - Deliver manifest (chat mode): single artifact listing every file with its canonical path
 - Delete `.specseed/memory.md` (or move salient bits to a changelog file if user wants — confirm before)

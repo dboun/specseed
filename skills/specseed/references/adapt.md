@@ -28,17 +28,17 @@ Read in this order:
 4. All `*sdd.md`
 5. `.specseed/spec/adr.csv`
 6. `.specseed/spec/reqs.json`
-7. `.specseed/spec/tickets.json`
-8. `.specseed/spec/milestones.md` and `.specseed/spec/deployment.md` if present
+7. `.specseed/project_management/ROADMAP.md`, then `tickets.json` + `issues.json` (assembled indexes). To re-read the authored source, look in `project_management/{epics,tickets,issues}/<ID>/`
+8. `.specseed/spec/deployment.md` if present
 
-Scan for open `spec_concern.md` files under `.specseed/ticket_tracking/*/`. These were written by implementation agents that hit a settled doc they thought was wrong mid-ticket. Note their existence; they're candidate triggers for this session (see stage 2).
+Scan for open `spec_concern.md` files under `.specseed/project_management/issues/*/`. These were written by implementation agents that hit a settled doc they thought was wrong mid-issue. Note their existence; they're candidate triggers for this session (see stage 2).
 
 **Run `.specseed/scripts/drift_check.py`** if present. It surfaces mechanical drift:
 - Test files referenced in tickets `artifacts.tests` that don't exist on disk
 - Settled docs whose `settled_at` predates significant recent commits to related source modules
 - (Other heuristic checks per the script's docstring)
 
-Surface a **1-paragraph state-of-spec summary** to user: components, settle status per file, ticket count + completion status, any obvious gaps, count + paths of any open `spec_concern.md`, brief drift warnings if any. Keep it tight — caveman.
+Surface a **1-paragraph state-of-spec summary** to user: components, settle status per file, epic/ticket/issue counts + completion status, any obvious gaps, count + paths of any open `spec_concern.md`, brief drift warnings if any. Keep it tight — caveman.
 
 **Repo mode:** run scripts directly.
 **Chat mode:** if user has scripts wired, ask them to paste output; otherwise skill notes what would be checked and proceeds without it.
@@ -59,7 +59,7 @@ Free-form answer expected — not a structured round. Capture in `memory.md` und
 
 **Spec-concern trigger.** If stage 1 found one or more open `spec_concern.md` files, offer them as triggers first:
 
-> "Implementation agent flagged a concern at `.specseed/ticket_tracking/<id>/spec_concern.md`. Address it now, or set your own trigger?"
+> "Implementation agent flagged a concern at `.specseed/project_management/issues/<id>/spec_concern.md`. Address it now, or set your own trigger?"
 
 If user picks the concern, read the concern file, summarize it back to the user in one paragraph, confirm understanding, then proceed. The concern file itself becomes the trigger.
 
@@ -76,7 +76,7 @@ Multiple triggers in one session OK if related; keep them tracked.
 Map the trigger to specific docs + IDs:
 - Which file(s) touched?
 - Which req IDs affected (added / changed / deprecated)?
-- Which tickets need new / revision / deprecation?
+- Which epics / tickets / issues need new / revision / deprecation?
 - Does this touch any `settled: true` doc?
 
 **Show user a delta-map** before any drafting. Format:
@@ -89,7 +89,10 @@ Impact map:
 - .specseed/spec/api-sdd.md: new "Webhook retry" section
 - adr.csv: +1 row (retry strategy)
 - reqs.json: regenerate
-- tickets.json: 2 new tickets (FEAT-0023, FEAT-0024); FEAT-0011 acceptance criteria revised
+- project_management/tickets/: PROJ-0023 new (satisfies SRS-API-042/043); PROJ-0011 product AC revised
+- project_management/issues/: FEAT-0101..0103 new under PROJ-0023
+- ROADMAP.md: add PROJ-0023 under EPIC-0002
+- reassemble: issues.json + tickets.json
 ```
 
 User confirms before drafting begins.
@@ -138,7 +141,7 @@ Skip rounds entirely if delta-map is unambiguous and user's trigger already cove
   - Adapt session reason: <one line>
   ```
 - Do NOT delete the concern file — keep for traceability
-- Unblock the originally-blocked ticket: set its `status` back to `todo` (or `in_progress` if user wants it picked up immediately)
+- Unblock the originally-blocked **issue**: set its `status` back to `todo` in `issues.json` (or `in_progress` if the user wants it picked up immediately), and clear stale claim fields if it shouldn't stay claimed
 
 ---
 
@@ -147,22 +150,31 @@ Skip rounds entirely if delta-map is unambiguous and user's trigger already cove
 After patches:
 1. Re-run `.specseed/scripts/requirements_generate_json.py` (regenerates `reqs.json` from SRS)
 2. Re-run `.specseed/scripts/requirements_analyze.py` — any new cycles/orphans/dangling refs? Apply cycle resolution moves from bootstrap stage 9
-3. Run `.specseed/scripts/tickets_validate.py` after any ticket edit — fix schema issues
-4. Re-run `.specseed/scripts/tickets_analyze.py` — critical path shifted? Surface to user if so
+3. After any ticket/issue folder edit, re-assemble + validate BOTH tiers (issues first — ticket effort/counts sum from issues):
+   ```bash
+   python .specseed/scripts/issues_assemble.py
+   python .specseed/scripts/tickets_assemble.py
+   python .specseed/scripts/issues_validate.py
+   python .specseed/scripts/tickets_validate.py
+   ```
+   (Assemble preserves live runtime status/claim — it won't reset in-flight or done issues.)
+4. Re-run `.specseed/scripts/tickets_analyze.py .specseed/project_management/tickets.json` — critical path shifted? Surface to user if so. Then `python .specseed/scripts/roadmap_render.py` to refresh ROADMAP `(X/Y complete)` counts.
 5. (Optional) re-run `.specseed/scripts/drift_check.py` to confirm the trigger drift item(s) are no longer flagged
 
-**Repo mode:** agent runs all five directly.
+**Repo mode:** agent runs these directly.
 **Chat mode:** skill reminds user with copy-paste-ready commands after delivering changed files.
 
 ---
 
-## Stage 7: Update tickets
+## Stage 7: Update tickets + issues
 
-- Mark obsolete tickets `status: "deprecated"` in `tickets.json` (do not delete)
-- Add new tickets if scope expanded (use `references/ticket-formation.md`)
-- Revise acceptance criteria on existing tickets if reqs they satisfy changed — in-place with a note in `notes` field: `"Acceptance criteria revised <date>: <reason>"`
-- If a ticket was `done` but its underlying req changed, mark `status: "blocked"` with note for user to triage
-- If resolving a `spec_concern.md`, unblock the originating ticket per stage 5
+Edit the FOLDERS (source of truth), then re-assemble (stage 6 cascade).
+
+- Mark obsolete tickets/issues `status: "deprecated"` in their folder frontmatter (do not delete)
+- Add new tickets/issues if scope expanded (use `references/work-breakdown.md`) — new folders + back-links (ticket `issues:` ⟷ issue `ticket:`); add titles to `ROADMAP.md`
+- Revise a ticket's product acceptance criteria (or an issue's technical AC) in its prose body if reqs changed; note in the issue `notes` field: `"AC revised <date>: <reason>"`
+- If a ticket/issue was `done` but its underlying req changed, set `status: "blocked"` with a note for the user to triage
+- If resolving a `spec_concern.md`, unblock the originating issue per stage 5
 
 ---
 
@@ -195,9 +207,9 @@ Append-only — never edit existing rows.
 
 ## Conflict handling
 
-If adapt would invalidate a currently `in_progress` or `done` ticket:
+If adapt would invalidate a currently `in_progress` or `done` issue (or its ticket):
 - Surface to user as a warning before proceeding
-- Options: pause the in-progress ticket; mark done ticket as blocked-pending-rework; defer adapt until ticket finishes
+- Options: pause the in-progress issue; mark done issue/ticket as blocked-pending-rework; defer adapt until the issue finishes
 
 If adapt session itself grows large enough that ≥40% of spec docs need rework, recommend the user end this session and start a fresh bootstrap (with the old `.specseed/spec/` as reference). Don't try to push through.
 
@@ -215,7 +227,8 @@ Locate all reqs belonging to the feature: by SRS section heading, by ID range, o
 Retirement candidates for feature "webhook retry":
 - SRS-API-031 through SRS-API-038 (8 reqs, 6 must / 2 should)
 - Section "## Webhook retry" in .specseed/spec/api-srs.md
-- Tickets: FEAT-0022 (done), FEAT-0023 (done), FEAT-0024 (todo)
+- Tickets: PROJ-0022 (done), PROJ-0024 (todo)
+- Issues: FEAT-0210..0214 under those tickets
 - Tests under tests/api/test_webhook_retry.py
 - SDD section "Webhook retry strategy" in .specseed/spec/api-sdd.md
 - ADR row: "Picked exponential backoff for webhook retries"
@@ -230,8 +243,8 @@ In a single pass:
 - **SRS reqs:** mark each `[RETIRED <ISO date>: reason]` (same mechanism as deprecation; do not delete — preserves ID space and traceability). Move to a `## Retired` section if the SRS now has 3+ retired reqs.
 - **SAD:** remove the feature's component/interface/data-flow blocks. Log structural change to ADR.
 - **SDD:** remove the feature's section(s) entirely. SDD is the *how*; retired features have no how.
-- **Tickets:** mark all related tickets `status: "deprecated"` in `tickets.json` (including `done` ones — they shipped, but the feature is being retired). Do NOT delete.
-- **Tests:** delete them. Feature gone → tests are dead weight. Git history preserves if needed. Update `artifacts.tests` lists on deprecated tickets.
+- **Tickets + issues:** mark all related tickets AND their issues `status: "deprecated"` in their folder frontmatter (including `done` ones — they shipped, but the feature is being retired). Do NOT delete. Remove their titles from `ROADMAP.md`. Re-assemble both tiers.
+- **Tests:** delete them. Feature gone → tests are dead weight. Git history preserves if needed. Update `artifacts.tests` lists on the deprecated issues.
 - **ADR:** append a retirement row: `"Retired <feature>","<reason>"`. Also append a row noting any prior ADR rows about this feature are now historical context.
 
 ### R3. Vision update (conditional)
@@ -247,7 +260,7 @@ If so, propose moving the relevant scope item from IN to OUT (or removing it ent
 
 ### R4. Migration / cleanup tickets
 
-If the retirement leaves behind data (orphan DB tables, persisted state, config flags), add a `CHORE-NNNN` cleanup ticket. Use `artifacts.migrations` field for any data migrations needed (see `ticket-formation.md`).
+If the retirement leaves behind data (orphan DB tables, persisted state, config flags), add a `CHORE-NNNN` cleanup **issue** (under a cleanup ticket if one fits). Use the `artifacts.migrations` field for any data migrations needed (see `work-breakdown.md`).
 
 ### R5. Re-run analyzers + finish
 

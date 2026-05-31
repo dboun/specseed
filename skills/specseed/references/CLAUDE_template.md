@@ -1,238 +1,209 @@
 # Agent runtime entry: CLAUDE.md template
 
-This file is **the content the specseed skill writes to the user's repo root as `CLAUDE.md`**. It tells the implementation agent (Claude Code, Codex, or any other) how to pick up and execute the next ticket.
+This file is **the content the specseed skill writes to the user's repo root as `CLAUDE.md`**. It tells the implementation agent (Claude Code, Codex, or any other) how to pick up and execute the next **issue** (issues are the technical, claimable unit; epics + tickets are the PM layer above them).
 
-The skill writes this template by default, with two customizations: (1) the bash one-liners in the "Claim the ticket" section if the user has a different command preference; (2) the **`## Project conventions`** section, which the skill fills with the project's folder structure, branching, versioning, release process, and release gates (this is the former `CONTRIBUTING.md` content, now folded in here — the skill no longer writes a separate `CONTRIBUTING.md`).
+The skill writes this template by default, with two customizations: (1) the bash one-liners in the "Claim" section if the user has a different command preference; (2) the **`## Project conventions`** section, which the skill fills with the project's folder structure, branching, versioning, release process, and release gates (the former `CONTRIBUTING.md` content, now folded in — the skill no longer writes a separate `CONTRIBUTING.md`).
 
 When writing to the user's repo, write the content below (everything between the `---BEGIN TEMPLATE---` and `---END TEMPLATE---` markers) as the file `CLAUDE.md` at the repo root.
 
-**If a `CLAUDE.md` already exists at the target path**, do NOT overwrite blindly — follow the merge protocol in `SKILL.md` ("Main-repo files & merge protocol"): default to replacing with this template, but offer to append any project-specific notes worth keeping from the existing file.
+**If a `CLAUDE.md` already exists at the target path**, do NOT overwrite blindly — follow the merge protocol in `SKILL.md` ("Main-repo files & merge protocol").
 
 ---BEGIN TEMPLATE---
 
 # CLAUDE.md
 
-Agent entry point. If no other instructions given, your default task is to **handle the next ticket in the build order**.
+Agent entry point. If no other instructions given, your default task is to **handle the next issue in the build order**.
+
+## Work model
+
+Work is organized in three tiers under `.specseed/project_management/`:
+- **epics** (`EPIC-NNNN`) and **tickets** (`PROJ-NNNN`) — the PM / non-technical layer (outcomes, user-visible value). Tickets carry the requirements (`satisfies_reqs`) and the critical-path `depends_on` DAG.
+- **issues** (`FEAT/BUG/CHORE/SPIKE-NNNN`) — the technical layer. **This is what you claim and execute.** An issue belongs to a ticket (its `ticket` field).
+
+Folders are the authored source of truth; `tickets.json` / `issues.json` are the generated indexes that carry **live runtime state** (status, claims) during execution.
 
 ## Initial reads
 
 Always read first:
 1. `.specseed/spec/vision.md` — why this project exists
-2. The `## Project conventions` section below — folder structure, branching, versioning, release, conventions
+2. The `## Project conventions` section below
 
-## Pick next ticket
+## Pick + claim the next issue
 
-```bash
-python .specseed/scripts/tickets_analyze.py .specseed/spec/tickets.json | jq -r '.next_todo'
-```
-
-This returns the ID of the next ticket whose status is `todo` (or `blocked`) AND whose `depends_on` are all `done`/`deprecated`. Output is `null` if no work remains — in that case stop and tell the user.
-
-Then load just that ticket's info:
+One atomic call picks the next ready issue AND claims it (no pick/claim race):
 
 ```bash
-python .specseed/scripts/ticket_info.py <ticket_id>
+python .specseed/scripts/claim_issue.py
+# Optional:
+#   <issue_id>            # claim a specific issue instead of auto-picking
+#   --skip ID,ID          # exclude issues a parallel agent already took
+#   --agent <name>        # override agent id (default: env CLAUDE_AGENT_ID or hostname-pid)
+#   --stale-hours <N>     # take over claims older than N hours (default 3)
+#   --lock-timeout <secs> # max wait for the file lock (default 10)
 ```
 
-Returns the ticket entry from `tickets.json` PLUS the full req entries it satisfies (joined from `reqs.json`). Use this — don't load all of `tickets.json` or `reqs.json` into context.
+Output is JSON:
+```json
+{"claimed": true, "issue_id": "FEAT-0101", "claimed_at": "...", "claimed_by": "...", "previous_claim": null}
+```
+- `claimed: false, issue_id: null, reason: "no ready issue to claim"` → no work is available right now; stop and tell the user.
+- `claimed: false` with a reason (already claimed, deps not done, parent ticket not reachable) → pick a different issue; don't fight over locks.
 
-## Claim the ticket
+"Ready" means: status todo/blocked, unclaimed, its own `depends_on` issues done, and its parent ticket reachable (the ticket's `depends_on` tickets all complete). Ticket completion is derived live from issues — downstream tickets unblock automatically as their issues finish.
 
-Use `claim_ticket.py` for atomic claim — it handles concurrent agents safely via `fcntl.flock` and auto-recovers stale claims:
-
+To see the ticket-level critical path / build order (priority context):
 ```bash
-python .specseed/scripts/claim_ticket.py <ticket_id>
-# Optional flags:
-#   --agent <name>          # override agent identifier (default: env CLAUDE_AGENT_ID or hostname-pid)
-#   --stale-hours <N>       # take over claims older than N hours (default: 3)
-#   --lock-timeout <secs>   # max time to wait for the lock (default: 10)
+python .specseed/scripts/tickets_analyze.py .specseed/project_management/tickets.json
 ```
-
-Output is JSON to stdout:
-```json
-{"claimed": true, "ticket_id": "FEAT-0001", "previous_claim": null}
-```
-
-or on stale-takeover:
-```json
-{"claimed": true, "ticket_id": "FEAT-0001", "previous_claim": {"by": "agent-X", "at": "2025-01-01T..."}}
-```
-
-or on conflict:
-```json
-{"claimed": false, "ticket_id": "FEAT-0001", "reason": "already claimed by agent-Y at 2025-...", "stale": false}
-```
-
-If `claimed: false` and not stale → pick a different available ticket; don't fight over locks.
-
-If you can't acquire the file lock within the timeout (script exits non-zero with a lock-timeout error), another claim/edit operation is in flight. Wait a few seconds and retry; if it persists, tell the user — something's stuck.
-
-**Why this script and not raw `jq`?** Two agents reading and writing `tickets.json` in parallel can both think they claimed the same ticket. The script does a single locked read-verify-write so only one wins. The lock auto-releases on process exit, so a killed/stuck agent doesn't block forever; stale claims are detected via `claimed_at` age.
 
 ## Load only relevant context
 
-- Read ONLY the sections of `.specseed/spec/<component>-srs.md` (or `.specseed/spec/srs.md`) corresponding to the req IDs in `satisfies_reqs`. Don't ingest the whole SRS
-- Read the relevant section(s) of `.specseed/spec/<component>-sdd.md` (or `.specseed/spec/sdd.md`)
-- Skim `.specseed/spec/sad.md` only if you need cross-component context
-- If a per-component `CLAUDE.md` exists in your ticket's component dir (e.g. `api/CLAUDE.md`), read it for component-specific commands and gotchas
+```bash
+python .specseed/scripts/issue_info.py <issue_id>
+```
+Returns your issue, its **parent ticket**, and the reqs the parent ticket satisfies (joined from `reqs.json`) — requirements live on the ticket, not the issue. Use this instead of loading whole JSON files.
+
+Then:
+- Read your issue's prose body for **technical acceptance criteria** + notes: `.specseed/project_management/issues/<issue_id>/<issue_id>.md`
+- Read the parent ticket's body for the **story / product acceptance criteria** if you need the user-facing intent: `.specseed/project_management/tickets/<ticket_id>/<ticket_id>.md`
+- Read ONLY the SRS sections for the req IDs from `issue_info` (`.specseed/spec/<component>-srs.md` or `srs.md`), and the relevant `*-sdd.md` section. Skim `sad.md` only for cross-component context.
+- If a per-component `CLAUDE.md` exists in your issue's component dir, read it.
 
 ## Plan
 
-Create `.specseed/ticket_tracking/<ticket_id>/plan.md` before writing any code. Format:
+Create `.specseed/project_management/issues/<issue_id>/plan.md` before writing code:
 
 ```markdown
-# Plan: <ticket_id> — <title>
+# Plan: <issue_id> — <title>
 
 ## Steps
-- [ ] 1. <step description>
-- [ ] 2. <step description>
-- [ ] 3. <step description>
-...
+- [ ] 1. <step>
+- [ ] 2. <step>
 
 ## Notes / decisions as I work
 - ...
 ```
-
-Keep this file updated as you work — mark `[x]` when steps complete, add sub-steps if a step splits, note decisions inline.
+Keep it updated as you work.
 
 ## Execute
 
-- Tests live with the code under test (per the `## Project conventions` section below, typically `tests/` mirroring `src/`)
-- Use subagents for parallelizable sub-steps if your harness supports them. **Only the main agent writes step reports** (subagent outputs are aggregated by the main agent)
+- Tests live with the code under test (per `## Project conventions`).
+- Use subagents for parallelizable sub-steps if your harness supports them. **Only the main agent writes step reports.**
 
 ## Step reports
 
-After each top-level step completes, write a report to:
+After each top-level step, write:
 ```
-.specseed/ticket_tracking/<ticket_id>/step_reports/<X>_<step_or_substep>_<desc>.md
+.specseed/project_management/issues/<issue_id>/step_reports/<X>_<step_or_substep>_<desc>.md
 ```
-- `<X>` = monotonic counter starting at 1
-- `<step_or_substep>` = identifier from the plan (e.g. `2` or `2-1`)
-- `<desc>` = a few words describing what was done, hyphen-separated
-
-Example: `.specseed/ticket_tracking/FEAT-0001/step_reports/1_1_setup-signup-route.md`
-
-Report should cover: what changed, files touched, tests added, any deviations from plan + why.
+`<X>` = monotonic counter from 1. Cover: what changed, files touched, tests added, deviations from plan + why.
 
 ## DO NOT EDIT settled docs
 
-**This is a contract honored by you, not enforced by the filesystem.** Nothing technically stops you from editing `.specseed/spec/vision.md`, `.specseed/spec/sad.md`, `*srs.md`, `*sdd.md`, or `.specseed/spec/adr.csv`. The rule exists because the user's adapt workflow assumes settled docs are stable. Breaking the contract silently desyncs traceability and breaks the spec_concern handoff below.
+**A contract honored by you, not enforced by the filesystem.** Nothing stops you editing `.specseed/spec/vision.md`, `sad.md`, `*srs.md`, `*sdd.md`, or `adr.csv` — but doing so desyncs traceability and breaks the spec_concern handoff. Don't.
 
-If ticket execution reveals a settled doc looks wrong (requirement is incorrect, design assumption fails, new ADR is needed), you have ONE option:
+If executing your issue reveals a settled doc looks wrong:
 
 ### Spec concern handoff
 
-1. **Stop work on the current ticket.** Mark its status `blocked` in `tickets.json` (keep your `claimed_at`/`claimed_by` so the user knows where it is — `claim_ticket.py` does NOT need to be re-run; you're not releasing the claim, just changing status)
-2. **Write `.specseed/ticket_tracking/<ticket_id>/spec_concern.md`** with this structure:
+1. **Stop.** Mark your issue `status: "blocked"` in `issues.json` (keep your claim fields — you're not releasing, just changing status):
+   ```bash
+   jq --arg id "<issue_id>" '.[$id].status="blocked"' \
+      .specseed/project_management/issues.json > /tmp/i.json && mv /tmp/i.json .specseed/project_management/issues.json
+   ```
+2. **Write** `.specseed/project_management/issues/<issue_id>/spec_concern.md`:
    ```markdown
-   # Spec concern: <ticket_id>
+   # Spec concern: <issue_id>
 
    ## What's wrong
-   <plain description of the issue>
-
    ## Why I think so
-   <reasoning, code snippets, examples that surfaced the problem>
-
    ## Proposed change
-   <what you'd change in the settled doc, including which doc(s)>
-
    ## Impact if not addressed
-   <what happens if we proceed without changing the spec>
    ```
 3. **Tell the user, verbatim:**
-   > "Use `/specseed adapt` to address spec concern: .specseed/ticket_tracking/<id>/spec_concern.md"
-4. **DO NOT** edit the settled doc yourself. Adapt mode is the only path through. The user will invoke it, address the concern, unblock your ticket, and you'll pick it up again on the next cycle
+   > "Use `/specseed adapt` to address spec concern: .specseed/project_management/issues/<id>/spec_concern.md"
+4. **Do NOT** edit the settled doc yourself. Adapt mode is the only path through.
 
-This is the ONLY procedure. There is no emergency override, no exception for "small" changes to settled docs, no "I'll just fix it and log it after". The contract is hard — and again, it's a contract you keep, not one the filesystem enforces.
+No emergency override, no exception for "small" changes.
 
 ## Spike post-completion
 
-If your ticket's `type` is `spike`, before marking it `done` you MUST capture findings using the spike report template (short version below). Otherwise the learning vanishes.
-
-Write into the ticket's `notes` field (plain prose, 3–10 lines):
-
+If your issue's `type` is `spike`, before marking it `done` you MUST capture findings (else the learning vanishes). Write into the issue body (or its `notes`):
 ```
 Spike report:
-- Question: <what was being investigated>
-- Investigation: <what was tried — sources, prototypes, benchmarks>
-- Findings: <what was learned>
-- Decision: <chosen path, or "no decision yet — see Followups">
+- Question:
+- Investigation:
+- Findings:
+- Decision:
 - Followups: <ADR row? new req? SDD update? — tell user via /specseed>
 ```
-
-Then:
-1. **If a decision was made** → tell the user to use `/specseed` to add an ADR row capturing the decision + justification
-2. **If new or changed requirements emerged** → tell the user to use `/specseed adapt` to draft them properly
-3. **If a design pattern surfaced that belongs in the SDD** → tell the user to use `/specseed adapt` to add the relevant SDD section
-4. Only AFTER you've surfaced the findings and the user has invoked the skill (or explicitly said "no spec changes needed") do you mark the spike `done`
-
-Do NOT silently mark a spike done with findings only in `notes`. The notes are the minimum capture; ADR/SRS/SDD updates are where future agents will look.
+Then surface followups to the user (decision → `/specseed` for an ADR row; new/changed reqs or SDD pattern → `/specseed adapt`). Only AFTER the user has acted (or said "no spec changes needed") mark the spike `done`.
 
 ## Finish
 
 When all plan steps `[x]` and tests pass:
-1. (Spike only) complete the spike post-completion steps above first
-2. Mark ticket `status: "done"` in `tickets.json`. Also clear `claimed_at` and `claimed_by` to `null` (the ticket is no longer claimed; it's finished). Use a brief atomic edit — `claim_ticket.py` is only for taking a claim, not for releasing it; just edit the JSON with a small `jq` block:
+1. (Spike only) complete the spike post-completion steps first.
+2. Mark your issue done + clear your claim in `issues.json`:
    ```bash
-   jq --arg id "<ticket_id>" \
-      '.[$id].status = "done" | .[$id].claimed_at = null | .[$id].claimed_by = null' \
-      .specseed/spec/tickets.json > /tmp/t.json && mv /tmp/t.json .specseed/spec/tickets.json
+   jq --arg id "<issue_id>" '.[$id].status="done" | .[$id].claimed_at=null | .[$id].claimed_by=null' \
+      .specseed/project_management/issues.json > /tmp/i.json && mv /tmp/i.json .specseed/project_management/issues.json
    ```
-3. Run `python .specseed/scripts/tickets_validate.py` to sanity-check `tickets.json`
-4. Commit per the `## Project conventions` section below
+   Recommended: mirror the same `status` into the issue's folder file `<issue_id>.md` frontmatter so the human-readable record stays current (`issues.json` is the operational truth; the folder is the authored record).
+3. Refresh the ticket index (recomputes completion counts + auto-marks the parent ticket `done` when its last issue lands), then bump the ROADMAP counts:
+   ```bash
+   python .specseed/scripts/tickets_assemble.py
+   python .specseed/scripts/roadmap_render.py
+   ```
+4. Sanity-check: `python .specseed/scripts/issues_validate.py`
+5. Commit per `## Project conventions`.
+
+(Dependent issues unblock automatically — `claim_issue.py` derives ticket completion live from `issues.json` — so the next agent can proceed even before step 3. The re-assemble is for counts, ROADMAP, and the ticket-done rollup.)
 
 ## What you CAN edit
 
-- `tickets.json` — your own ticket's status (per the lifecycle: `todo` → `in_progress` → `done`/`blocked`), `claimed_at`/`claimed_by` (set by `claim_ticket.py` on claim; cleared by you on done), `notes` field, `artifacts.tests` and `artifacts.migrations` fields as work progresses
-- `.specseed/ticket_tracking/<ticket_id>/plan.md` — your plan file
-- `.specseed/ticket_tracking/<ticket_id>/spec_concern.md` — when needed (see "Spec concern handoff" above)
-- `.specseed/ticket_tracking/<ticket_id>/step_reports/*` — your step reports
-- All source code, test files, build configs (per the ticket's scope)
+- `issues.json` — your OWN issue's `status` (`todo`→`in_progress`→`done`/`blocked`), claim fields (set by `claim_issue.py`, cleared by you on done), `notes`, `artifacts.tests`/`artifacts.migrations` as work progresses
+- Your issue's folder: `<issue_id>.md` frontmatter (mirror status; update artifacts/notes), `plan.md`, `spec_concern.md`, `step_reports/*`
+- All source code, test files, build configs in your issue's scope
 
-You may NOT edit other tickets in `tickets.json`, even if you think their status is wrong. Surface to user instead.
+You may NOT edit other issues, any ticket or epic, `tickets.json`, or the spec docs — even if you think something is wrong. Surface to the user instead.
 
 ## Optional: drift check before claim
 
-For long-running projects where it's been weeks since the last spec edit, before claiming a ticket consider running:
-
+For long-running projects, before claiming you may run:
 ```bash
 python .specseed/scripts/drift_check.py
 ```
-
-If it surfaces mechanical drift in areas your ticket touches (missing test files, stale settled docs vs recent commits in your component), surface to user before proceeding:
-
-> "drift_check flagged X concerns related to my ticket. Address via /specseed adapt first?"
-
-This is optional, not mandatory. Skip if drift_check.py isn't present or the project is small/recent.
+If it flags drift in areas your issue touches (missing test files, stale settled docs vs recent commits), surface to the user before proceeding (`/specseed adapt`). Optional; skip if not present or the project is small/recent.
 
 ## Project conventions
 
-> The skill fills this section with the project's actual conventions. This is the former `CONTRIBUTING.md`, folded in. Keep it short and concrete.
+> The skill fills this section with the project's actual conventions. The former `CONTRIBUTING.md`, folded in. Keep it short and concrete.
 
-- **Folder structure:** where source, tests, and configs live (high-level). Spec artifacts live under `.specseed/` (never edit those except as allowed above; only `/specseed` does).
+- **Folder structure:** where source, tests, configs live. Spec/PM artifacts live under `.specseed/` (never edit those except as allowed above; only `/specseed` does).
 - **Branching:** branch naming + how work maps to branches/PRs.
 - **Versioning:** scheme (semver, calver, none) and where the version is set.
 - **Release:** how a release is cut, where artifacts are stored.
-- **Release gates:** test-coverage thresholds, env smoke checks, manual sign-off, etc — define here if relevant to this project; otherwise leave as a placeholder to fill later.
-- **Build/test commands:** the canonical commands for this project (or per-component, if multi-component — those may also live in each component's `CLAUDE.md`).
+- **Release gates:** coverage thresholds, smoke checks, manual sign-off — define if relevant; else leave a placeholder.
+- **Build/test commands:** canonical commands (or per-component, in each component's `CLAUDE.md`).
 
 ---END TEMPLATE---
 
 ## Skill-side notes (not written to user's CLAUDE.md)
 
-The above template is INTENTIONALLY medium-length. It includes:
-- Ticket pickup flow (one-liner)
-- Atomic claim via `claim_ticket.py` (replaces raw `jq` claim — handles concurrency + stale recovery)
-- Plan + step-report conventions
-- Don't-edit-settled-docs safety rule, explicitly framed as a contract (not enforcement) with structured `spec_concern.md` handoff
-- Spike post-completion checklist with inline spike report template
+The template is INTENTIONALLY medium-length. It includes:
+- Issue pickup + atomic claim via `claim_issue.py` (no-arg auto-pick = pick-and-claim under one lock; `--skip` for light parallel work)
+- The three-tier work model (epic/ticket/issue) and the folders-vs-JSON source-of-truth split (folders = authored content, JSON = live runtime state)
+- `issue_info.py` for the issue + parent ticket + reqs join (reqs live on the ticket)
+- Plan + step-report conventions under `issues/<id>/`
+- Don't-edit-settled-docs contract with the structured `spec_concern.md` handoff (now under `issues/<id>/`)
+- Spike post-completion checklist
+- Finish flow: edit `issues.json`, re-assemble tickets (auto-rolls-up ticket done), `roadmap_render.py` to bump counts, validate
 - Optional drift-check hook
-- Concurrency guidance
-- `## Project conventions` section (folder structure, branching, versioning, release, release gates, build/test commands) — this is the former `CONTRIBUTING.md`, now folded in; the skill fills it from what it gathered
+- `## Project conventions` (former `CONTRIBUTING.md`)
 
 It does NOT include:
-- Detailed multi-agent orchestration rules (rare in practice; add via adapt mode if needed)
-- Implementation patterns (those go in code or per-component `CLAUDE.md` files)
-- Deep per-component build/test detail when multi-component — that can live in each component's `CLAUDE.md`; the root `## Project conventions` stays high-level
+- Detailed multi-agent orchestration rules (add via adapt mode if needed)
+- Implementation patterns (those go in code or per-component `CLAUDE.md`)
+- Deep per-component build/test detail when multi-component — that lives in each component's `CLAUDE.md`
 
-For multi-component repos, the skill at bootstrap stage 11 proposes creating a `CLAUDE.md` per component subdirectory with component-specific notes — root `AGENTS.md` already directs agents to read those.
+For multi-component repos, bootstrap stage 12 proposes a per-component `CLAUDE.md`; root `AGENTS.md` directs agents to read those.

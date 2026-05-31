@@ -1,234 +1,126 @@
 """
 tickets_validate.py
 
-Validates .specseed/spec/tickets.json. See module-level spec in skill notes.
+Validates the TICKET tier (.specseed/project_management/tickets.json), assembled
+by tickets_assemble.py from the per-ticket folders. Tickets are the PM /
+non-technical layer: they carry satisfies_reqs + the critical-path depends_on
+DAG, group issues, and roll up to epics.
+
+Kept SEPARATE from issues_validate.py on purpose — tickets and issues may live
+in different stores once tool integrations land, so each tier validates the
+refs it can resolve and degrades gracefully when the other tier is absent.
 
 Checks:
- 1. ID format /^[A-Z]+-\\d{4,}$/, unique
- 2. Required fields present
- 3. Enum values valid (type, status)
- 4. effort_hours positive number
- 5. depends_on refs exist in tickets.json
- 6. satisfies_reqs refs exist in reqs.json
- 7. acceptance_criteria non-empty list of strings
- 8. artifacts.touches/tests/migrations lists of strings; existence as warnings
- 9. milestone (if present) exists in milestones.md
-10. Claim invariants (status × claimed_at × claimed_by)
+ 1. ID format /^[A-Z]+-\\d{4,}$/, unique, == folder name (assemble enforces the
+    last; re-checked here)
+ 2. Required fields: title, type, priority, status
+ 3. Enums: type ∈ {feature,bug,chore,spike}; priority ∈ {high,medium,low};
+    status ∈ {todo,in_progress,blocked,done,deprecated}
+ 4. depends_on refs exist in tickets.json; no cycles
+ 5. satisfies_reqs refs exist in reqs.json (warn if empty)
+ 6. epic ref (if non-null) has a folder under <pm-dir>/epics/ (skipped if absent)
+ 7. issues refs exist in issues.json AND each issue's `ticket` points back here
+    (skipped if issues.json absent)
 
-Exit: 0 OK (or warnings only), 1 errors found, 2 missing input.
+Exit: 0 OK (or warnings only), 1 errors, 2 missing input.
 """
 
 import argparse
 import json
 import re
 import sys
-from datetime import datetime
 from pathlib import Path
+from graphlib import TopologicalSorter, CycleError
 
 ID_RE = re.compile(r"^[A-Z]+-\d{4,}$")
 VALID_TYPES = {"feature", "bug", "chore", "spike"}
+VALID_PRIORITIES = {"high", "medium", "low"}
 VALID_STATUSES = {"todo", "in_progress", "blocked", "done", "deprecated"}
-REQUIRED_FIELDS = [
-    "title", "description", "type", "status", "effort_hours",
-    "satisfies_reqs", "acceptance_criteria",
-]
+REQUIRED_FIELDS = ["title", "type", "priority", "status"]
 
 
-def parse_iso_timestamp(s):
-    if not isinstance(s, str):
-        return None
-    try:
-        s2 = s[:-1] + "+00:00" if s.endswith("Z") else s
-        return datetime.fromisoformat(s2)
-    except ValueError:
-        return None
-
-
-def parse_milestones(milestones_path):
-    """Parse .specseed/spec/milestones.md to find milestone names like M1, M2.
-    Returns set of names, or None if file doesn't exist (milestones not in use).
-    """
-    if not milestones_path.exists():
-        return None
-    text = milestones_path.read_text(encoding="utf-8")
-    pattern = re.compile(r"^#+\s+(M\d+)\b", re.MULTILINE)
-    return set(pattern.findall(text))
-
-
-def validate_one(tid, t, all_ids, reqs, milestones, repo_root):
+def validate_one(tid, t, all_ids, reqs, epics_dir, issues):
     errors, warnings = [], []
 
     if not ID_RE.match(tid):
-        errors.append({"ticket_id": tid, "kind": "id_format",
-                       "detail": "ID must match /^[A-Z]+-\\d{4,}$/"})
-
+        errors.append({"id": tid, "kind": "id_format",
+                       "detail": "must match /^[A-Z]+-\\d{4,}$/"})
     if not isinstance(t, dict):
-        errors.append({"ticket_id": tid, "kind": "missing_field",
-                       "detail": "ticket entry is not an object"})
+        errors.append({"id": tid, "kind": "schema", "detail": "entry not an object"})
         return errors, warnings
 
-    # 2. Required fields
     for field in REQUIRED_FIELDS:
         if field not in t:
-            errors.append({"ticket_id": tid, "kind": "missing_field", "field": field})
-    # claim fields are also required keys
-    if "claimed_at" not in t:
-        errors.append({"ticket_id": tid, "kind": "missing_field", "field": "claimed_at"})
-    if "claimed_by" not in t:
-        errors.append({"ticket_id": tid, "kind": "missing_field", "field": "claimed_by"})
-
+            errors.append({"id": tid, "kind": "missing_field", "field": field})
     if any(e["kind"] == "missing_field" for e in errors):
         return errors, warnings
 
-    # 3. Enums
     if t["type"] not in VALID_TYPES:
-        errors.append({"ticket_id": tid, "kind": "enum_invalid", "field": "type",
-                       "value": t["type"]})
+        errors.append({"id": tid, "kind": "enum", "field": "type", "value": t["type"]})
+    if str(t["priority"]).lower() not in VALID_PRIORITIES:
+        errors.append({"id": tid, "kind": "enum", "field": "priority", "value": t["priority"]})
     if t["status"] not in VALID_STATUSES:
-        errors.append({"ticket_id": tid, "kind": "enum_invalid", "field": "status",
-                       "value": t["status"]})
+        errors.append({"id": tid, "kind": "enum", "field": "status", "value": t["status"]})
 
-    # 4. effort_hours
-    eh = t["effort_hours"]
-    if not isinstance(eh, (int, float)) or isinstance(eh, bool) or eh <= 0:
-        errors.append({"ticket_id": tid, "kind": "effort_invalid",
-                       "detail": f"effort_hours must be positive number, got {eh!r}"})
-
-    # 5. depends_on
-    deps = t.get("depends_on", [])
+    deps = t.get("depends_on", []) or []
     if not isinstance(deps, list):
-        errors.append({"ticket_id": tid, "kind": "missing_field",
-                       "field": "depends_on", "detail": "must be a list"})
+        errors.append({"id": tid, "kind": "schema", "field": "depends_on",
+                       "detail": "must be a list"})
     else:
         for d in deps:
             if d not in all_ids:
-                errors.append({"ticket_id": tid, "kind": "dangling_ref",
+                errors.append({"id": tid, "kind": "dangling_ref",
                                "field": "depends_on", "value": d})
 
-    # 6. satisfies_reqs
-    sat = t["satisfies_reqs"]
-    if not isinstance(sat, list) or not sat:
-        errors.append({"ticket_id": tid, "kind": "acceptance_invalid",
-                       "field": "satisfies_reqs",
-                       "detail": "must be non-empty list"})
+    sat = t.get("satisfies_reqs", []) or []
+    if not isinstance(sat, list):
+        errors.append({"id": tid, "kind": "schema", "field": "satisfies_reqs",
+                       "detail": "must be a list"})
+    elif not sat:
+        warnings.append({"id": tid, "kind": "empty_satisfies_reqs",
+                         "detail": "ticket satisfies no requirement"})
     else:
         for r in sat:
             if r not in reqs:
-                errors.append({"ticket_id": tid, "kind": "dangling_ref",
+                errors.append({"id": tid, "kind": "dangling_ref",
                                "field": "satisfies_reqs", "value": r})
 
-    # 7. acceptance_criteria
-    ac = t["acceptance_criteria"]
-    if not isinstance(ac, list) or not ac:
-        errors.append({"ticket_id": tid, "kind": "acceptance_invalid",
-                       "detail": "must be non-empty list"})
-    else:
-        for c in ac:
-            if not isinstance(c, str) or not c.strip():
-                errors.append({"ticket_id": tid, "kind": "acceptance_invalid",
-                               "detail": "each entry must be non-empty string"})
-                break
+    epic = t.get("epic")
+    if epic and epics_dir is not None:
+        if not (epics_dir / str(epic)).is_dir():
+            errors.append({"id": tid, "kind": "dangling_ref", "field": "epic",
+                           "value": epic, "detail": "no folder under epics/"})
 
-    # 8. artifacts
-    artifacts = t.get("artifacts", {})
-    if not isinstance(artifacts, dict):
-        errors.append({"ticket_id": tid, "kind": "artifacts_invalid",
-                       "detail": "artifacts must be an object"})
-    else:
-        for key in ("touches", "tests", "migrations"):
-            if key not in artifacts:
-                continue
-            val = artifacts[key]
-            if not isinstance(val, list):
-                errors.append({"ticket_id": tid, "kind": "artifacts_invalid",
-                               "field": f"artifacts.{key}",
-                               "detail": "must be a list"})
-                continue
-            type_ok = True
-            for path in val:
-                if not isinstance(path, str):
-                    errors.append({"ticket_id": tid, "kind": "artifacts_invalid",
-                                   "field": f"artifacts.{key}",
-                                   "detail": "entries must be strings"})
-                    type_ok = False
-                    break
-            if not type_ok:
-                continue
-            # Existence checks → warnings (not errors)
-            if key == "migrations":
-                for path in val:
-                    if not (repo_root / path).exists():
-                        warnings.append({
-                            "ticket_id": tid, "kind": "missing_migration_file",
-                            "field": "artifacts.migrations", "value": path,
-                            "detail": "path does not exist on disk",
-                        })
-            elif key == "tests":
-                for path in val:
-                    if not (repo_root / path).exists():
-                        warnings.append({
-                            "ticket_id": tid, "kind": "missing_test_file",
-                            "field": "artifacts.tests", "value": path,
-                            "detail": "path does not exist on disk",
-                        })
-
-    # 9. milestone
-    if "milestone" in t and milestones is not None:
-        ms = t["milestone"]
-        if ms not in milestones:
-            errors.append({"ticket_id": tid, "kind": "milestone_unknown",
-                           "field": "milestone", "value": ms})
-
-    # 10. Claim invariants
-    ca = t["claimed_at"]
-    cb = t["claimed_by"]
-    status = t.get("status")
-
-    if ca is not None:
-        if not isinstance(ca, str) or parse_iso_timestamp(ca) is None:
-            errors.append({"ticket_id": tid, "kind": "claim_invariant",
-                           "field": "claimed_at",
-                           "detail": f"must be null or ISO-8601 timestamp, got {ca!r}"})
-    if cb is not None:
-        if not isinstance(cb, str) or not cb.strip():
-            errors.append({"ticket_id": tid, "kind": "claim_invariant",
-                           "field": "claimed_by",
-                           "detail": "must be null or non-empty string"})
-
-    if (ca is None) != (cb is None):
-        errors.append({"ticket_id": tid, "kind": "claim_invariant",
-                       "field": "claimed_at/claimed_by",
-                       "detail": "both must be null or both populated"})
-    else:
-        has_claim = ca is not None
-        if status == "in_progress" and not has_claim:
-            errors.append({"ticket_id": tid, "kind": "claim_invariant",
-                           "field": "claimed_at",
-                           "detail": "status=in_progress but claim fields are null"})
-        elif status in ("todo", "done", "deprecated") and has_claim:
-            errors.append({"ticket_id": tid, "kind": "claim_invariant",
-                           "field": "claimed_at",
-                           "detail": f"status={status} but claim fields are populated"})
-        # status=blocked: either OK
-
+    listed = t.get("issues", []) or []
+    if listed and issues is not None:
+        for iid in listed:
+            if iid not in issues:
+                errors.append({"id": tid, "kind": "dangling_ref", "field": "issues",
+                               "value": iid, "detail": "not in issues.json"})
+            elif issues[iid].get("ticket") != tid:
+                errors.append({"id": tid, "kind": "back_ref",
+                               "field": "issues", "value": iid,
+                               "detail": f"issue.ticket={issues[iid].get('ticket')!r}, "
+                                         f"expected {tid!r}"})
     return errors, warnings
 
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--tickets-path", default=".specseed/spec/tickets.json")
+    p.add_argument("--pm-dir", default=".specseed/project_management")
+    p.add_argument("--tickets-path", default=None)
+    p.add_argument("--issues-path", default=None)
     p.add_argument("--reqs-path", default=".specseed/spec/reqs.json")
-    p.add_argument("--milestones-path", default=".specseed/spec/milestones.md")
-    p.add_argument("--repo-root", default=".")
     args = p.parse_args()
 
-    tickets_path = Path(args.tickets_path)
+    pm = Path(args.pm_dir)
+    tickets_path = Path(args.tickets_path) if args.tickets_path else pm / "tickets.json"
+    issues_path = Path(args.issues_path) if args.issues_path else pm / "issues.json"
     reqs_path = Path(args.reqs_path)
-    milestones_path = Path(args.milestones_path)
-    repo_root = Path(args.repo_root)
+    epics_dir = pm / "epics"
 
     if not tickets_path.exists():
-        print(f"ERROR: {tickets_path} not found", file=sys.stderr)
+        print(f"ERROR: {tickets_path} not found (run tickets_assemble.py)", file=sys.stderr)
         sys.exit(2)
     if not reqs_path.exists():
         print(f"ERROR: {reqs_path} not found — cannot validate satisfies_reqs",
@@ -243,34 +135,42 @@ def main():
         sys.exit(2)
 
     if not isinstance(tickets, dict):
-        print(f"ERROR: tickets.json root must be an object", file=sys.stderr)
+        print("ERROR: tickets.json root must be an object", file=sys.stderr)
         sys.exit(2)
 
-    milestones = parse_milestones(milestones_path)
-    all_ids = set(tickets.keys())
+    issues = None
+    if issues_path.exists():
+        try:
+            issues = json.loads(issues_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            issues = None
+    epics = epics_dir if epics_dir.exists() else None
 
+    all_ids = set(tickets.keys())
     all_errors, all_warnings = [], []
     for tid, t in tickets.items():
-        errs, warns = validate_one(tid, t, all_ids, reqs, milestones, repo_root)
+        errs, warns = validate_one(tid, t, all_ids, reqs, epics, issues)
         all_errors.extend(errs)
         all_warnings.extend(warns)
 
-    if all_errors:
-        print(json.dumps({
-            "valid": False,
-            "errors": all_errors,
-            "warnings": all_warnings,
-        }, indent=2))
-        sys.exit(1)
+    # Cycle check across the ticket DAG
+    try:
+        TopologicalSorter({tid: set(t.get("depends_on", []) or [])
+                           for tid, t in tickets.items()
+                           if isinstance(t, dict)}).prepare()
+    except CycleError as e:
+        all_errors.append({"id": "*", "kind": "cycle", "detail": str(e.args[1])})
 
+    if all_errors:
+        print(json.dumps({"valid": False, "errors": all_errors,
+                          "warnings": all_warnings}, indent=2))
+        sys.exit(1)
     if all_warnings:
         print(f"OK with {len(all_warnings)} warning(s) on {len(tickets)} ticket(s):")
         for w in all_warnings:
-            val = w.get("value", "")
-            detail = w.get("detail", "")
-            print(f"  {w['ticket_id']} [{w['kind']}]: {detail} {val}".strip())
+            print(f"  {w['id']} [{w['kind']}]: {w.get('detail', '')} "
+                  f"{w.get('value', '')}".strip())
         sys.exit(0)
-
     print(f"OK: {len(tickets)} tickets validated")
     sys.exit(0)
 
