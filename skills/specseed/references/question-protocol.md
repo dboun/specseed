@@ -65,7 +65,7 @@ After user accepts a round:
 - If user replied `OK` (all suggestions taken) on first try → **NO summary**. Move directly to next round or stage
 - If user overrode any option, or round had back-and-forth → 1-line summary of what got locked, then move on
 
-**Never re-recite locked decisions for ceremony.** Locked = locked, written to `memory.md` (if revision-gated cadence triggers), no need to repeat.
+**Never re-recite locked decisions for ceremony.** Locked = locked, written to `session_state.md` (if revision-gated cadence triggers), no need to repeat.
 
 ## Themes-upfront rule
 
@@ -125,7 +125,7 @@ Apply this filter when drafting each Q. If filter triggers, the Q is replaced by
 
 Tied to whether the round had revisions:
 
-- **Round had revisions or pivots** → write to `memory.md` under `## <stage>/round-<N>`:
+- **Round had revisions or pivots** → write to `session_state.md` under `## <stage>/round-<N>`:
   ```
   ## <stage>/round-<N>
   - 1: <locked option letter, or summary of free-text>
@@ -135,7 +135,7 @@ Tied to whether the round had revisions:
 
 - **Round was pure-OK first try** → skip the round entry entirely
 
-- **Auto-declared choices (filter 2)** → write to `memory.md` under `## <stage>/auto-declared`:
+- **Auto-declared choices (filter 2)** → write to `session_state.md` under `## <stage>/auto-declared`:
   ```
   ## <stage>/auto-declared
   - Going with X for <concern> (90%+ confidence, not contradicted by user)

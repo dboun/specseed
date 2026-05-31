@@ -13,13 +13,22 @@ Two modes:
 "Ready" issue (for auto-pick): status in {todo, blocked}, unclaimed, its own
 intra-ticket depends_on all done, AND its parent ticket is reachable (the
 ticket's depends_on tickets are all done/deprecated). Among ready issues,
-ordering is prerequisite-first: by parent-ticket topo rank, then issue topo
-rank, then id. NOTE: critical-path weighting is NOT applied here — readiness +
-topo only. Run tickets_analyze.py for the ticket critical path.
+ordering is prerequisite-first: by SPRINT rank, then parent-ticket topo rank,
+then issue topo rank, then id. NOTE: critical-path weighting is NOT applied here
+— readiness + topo only. Run tickets_analyze.py for the ticket critical path.
+
+Sprint scoping (--sprint-scope, default `spill`): if sprints.json is present,
+issues whose parent ticket is in an `active` sprint are picked first; only when
+NONE of those are ready does the picker spill to the next planned sprint (by
+sprint `order`), and finally to backlog (tickets in no/done sprint). `current`
+forbids the spill (active sprint only); `all` ignores sprints entirely (legacy
+behaviour). With no sprints.json, behaviour is always `all`. Sprint scoping
+applies only to AUTO-PICK; claiming a specific issue id is never sprint-gated.
 
 Uses fcntl.flock on issues.json for the read-verify-write critical section.
-tickets.json is read (unlocked) for parent-ticket reachability + ordering; if
-absent, all parents are treated as reachable.
+tickets.json + sprints.json are read (unlocked) for parent-ticket reachability,
+sprint rank + ordering; if absent, all parents are reachable and sprint rank is
+flat.
 
 Output: JSON to stdout. Exit 0 for normal outcomes (claimed or refused);
 2 for lock-timeout / IO / schema errors.
@@ -101,6 +110,66 @@ def load_tickets(tickets_path):
         return None
 
 
+def load_sprints(sprints_path):
+    if not sprints_path.exists():
+        return None
+    try:
+        return json.loads(sprints_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+
+
+# sprint rank tiers (lower = picked first)
+ACTIVE_TIER, PLANNED_TIER, BACKLOG_TIER = 0, 1, 2
+
+
+def sprint_rank_map(sprints):
+    """sprint_id -> (tier, order). Active sprints rank ahead of planned (by
+    order); done/deprecated sprints are treated as backlog. Returns {} if no
+    sprints data."""
+    if not sprints:
+        return {}
+    out = {}
+    for sid, s in sprints.items():
+        status = s.get("status", "planned")
+        order = s.get("order", 0)
+        if status == "active":
+            out[sid] = (ACTIVE_TIER, order)
+        elif status == "planned":
+            out[sid] = (PLANNED_TIER, order)
+        else:  # done / deprecated → backlog priority
+            out[sid] = (BACKLOG_TIER, order)
+    return out
+
+
+def ticket_sprint_map(tickets, sprints):
+    """ticket_id -> sprint_id. Prefer the per-ticket `sprint` field; fall back
+    to sprint membership lists."""
+    out = {}
+    if sprints:
+        for sid, s in sprints.items():
+            for tid in s.get("tickets", []) or []:
+                out.setdefault(tid, sid)
+    if tickets:
+        for tid, t in tickets.items():
+            sp = t.get("sprint")
+            if sp:
+                out[tid] = sp
+    return out
+
+
+def issue_sprint_rank(issue, tickets, t_sprint, s_rank):
+    """(tier, order) for an issue, via its parent ticket's sprint. Backlog tier
+    for unknown/unassigned. Flat (0,0) when there's no sprint data."""
+    if not s_rank:
+        return (0, 0)
+    parent = issue.get("ticket")
+    sid = t_sprint.get(parent) if parent else None
+    if sid is None:
+        return (BACKLOG_TIER, 0)
+    return s_rank.get(sid, (BACKLOG_TIER, 0))
+
+
 def ticket_done_map(tickets, issues):
     """ticket_id -> bool. A ticket counts as done if its status is done/
     deprecated, OR it has issues and all of them are done/deprecated. This is
@@ -149,8 +218,15 @@ def issue_deps_met(issue, issues):
     return True
 
 
-def pick_next(issues, tickets, tdone, skip):
-    """Return id of next ready issue, or None."""
+def pick_next(issues, tickets, tdone, skip, t_sprint, s_rank, sprint_scope):
+    """Return id of next ready issue, or None.
+
+    sprint_scope ∈ {current, spill, all}. With sprint data present, eligible
+    issues are sorted by sprint tier/order first (active before planned before
+    backlog) — so the picker spills to the next sprint only when nothing in the
+    active sprint is ready. `current` filters to the active sprint only; `all`
+    ignores sprint rank.
+    """
     ticket_graph = {}
     if tickets:
         ticket_graph = {tid: list(t.get("depends_on", []) or [])
@@ -159,6 +235,7 @@ def pick_next(issues, tickets, tdone, skip):
     i_graph = {iid: [d for d in (ie.get("depends_on", []) or []) if d in issues]
                for iid, ie in issues.items()}
     i_rank = topo_rank(i_graph)
+    use_sprints = bool(s_rank) and sprint_scope != "all"
 
     eligible = []
     for iid, ie in issues.items():
@@ -172,11 +249,16 @@ def pick_next(issues, tickets, tdone, skip):
             continue
         if not ticket_reachable(ie.get("ticket"), tickets, tdone):
             continue
+        if use_sprints and sprint_scope == "current":
+            tier, _ = issue_sprint_rank(ie, tickets, t_sprint, s_rank)
+            if tier != ACTIVE_TIER:
+                continue
         eligible.append(iid)
 
     if not eligible:
         return None
     eligible.sort(key=lambda i: (
+        issue_sprint_rank(issues[i], tickets, t_sprint, s_rank) if use_sprints else (0, 0),
         t_rank.get(issues[i].get("ticket"), 1_000_000),
         i_rank.get(i, 1_000_000),
         i,
@@ -240,11 +322,17 @@ def main():
     p.add_argument("--pm-dir", default=".specseed/project_management")
     p.add_argument("--issues-path", default=None)
     p.add_argument("--tickets-path", default=None)
+    p.add_argument("--sprints-path", default=None)
+    p.add_argument("--sprint-scope", choices=["current", "spill", "all"],
+                   default="spill",
+                   help="auto-pick scope: current sprint only / spill to next "
+                        "(default) / ignore sprints")
     args = p.parse_args()
 
     pm = Path(args.pm_dir)
     issues_path = Path(args.issues_path) if args.issues_path else pm / "issues.json"
     tickets_path = Path(args.tickets_path) if args.tickets_path else pm / "tickets.json"
+    sprints_path = Path(args.sprints_path) if args.sprints_path else pm / "sprints.json"
     agent = args.agent or default_agent_id()
     skip = {s.strip() for s in args.skip.split(",") if s.strip()}
 
@@ -253,6 +341,9 @@ def main():
         sys.exit(2)
 
     tickets = load_tickets(tickets_path)
+    sprints = load_sprints(sprints_path)
+    s_rank = sprint_rank_map(sprints)
+    t_sprint = ticket_sprint_map(tickets, sprints)
 
     f = acquire_lock(issues_path, args.lock_timeout)
     if f is None:
@@ -272,10 +363,14 @@ def main():
 
         target = args.issue_id
         if target is None:
-            target = pick_next(issues, tickets, tdone, skip)
+            target = pick_next(issues, tickets, tdone, skip, t_sprint, s_rank,
+                               args.sprint_scope)
             if target is None:
+                reason = ("no ready issue in the active sprint"
+                          if (s_rank and args.sprint_scope == "current")
+                          else "no ready issue to claim")
                 report({"claimed": False, "issue_id": None,
-                        "reason": "no ready issue to claim", "stale": False})
+                        "reason": reason, "stale": False})
 
         payload, claimed = do_claim(target, issues, agent, args.stale_hours,
                                     args.no_stale_takeover, tickets, tdone)

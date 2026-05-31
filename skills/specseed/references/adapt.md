@@ -28,7 +28,7 @@ Read in this order:
 4. All `*sdd.md`
 5. `.specseed/spec/adr.csv`
 6. `.specseed/spec/reqs.json`
-7. `.specseed/project_management/ROADMAP.md`, then `tickets.json` + `issues.json` (assembled indexes). To re-read the authored source, look in `project_management/{epics,tickets,issues}/<ID>/`
+7. `.specseed/project_management/ROADMAP.md` + `TIMELINE.md`, then `tickets.json` + `issues.json` + `sprints.json` (assembled indexes). To re-read the authored source, look in `project_management/{epics,tickets,issues,sprints}/<ID>/`
 8. `.specseed/spec/deployment.md` if present
 
 Scan for open `spec_concern.md` files under `.specseed/project_management/issues/*/`. These were written by implementation agents that hit a settled doc they thought was wrong mid-issue. Note their existence; they're candidate triggers for this session (see stage 2).
@@ -43,7 +43,7 @@ Surface a **1-paragraph state-of-spec summary** to user: components, settle stat
 **Repo mode:** run scripts directly.
 **Chat mode:** if user has scripts wired, ask them to paste output; otherwise skill notes what would be checked and proceeds without it.
 
-If any user-provided script (`requirements_analyze.py`, `tickets_analyze.py`) is missing, note it now and ask user.
+The analysis-seam scripts (`requirements_analyze.py`, `tickets_analyze.py`, `sprint_plan.py`) are shipped; if an org swapped one for its own and it's missing, fall back to the shipped version (or note the contract and proceed).
 
 ---
 
@@ -55,7 +55,7 @@ The trigger is one of:
 
 > "What's changing? Why now? What must NOT break?"
 
-Free-form answer expected — not a structured round. Capture in `memory.md` under `## Adapt trigger`.
+Free-form answer expected — not a structured round. Capture in `session_state.md` under `## Adapt trigger`.
 
 **Spec-concern trigger.** If stage 1 found one or more open `spec_concern.md` files, offer them as triggers first:
 
@@ -92,7 +92,8 @@ Impact map:
 - project_management/tickets/: PROJ-0023 new (satisfies SRS-API-042/043); PROJ-0011 product AC revised
 - project_management/issues/: FEAT-0101..0103 new under PROJ-0023
 - ROADMAP.md: add PROJ-0023 under EPIC-0002
-- reassemble: issues.json + tickets.json
+- sprints/: assign PROJ-0023 to SPRINT_2026_W03_A (next planned)
+- reassemble: issues.json + tickets.json + sprints.json; re-render TIMELINE.md
 ```
 
 User confirms before drafting begins.
@@ -150,15 +151,17 @@ Skip rounds entirely if delta-map is unambiguous and user's trigger already cove
 After patches:
 1. Re-run `.specseed/scripts/requirements_generate_json.py` (regenerates `reqs.json` from SRS)
 2. Re-run `.specseed/scripts/requirements_analyze.py` — any new cycles/orphans/dangling refs? Apply cycle resolution moves from bootstrap stage 9
-3. After any ticket/issue folder edit, re-assemble + validate BOTH tiers (issues first — ticket effort/counts sum from issues):
+3. After any ticket/issue/sprint folder edit, re-assemble + validate the tiers (issues → tickets → sprints; each derives from the tier below):
    ```bash
    python .specseed/scripts/issues_assemble.py
    python .specseed/scripts/tickets_assemble.py
+   python .specseed/scripts/sprints_assemble.py    # if sprints/ exists
    python .specseed/scripts/issues_validate.py
    python .specseed/scripts/tickets_validate.py
+   python .specseed/scripts/sprints_validate.py     # if sprints/ exists
    ```
-   (Assemble preserves live runtime status/claim — it won't reset in-flight or done issues.)
-4. Re-run `.specseed/scripts/tickets_analyze.py .specseed/project_management/tickets.json` — critical path shifted? Surface to user if so. Then `python .specseed/scripts/roadmap_render.py` to refresh ROADMAP `(X/Y complete)` counts.
+   (Assemble preserves live runtime status/claim — it won't reset in-flight or done issues, nor a sprint's `active` flag.)
+4. Re-run `.specseed/scripts/tickets_analyze.py .specseed/project_management/tickets.json` — critical path shifted? Surface to user if so. Then refresh the views: `python .specseed/scripts/roadmap_render.py` (ROADMAP `(X/Y)` counts) and, if sprints exist, `python .specseed/scripts/timeline_render.py` (TIMELINE).
 5. (Optional) re-run `.specseed/scripts/drift_check.py` to confirm the trigger drift item(s) are no longer flagged
 
 **Repo mode:** agent runs these directly.
@@ -172,6 +175,7 @@ Edit the FOLDERS (source of truth), then re-assemble (stage 6 cascade).
 
 - Mark obsolete tickets/issues `status: "deprecated"` in their folder frontmatter (do not delete)
 - Add new tickets/issues if scope expanded (use `references/work-breakdown.md`) — new folders + back-links (ticket `issues:` ⟷ issue `ticket:`); add titles to `ROADMAP.md`
+- **Sprint assignment for new tickets** (if the project uses sprints): assign each new ticket a `sprint:` respecting the backward-dep rule (deps in same/earlier sprint) and the ~168h budget — usually the active or next planned sprint, or a new sprint folder. Update that sprint's `tickets:` list. Mind cohesion / `.specseed/memory/sprint_planning.md` prefs. A bigger re-balance can use `sprint_plan.py` as a fresh proposal. Deprecating a ticket → drop it from its sprint's `tickets:` and re-assemble.
 - Revise a ticket's product acceptance criteria (or an issue's technical AC) in its prose body if reqs changed; note in the issue `notes` field: `"AC revised <date>: <reason>"`
 - If a ticket/issue was `done` but its underlying req changed, set `status: "blocked"` with a note for the user to triage
 - If resolving a `spec_concern.md`, unblock the originating issue per stage 5
@@ -199,7 +203,7 @@ Append-only — never edit existing rows.
 
 ## Stage 10: Session end
 
-- Update `memory.md` with one-line "adapt session completed <date>: <summary>" then delete (or move to changelog if user asks)
+- Update `session_state.md` with one-line "adapt session completed <date>: <summary>" then delete (or move to changelog if user asks)
 - Note any open TODOs (e.g. tickets needing triage from stage 7)
 - Note any open `spec_concern.md` files NOT addressed this session — they remain for future adapt sessions
 
@@ -243,7 +247,7 @@ In a single pass:
 - **SRS reqs:** mark each `[RETIRED <ISO date>: reason]` (same mechanism as deprecation; do not delete — preserves ID space and traceability). Move to a `## Retired` section if the SRS now has 3+ retired reqs.
 - **SAD:** remove the feature's component/interface/data-flow blocks. Log structural change to ADR.
 - **SDD:** remove the feature's section(s) entirely. SDD is the *how*; retired features have no how.
-- **Tickets + issues:** mark all related tickets AND their issues `status: "deprecated"` in their folder frontmatter (including `done` ones — they shipped, but the feature is being retired). Do NOT delete. Remove their titles from `ROADMAP.md`. Re-assemble both tiers.
+- **Tickets + issues:** mark all related tickets AND their issues `status: "deprecated"` in their folder frontmatter (including `done` ones — they shipped, but the feature is being retired). Do NOT delete. Remove their titles from `ROADMAP.md`, and drop the retired ticket ids from any sprint's `tickets:` list. Re-assemble all tiers + re-render TIMELINE.
 - **Tests:** delete them. Feature gone → tests are dead weight. Git history preserves if needed. Update `artifacts.tests` lists on the deprecated issues.
 - **ADR:** append a retirement row: `"Retired <feature>","<reason>"`. Also append a row noting any prior ADR rows about this feature are now historical context.
 

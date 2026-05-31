@@ -15,7 +15,7 @@ Runs in one of three modes (no need to explicitly specify, could also be inferre
 
 Trigger via `/specseed <mode>` or natural-language asks like "spec out this project" / "draft requirements" / "add a req".
 
-The output lives under `.specseed/` — `spec/` (vision, SRS, SAD, SDD, ADRs, reqs) and `project_management/` (ROADMAP + epics → tickets → issues) — plus a root `CLAUDE.md` that tells implementation agents how to pick up *issues* and execute them. The skill enforces a settled-doc contract: once approved, spec docs aren't edited mid-implementation — agents that hit a problem file a `spec_concern.md` for the next adapt session.
+The output lives under `.specseed/` — `spec/` (vision, SRS, SAD, SDD, ADRs, reqs) and `project_management/` (ROADMAP + epics → tickets → issues, plus optional **sprints** that batch tickets into ~weekly time-boxes and a generated `TIMELINE.md`) — plus a root `CLAUDE.md` that tells implementation agents how to pick up *issues* and execute them (sprint-scoped: the active sprint's work first). The skill enforces a settled-doc contract: once approved, spec docs aren't edited mid-implementation — agents that hit a problem file a `spec_concern.md` for the next adapt session.
 
 
 ## Install

@@ -2,7 +2,7 @@
 
 Tiny single-doc edits. Single req add, priority change, typo fix, status flip. Anything that doesn't warrant the full adapt flow.
 
-**Default flow is minimal: locate → diff → confirm → apply.** No question rounds. No `memory.md`. May auto-escalate to adapt mode if triggers fire (see end of file).
+**Default flow is minimal: locate → diff → confirm → apply.** No question rounds. No `session_state.md`. May auto-escalate to adapt mode if triggers fire (see end of file).
 
 ## Flow
 
@@ -16,6 +16,8 @@ Common tweak patterns:
 - "Change priority of SRS-API-007 to should" → find file containing that ID
 - "Mark FEAT-0042 as blocked, reason: waiting on FEAT-0041" → that issue's folder frontmatter `project_management/issues/FEAT-0042/FEAT-0042.md` (FEAT-* is an issue)
 - "Change priority of PROJ-0042 to medium" → that ticket's folder `project_management/tickets/PROJ-0042/PROJ-0042.md`
+- "Move PROJ-0042 to SPRINT_2026_W02_A" → set ticket `sprint:` + update both sprints' `tickets:` lists (the SRS+ticket-style two-file carve-out; re-assemble sprints, re-render TIMELINE)
+- "Mark SPRINT_2026_W02_A active" → that sprint's folder frontmatter `status: active`
 - "Fix typo in vision.md" → that file
 
 Note: ticket/issue edits change the FOLDER (source of truth), then re-assemble (step 6). Don't hand-edit `tickets.json`/`issues.json` — they're generated.
@@ -59,6 +61,7 @@ Write the change. **Repo mode:** edit the file in place. **Chat mode:** deliver 
 After apply:
 - If a SRS file changed → reqs.json must be regenerated → run (or remind user to run) `python .specseed/scripts/requirements_generate_json.py`, then `python .specseed/scripts/requirements_analyze.py`
 - If a ticket/issue folder changed → re-assemble + validate (issues first): `issues_assemble.py` → `tickets_assemble.py` → `issues_validate.py` → `tickets_validate.py`, then `tickets_analyze.py .specseed/project_management/tickets.json`. If a ticket's issue set changed, run `roadmap_render.py` to refresh ROADMAP `(X/Y)` counts.
+- If a sprint folder changed OR a ticket's `sprint:` changed → also `sprints_assemble.py` → `sprints_validate.py` → `timeline_render.py` (regenerates TIMELINE.md).
 - If both SRS and a ticket/issue changed (SRS+ticket combo) → run the req scripts then the assemble/validate cascade
 - If vision/sad/adr changed → no script triggers, just the edit
 
@@ -76,7 +79,7 @@ Run through escalation triggers (next section). If any fire, escalate to adapt m
 Tweak mode auto-escalates to adapt mode when ANY of these fire:
 
 1. **Settled-doc reopen.** The edit touches a file with `settled: true` frontmatter. Require explicit user OK to reopen + log to `adr.csv`. Then escalate
-2. **Analyzer reports a problem.** Post-apply, `requirements_analyze.py` reports new cycle / orphan / dangling-ref, OR `tickets_validate.py` / `issues_validate.py` reports a schema/ref violation, OR `tickets_analyze.py` reports a critical-path shift. Escalate
+2. **Analyzer reports a problem.** Post-apply, `requirements_analyze.py` reports new cycle / orphan / dangling-ref, OR `tickets_validate.py` / `issues_validate.py` / `sprints_validate.py` reports a schema/ref violation (e.g. a backward sprint dep), OR `tickets_analyze.py` reports a critical-path shift. Escalate
 3. **Cross-doc fanout beyond the SRS+ticket carve-out.** Tweak handles ONE doc, OR the specific combo "SRS req add/change + one matching ticket add/change (+ its issues)". Anything else (SRS + SAD, SRS + SDD, SAD + tickets, multiple SRS files, multiple tickets, epic restructuring, etc.) → escalate
 4. **User signals deeper concern.** User free-texts a follow-up question, concern, or "wait, what about…" beyond a simple "apply / iterate diff / done". Escalate
 
@@ -99,7 +102,7 @@ When escalating:
 ## What NOT to do in tweak mode
 
 - Don't run multi-round questioning — that's adapt's job
-- Don't load `memory.md` or write to it — tweak is stateless
+- Don't load `session_state.md` or write to it — tweak is stateless
 - Don't deliver unchanged files in chat mode
 - Don't silently rewrite a settled doc — escalate first
 - Don't skip the diff step even if the edit feels obvious — review is the safety rail

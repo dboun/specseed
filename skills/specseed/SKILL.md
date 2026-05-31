@@ -1,6 +1,6 @@
 ---
 name: specseed
-description: Documentation-driven development spec creation skill. Use whenever user wants to create, draft, update, or revise software specification artifacts — vision, SRS (Software Requirements Spec), SAD (Software Architecture Doc), ADRs, SDD, requirements JSON — plus the project-management work breakdown (ROADMAP, epics, tickets, issues) — for greenfield projects or adapting existing codebases. Trigger on `/specseed` slash command and on phrases like "spec out", "draft requirements", "plan this project", "update the SRS", "add a requirement", "generate tickets", "break into issues", "roadmap", "design doc", "what should we build". Also trigger when user starts a new software project and discusses scope, requirements, or architecture without naming a doc — they likely need this.
+description: Documentation-driven development spec creation skill. Use whenever user wants to create, draft, update, or revise software specification artifacts — vision, SRS (Software Requirements Spec), SAD (Software Architecture Doc), ADRs, SDD, requirements JSON — plus the project-management work breakdown (ROADMAP, epics, tickets, issues, sprints, TIMELINE) — for greenfield projects or adapting existing codebases. Trigger on `/specseed` slash command and on phrases like "spec out", "draft requirements", "plan this project", "update the SRS", "add a requirement", "generate tickets", "break into issues", "roadmap", "plan sprints", "assign to a sprint", "design doc", "what should we build". Also trigger when user starts a new software project and discusses scope, requirements, or architecture without naming a doc — they likely need this.
 ---
 
 # specseed
@@ -36,7 +36,7 @@ Read user message + conversation. Pick ONE mode, commit for the session, do not 
 Ambiguous → ask user once which mode. Don't guess.
 
 **Mid-session stop:** at any time, user may say `/specseed stop` (or "stop", "exit", "end session"). On receipt:
-1. Write rollup of current state to `memory.md` (or chat artifact in chat mode) — what's done, what's pending, what was about to happen next
+1. Write rollup of current state to `.specseed/memory/session_state.md` (or chat artifact in chat mode) — what's done, what's pending, what was about to happen next
 2. Deliver any artifacts already drafted but not yet handed off
 3. Tell user how to resume (re-invoke `/specseed`; the skill will detect existing state and pick up)
 4. Exit cleanly. Do not push to finish, do not guilt the user, do not ask "are you sure"
@@ -63,7 +63,11 @@ Then route to mode file.
 
 ## Memory protocol
 
-Session scratch at `.specseed/memory.md` (repo) or chat artifact (no-repo). Holds:
+**Rule: ALL skill memory lives under `.specseed/memory/`** (a directory, never a bare file at `.specseed/` root). Two files today:
+- `session_state.md` — **session scratch**, the resume/compression-survival file (was `.specseed/memory.md`). Deleted at session end; preserved on `/specseed stop`.
+- `sprint_planning.md` — **reusable** sprint-planning preferences that PERSIST across sessions (e.g. "keep auth + session tickets in one sprint", "leave ~15% slack"). Write ONLY durable, generalizable prefs the user states during planning — keep it tiny, not session chatter, not one-off placements. Never deleted at session end.
+
+`session_state.md` (repo) or chat artifact (no-repo) holds:
 - Current workflow stage + sub-step
 - Per-component summaries when components done
 - Locked decisions not yet on disk
@@ -75,9 +79,9 @@ Session scratch at `.specseed/memory.md` (repo) or chat artifact (no-repo). Hold
 
 **Compression hooks:** at natural semantic checkpoints — after each per-component stage done, after settle, after critical-path review — skill *proposes* "consider compress now?" and waits. Does not auto-compress.
 
-**After any context compression: reread `SKILL.md`, then `memory.md` to resume.** Bake this into the last line of `memory.md`: `On resume: reread SKILL.md first, then this file.`
+**After any context compression: reread `SKILL.md`, then `.specseed/memory/session_state.md` to resume.** Bake this into the last line of `session_state.md`: `On resume: reread SKILL.md first, then this file.`
 
-**Delete `.specseed/memory.md` at session end** (or move salient bits to a changelog if user asks). On `/specseed stop` mid-session, KEEP `.specseed/memory.md` intact so resume works on next invocation.
+**Delete `.specseed/memory/session_state.md` at session end** (or move salient bits to a changelog if user asks). On `/specseed stop` mid-session, KEEP it intact so resume works on next invocation. `sprint_planning.md` is NOT deleted — it is durable cross-session memory.
 
 ## Output destination
 
@@ -111,7 +115,9 @@ AGENTS.md                       # one line: "Read ./CLAUDE.md. In dirs you work 
 
 # ---- .specseed/ (all spec artifacts + runtime) ----
 .specseed/
-├── memory.md                   # session scratch — deleted at end; preserved on /specseed stop
+├── memory/                     # ALL skill memory lives here (dir, not a single file)
+│   ├── session_state.md        #   session scratch — deleted at end; preserved on /specseed stop
+│   └── sprint_planning.md      #   reusable sprint-planning prefs (tiny, persists across sessions)
 ├── spec/                       # the WHAT/WHY/HOW layer (requirements & design)
 │   ├── vision.md
 │   ├── sad.md
@@ -122,7 +128,8 @@ AGENTS.md                       # one line: "Read ./CLAUDE.md. In dirs you work 
 │   ├── reqs.json               # generated from SRS tables
 │   └── deployment.md           # OPTIONAL — only if Operations theme flagged in component questioning
 └── project_management/         # the WORK layer: epics → tickets → issues (3 tiers, always present)
-    ├── ROADMAP.md              # phases → subsections → epics → ticket titles w/ "(X/Y complete)" issue counts
+    ├── ROADMAP.md              # STRATEGIC map: phases → subsections → epics → ticket titles w/ "(X/Y complete)". Sprints NEVER appear here.
+    ├── TIMELINE.md             # TACTICAL schedule: sprints in execution order (GENERATED by timeline_render.py)
     ├── epics/
     │   └── <EPIC-NNNN>/
     │       └── <EPIC-NNNN>.md  # frontmatter + NON-TECHNICAL prose (goal / outcome / why)
@@ -138,21 +145,29 @@ AGENTS.md                       # one line: "Read ./CLAUDE.md. In dirs you work 
     │       ├── spec_concern.md # OPTIONAL — written by impl agent if a settled doc looks wrong mid-issue
     │       └── step_reports/
     │           └── <X>_<step>_<desc>.md
+    ├── sprints/
+    │   └── <SPRINT_YYYY_WWW_X>/
+    │       └── <SPRINT_YYYY_WWW_X>.md  # frontmatter (status, starts/ends, tickets[]) + prose (goal, carry-over notes)
     ├── tickets.json            # GENERATED by tickets_assemble.py (folders are source of truth, NOT this)
-    └── issues.json             # GENERATED by issues_assemble.py (folders are source of truth, NOT this)
+    ├── issues.json             # GENERATED by issues_assemble.py (folders are source of truth, NOT this)
+    └── sprints.json            # GENERATED by sprints_assemble.py (folders are source of truth, NOT this)
 
 # ---- .specseed/scripts/ ----
 scripts/                        # may grow subfolders as more tooling is added
 ├── requirements_generate_json.py   # parses SRS table rows → reqs.json
-├── requirements_analyze.py         # USER-PROVIDED — req cycle/orphan detection
+├── requirements_analyze.py         # req cycle/orphan detection (shipped; editable analysis seam)
 ├── issues_assemble.py              # issue folders → issues.json
 ├── tickets_assemble.py             # ticket folders → tickets.json (derives effort + X/Y counts from issues)
+├── sprints_assemble.py             # sprint folders → sprints.json (derives effort + ticket counts from tickets)
 ├── issues_validate.py              # issue-tier schema/refs/claim-invariant checks
 ├── tickets_validate.py             # ticket-tier schema/refs/cycle checks (kept SEPARATE — see below)
-├── tickets_analyze.py              # USER-PROVIDED — ticket critical path + build order
+├── sprints_validate.py             # sprint-tier: refs, back-consistency, NO backward sprint deps, budget
+├── tickets_analyze.py              # ticket critical path + build order (shipped; editable analysis seam) — PROJECT-level, NOT per-sprint
+├── sprint_plan.py                  # ADVISORY sprint packing proposal (cohesion-aware, CP-first, budget); never writes
 ├── issue_info.py                   # issue + parent ticket + reqs joined from parent ticket
-├── claim_issue.py                  # atomic issue claim; no-arg auto-picks next ready issue; --skip; stale recovery
+├── claim_issue.py                  # atomic issue claim; no-arg auto-picks next ready issue; sprint-scoped (--sprint-scope); --skip; stale recovery
 ├── roadmap_render.py               # bump "(X/Y complete)" counts on ticket lines in ROADMAP.md from tickets.json
+├── timeline_render.py              # regenerate TIMELINE.md (sprint schedule) from sprints.json + tickets.json
 ├── verification_map.py             # inverse map: req → ticket → issues → test files
 └── drift_check.py                  # mechanical spec-vs-reality drift surface
 ```
@@ -160,16 +175,17 @@ scripts/                        # may grow subfolders as more tooling is added
 Notes:
 - **Three work tiers, always present:** `epic → ticket → issue`. **Epics + tickets are PM / non-technical** (outcomes, user-visible value). **Issues are technical** — the unit an agent claims and executes (carry `artifacts`, `effort_hours`, `plan.md`, `step_reports/`). An issue MAY belong to a ticket; a ticket MAY belong to an epic. There is NO separate "story" tier — a user story is a section inside a ticket's prose body.
 - **Folders are the source of truth.** Each entity = a folder with a main `<id>.md`: YAML-ish **frontmatter** (machine fields) + markdown **prose** body (human text). `tickets.json` / `issues.json` are GENERATED by the assemble scripts — never hand-author them. Frontmatter is flat `key: value`; structured values (lists, objects) use inline JSON.
-- **Critical path runs at the TICKET tier**, not issues. `depends_on` on tickets is the analyzed DAG (`tickets_analyze.py`). Issues may carry optional intra-ticket `depends_on` for local ordering. Per-ticket `effort_hours` is DERIVED (summed from child issues) by `tickets_assemble.py`.
+- **Critical path runs at the TICKET tier**, not issues, and is **PROJECT-level** — the dep DAG crosses sprint boundaries, so CP is computed over all tickets (`tickets_analyze.py`), NOT per sprint. `depends_on` on tickets is the analyzed DAG. Issues may carry optional intra-ticket `depends_on` for local ordering. Per-ticket `effort_hours` is DERIVED (summed from child issues) by `tickets_assemble.py`.
+- **Sprints are a 4th, ORTHOGONAL grouping** (time-box; ~168h soft budget). An epic groups tickets by outcome; a sprint groups them by time — a ticket has one of each (`epic:` + `sprint:`). Sprints drive `TIMELINE.md` + claim ordering, never `ROADMAP.md`. CP *informs* sprint assignment (front-load CP tickets); sprints don't change how CP is computed. See `references/work-breakdown.md` ("Sprints").
 - **Requirements live on TICKETS** (`satisfies_reqs`), not issues — a ticket is the unit of user-visible value that fulfills a requirement. Tests live on ISSUES (`artifacts.tests`). Verification therefore walks `req → ticket → issues → tests` (`verification_map.py`).
 - **No `test_plan.md`.** SRS does NOT carry a `verified_by` column — that data would duplicate and drift.
-- `deployment.md` is optional and created only when explicitly relevant. (Project grouping/sequencing is handled by ROADMAP phases; sprints may come later. No `milestones.md`.)
+- `deployment.md` is optional and created only when explicitly relevant. (Strategic grouping → ROADMAP phases; tactical scheduling → sprints / `TIMELINE.md`. No `milestones.md`.)
 - `cross-cutting-srs.md` is optional — bootstrap proposes it only when context indicates cross-cutting concerns materially matter (security, observability, i18n, accessibility). Treated as a virtual component by all machinery (ID prefix `SRS-CC-NNN`).
 - `reqs.json` IS generated from SRS markdown tables (humans edit SRS, script extracts).
-- **Assemble before analyze/claim/validate.** After editing any ticket/issue folder: run `issues_assemble.py` then `tickets_assemble.py` (ticket effort + counts are summed from issues, so issues go first), then the validators / `tickets_analyze.py` / `claim_issue.py`.
+- **Assemble before analyze/claim/validate.** After editing any ticket/issue/sprint folder: run `issues_assemble.py` → `tickets_assemble.py` → `sprints_assemble.py` (each tier's derived fields read the tier below: ticket effort sums from issues, sprint effort sums from tickets — so order matters), then the validators / `tickets_analyze.py` / `claim_issue.py` / `timeline_render.py`.
 - **`tickets_*` and `issues_*` scripts are deliberately separate** (separate assemble, separate validate). Tickets and issues may live in different stores once tool integrations land; each tier validates the refs it can resolve and degrades gracefully when the other tier is absent.
 - `spec_concern.md` is written by the **implementation agent** (not this skill) when it discovers a settled doc looks wrong during issue execution. Adapt mode picks these up as valid triggers — see `references/adapt.md` stage 2.
-- `claim_issue.py` replaces any raw `jq` claim. Uses `fcntl.flock` for atomic read-verify-write on `issues.json`; auto-recovers stale claims (default >3h old); no-arg call auto-picks the next ready issue and claims it in the same locked op; `--skip <ids>` excludes issues (lightweight parallel-agent support). Lock releases on process exit.
+- `claim_issue.py` replaces any raw `jq` claim. Uses `fcntl.flock` for atomic read-verify-write on `issues.json`; auto-recovers stale claims (default >3h old); no-arg call auto-picks the next ready issue and claims it in the same locked op; `--skip <ids>` excludes issues (lightweight parallel-agent support). **Sprint-scoped:** when `sprints.json` exists, auto-pick prefers issues in the `active` sprint and only spills to the next planned sprint when none are ready (`--sprint-scope current` forbids the spill; `all` ignores sprints). No `sprints.json` → unscoped, exactly as before. Lock releases on process exit.
 - `drift_check.py` is a mechanical drift detector — runs as part of adapt mode assessment, optionally before impl agents claim long-running issues.
 
 ## Main-repo files & merge protocol
@@ -202,13 +218,13 @@ If the implementation agent finds a settled doc looks wrong mid-issue, it MUST:
 
 The implementation agent does NOT edit the settled doc itself, ever. Adapt mode is the only path through. When adapt mode reopens a settled doc, it logs to `adr.csv`.
 
-## User-provided scripts
+## Analysis-seam scripts (shipped, editable)
 
-`.specseed/scripts/requirements_analyze.py` and `.specseed/scripts/tickets_analyze.py` are USER-PROVIDED — existing tools the user has. If not present at session start when a flow stage would call them, skill asks the user to provide them or describe their interface before proceeding.
+`.specseed/scripts/requirements_analyze.py`, `tickets_analyze.py`, and `sprint_plan.py` are **shipped by the skill** (stdlib defaults) but are the intended **analysis/scheduling seam** — orgs with their own tooling (a PM system, custom critical-path or scheduling logic) may replace them, as long as the documented I/O contract holds. The mechanical plumbing (assemble/validate/claim/render) is NOT a seam — don't swap it. If a seam script is somehow missing at session start when a stage would call it, fall back to the shipped version (or describe the contract and proceed).
 
 ## Carry-forward (post-rewrite)
 
-- [ ] User-provided analyzers (`requirements_analyze.py`, `tickets_analyze.py`) — `tickets_analyze.py` now runs on the assembled `project_management/tickets.json` (per-ticket `effort_hours` is derived from child issues). User to remove `requirements_analyze.py` check 4 (verification gaps) since `verified_by` no longer in reqs.json.
+- ROADMAP `(X/Y complete)` counts: `roadmap_render.py` bumps them in-place from `tickets.json` (`issues_done`/`issues_total`). Runs in the issue finish flow (after `tickets_assemble.py`) and the adapt/tweak cascades; `--check` reports drift without writing. Counts are display-only — `claim_issue.py` derives unblocking from `issues.json`, not ROADMAP.
 - ROADMAP `(X/Y complete)` counts: `roadmap_render.py` bumps them in-place from `tickets.json` (`issues_done`/`issues_total`). Runs in the issue finish flow (after `tickets_assemble.py`) and the adapt/tweak cascades; `--check` reports drift without writing. Counts are display-only — `claim_issue.py` derives unblocking from `issues.json`, not ROADMAP.
 - [ ] Templates folder for vision/sad/srs/sdd skeletons (deferred)
 - [ ] Evals / test cases for the skill itself (deferred)

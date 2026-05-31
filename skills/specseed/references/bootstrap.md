@@ -16,10 +16,10 @@ Load `references/question-protocol.md` before any user-facing round.
 8. ADRs + SDD (parallel, after settle)
 9. `reqs.json` generation + cycle resolution (run `requirements_generate_json.py`, then `requirements_analyze.py`; resolve cycles if any)
 10. **ROADMAP draft + discussion gate** — phases → epics → ticket TITLES, discussed with user BEFORE detailed formation (use `work-breakdown.md`)
-11. Work breakdown: flesh tickets + form issues + assemble + validate + critical path (use `work-breakdown.md`; run the assemble scripts, `tickets_validate.py` + `issues_validate.py` + `tickets_analyze.py`)
+11. Work breakdown: flesh tickets + form issues + assemble + validate + critical path + **sprint planning** (use `work-breakdown.md`; run the assemble scripts, `tickets_validate.py` + `issues_validate.py` + `tickets_analyze.py`, then `sprint_plan.py` → write sprints → `sprints_validate.py` + `timeline_render.py`)
 12. Write main-repo entry files (merge protocol if any already exist): `README.md` + `CLAUDE.md` (from `references/CLAUDE_template.md`, with `CONTRIBUTING` content folded into its `## Project conventions` section) + `AGENTS.md` + per-component `CLAUDE.md` (if N>1). No separate `CONTRIBUTING.md`
 13. Optional artifacts (`deployment.md`) if triggered
-14. Session end (clean `memory.md`)
+14. Session end (clean `session_state.md`)
 
 ---
 
@@ -39,7 +39,7 @@ Default: **1 round × 4 Qs**. Extend to 2 rounds only if ranking gate keeps ≥3
 
 Once enough base in hand, resume structured Qs (if gaps remain).
 
-Write summary → `memory.md` under `## Context`.
+Write summary → `session_state.md` under `## Context`.
 
 ---
 
@@ -76,7 +76,7 @@ Suggestion based on context (obvious frontend/backend split, single-binary tool,
 
 For borderline N=2–4 cases, ask the user — don't auto-decide.
 
-Write split → `memory.md` under `## Components`.
+Write split → `session_state.md` under `## Components`.
 
 ### 3b. Cross-cutting component (conditional)
 
@@ -97,7 +97,7 @@ Review context for signals that cross-cutting concerns materially matter:
 
 **If no signals:** skip this sub-stage silently. Don't ask just to ask.
 
-Note in `memory.md`: cross-cutting component yes/no.
+Note in `session_state.md`: cross-cutting component yes/no.
 
 ---
 
@@ -110,12 +110,12 @@ For each component (or single "core" if N=1), including the cross-cutting compon
 Invoke `references/component-questions.md`. Themes announced before round 1 per component.
 
 After each component's questioning done:
-- Write per-component summary → `memory.md`
-- **Compression checkpoint:** propose "consider compress now?" to user. If yes, note state in `memory.md`; after compression resume, reread `SKILL.md` then `memory.md`
+- Write per-component summary → `session_state.md`
+- **Compression checkpoint:** propose "consider compress now?" to user. If yes, note state in `session_state.md`; after compression resume, reread `SKILL.md` then `session_state.md`
 
 Components processed sequentially. Do not interleave.
 
-**Operations theme flag:** if a component's questioning round includes the Operations theme (theme 6 in `component-questions.md`) AND the user's answer indicates ops concerns matter, mark in `memory.md` to add `.specseed/spec/deployment.md` at stage 12.
+**Operations theme flag:** if a component's questioning round includes the Operations theme (theme 6 in `component-questions.md`) AND the user's answer indicates ops concerns matter, mark in `session_state.md` to add `.specseed/spec/deployment.md` at stage 12.
 
 ### 4b. SRS draft for that component
 
@@ -246,7 +246,7 @@ Output schema:
 
 ### Analyze + resolve
 
-Then run `.specseed/scripts/requirements_analyze.py` (user-provided) — surfaces cycles, orphans, dangling refs.
+Then run `.specseed/scripts/requirements_analyze.py` (shipped; editable analysis seam) — surfaces cycles, orphans, dangling refs.
 
 #### Cycle resolution moves
 
@@ -274,7 +274,7 @@ At this stage tickets are TITLES + short comments only — no bodies, no issues 
 
 **Discussion gate (required).** Present the draft roadmap — phases, epics, ticket titles, comments — and discuss with the user. Adjust phases / epic grouping / ticket split per feedback. Do NOT proceed to detailed formation until the user approves the roadmap shape.
 
-Write the approved structure → `memory.md` under `## Roadmap`.
+Write the approved structure → `session_state.md` under `## Roadmap`.
 
 **Chat mode:** deliver `ROADMAP.md` as artifact; gate on user approval before stage 11.
 
@@ -306,7 +306,22 @@ Fix any reported errors before proceeding.
 
 ### Critical path
 
-Run `.specseed/scripts/tickets_analyze.py .specseed/project_management/tickets.json` (user-provided) — returns ticket critical path + build order. Show critical path to user. Rebalance ticket grouping if unreasonably long (often overly narrow tickets or artificial deps).
+Run `.specseed/scripts/tickets_analyze.py .specseed/project_management/tickets.json` (shipped; editable analysis seam) — returns ticket critical path + build order. Show critical path to user. Rebalance ticket grouping if unreasonably long (often overly narrow tickets or artificial deps). Critical path is PROJECT-level, not per-sprint.
+
+### Sprint planning
+
+After the critical path is settled, batch tickets into sprints (see `work-breakdown.md` "Sprints"). Optional but recommended for anything beyond a handful of tickets.
+
+1. Read `.specseed/memory/sprint_planning.md` for any durable prefs.
+2. `python .specseed/scripts/sprint_plan.py` → advisory proposal (cohesion-aware, CP-first, ~168h budget).
+3. One bounded refinement pass (business dates, coherence, slack); present to user; capture any durable prefs back to `sprint_planning.md`.
+4. On approval: write `sprint:` into each ticket folder + create `sprints/<SPRINT_ID>/` folders with `tickets:` lists; mark the first sprint `active`.
+5. Assemble + validate + render:
+   ```bash
+   python .specseed/scripts/sprints_assemble.py
+   python .specseed/scripts/sprints_validate.py
+   python .specseed/scripts/timeline_render.py
+   ```
 
 ### Refresh ROADMAP counts
 
@@ -348,7 +363,7 @@ Write the contents of `references/CLAUDE_template.md` to the repo root as `CLAUD
 
 If N>1 from stage 3, **propose** per-component `CLAUDE.md` files to the user (don't auto-write). Each per-component file lives in that component's source directory (e.g. `api/CLAUDE.md`, `worker/CLAUDE.md`) and holds component-specific guidance: build/test commands, file layout conventions, common gotchas, library version pins relevant only to that component.
 
-Propose with a one-liner per component summarizing what each would contain, based on `memory.md` per-component summaries. User picks: write all, write some, write none. (Merge protocol applies to any that already exist.)
+Propose with a one-liner per component summarizing what each would contain, based on `session_state.md` per-component summaries. User picks: write all, write some, write none. (Merge protocol applies to any that already exist.)
 
 Root `AGENTS.md` already directs agents to read these when they exist — no additional wiring needed.
 
@@ -367,13 +382,13 @@ Read ./CLAUDE.md. In dirs you work on, read corresponding CLAUDE.md files in the
 
 - **`.specseed/spec/deployment.md`** — only if Operations theme was flagged during a component questioning round (see stage 4 note). Covers operational procedures, runbooks, deployment commands. Distinct from SAD's Deployment topology section (that's *where things run*; this is *how to run them*)
 
-(Project grouping/sequencing lives in `ROADMAP.md` phases. Sprints may be added later.)
+(Strategic grouping lives in `ROADMAP.md` phases; tactical scheduling lives in sprints / `TIMELINE.md` — done in stage 11.)
 
 ---
 
 ## Stage 14: Session end
 
 - Deliver manifest (chat mode): single artifact listing every file with its canonical path
-- Delete `.specseed/memory.md` (or move salient bits to a changelog file if user wants — confirm before)
+- Delete `.specseed/memory/session_state.md` (or move salient bits to a changelog file if user wants — confirm before). KEEP `.specseed/memory/sprint_planning.md` — it's durable cross-session memory.
 - Tell user what was created + any open TODOs
 - Note: future spec changes → re-invoke skill in adapt or tweak mode

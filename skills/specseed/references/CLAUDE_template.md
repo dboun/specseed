@@ -39,6 +39,7 @@ python .specseed/scripts/claim_issue.py
 #   --skip ID,ID          # exclude issues a parallel agent already took
 #   --agent <name>        # override agent id (default: env CLAUDE_AGENT_ID or hostname-pid)
 #   --stale-hours <N>     # take over claims older than N hours (default 3)
+#   --sprint-scope X      # current | spill (default) | all  — see below
 #   --lock-timeout <secs> # max wait for the file lock (default 10)
 ```
 
@@ -50,6 +51,8 @@ Output is JSON:
 - `claimed: false` with a reason (already claimed, deps not done, parent ticket not reachable) → pick a different issue; don't fight over locks.
 
 "Ready" means: status todo/blocked, unclaimed, its own `depends_on` issues done, and its parent ticket reachable (the ticket's `depends_on` tickets all complete). Ticket completion is derived live from issues — downstream tickets unblock automatically as their issues finish.
+
+**Sprints (if `sprints.json` exists):** auto-pick is sprint-scoped — it prefers issues whose ticket is in the **active** sprint and only spills to the next planned sprint when none are ready (default `--sprint-scope spill`). So normally you just run `claim_issue.py` and get current-sprint work. Use `--sprint-scope current` to refuse spill (stop when the active sprint is drained), or `all` to ignore sprints. No `sprints.json` → unscoped.
 
 To see the ticket-level critical path / build order (priority context):
 ```bash
@@ -149,10 +152,13 @@ When all plan steps `[x]` and tests pass:
       .specseed/project_management/issues.json > /tmp/i.json && mv /tmp/i.json .specseed/project_management/issues.json
    ```
    Recommended: mirror the same `status` into the issue's folder file `<issue_id>.md` frontmatter so the human-readable record stays current (`issues.json` is the operational truth; the folder is the authored record).
-3. Refresh the ticket index (recomputes completion counts + auto-marks the parent ticket `done` when its last issue lands), then bump the ROADMAP counts:
+3. Refresh the ticket index (recomputes completion counts + auto-marks the parent ticket `done` when its last issue lands), then bump the views:
    ```bash
    python .specseed/scripts/tickets_assemble.py
    python .specseed/scripts/roadmap_render.py
+   # If the project uses sprints, also refresh the sprint index + TIMELINE:
+   python .specseed/scripts/sprints_assemble.py   2>/dev/null && \
+     python .specseed/scripts/timeline_render.py
    ```
 4. Sanity-check: `python .specseed/scripts/issues_validate.py`
 5. Commit per `## Project conventions`.
@@ -191,7 +197,7 @@ If it flags drift in areas your issue touches (missing test files, stale settled
 ## Skill-side notes (not written to user's CLAUDE.md)
 
 The template is INTENTIONALLY medium-length. It includes:
-- Issue pickup + atomic claim via `claim_issue.py` (no-arg auto-pick = pick-and-claim under one lock; `--skip` for light parallel work)
+- Issue pickup + atomic claim via `claim_issue.py` (no-arg auto-pick = pick-and-claim under one lock; `--skip` for light parallel work; sprint-scoped when `sprints.json` exists — active sprint first, spill to next)
 - The three-tier work model (epic/ticket/issue) and the folders-vs-JSON source-of-truth split (folders = authored content, JSON = live runtime state)
 - `issue_info.py` for the issue + parent ticket + reqs join (reqs live on the ticket)
 - Plan + step-report conventions under `issues/<id>/`

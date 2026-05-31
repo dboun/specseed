@@ -162,6 +162,7 @@ def main():
         meta.setdefault("status", "todo")
         meta.setdefault("depends_on", [])
         meta.setdefault("satisfies_reqs", [])
+        meta.setdefault("sprint", None)   # time-box membership; orthogonal to epic
         # Preserve live status when folder is still at seed default
         if meta["status"] == "todo" and tid in prev:
             meta["status"] = prev[tid].get("status", "todo")

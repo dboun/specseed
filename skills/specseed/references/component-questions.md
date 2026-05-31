@@ -22,7 +22,7 @@ Pick 2–4 relevant themes per component. Announce upfront via the themes-upfron
 
 Don't always use all. For a small CLI tool maybe just theme 3 + 4. For a payments service: 2, 4, 5, 7.
 
-**Operations theme triggers deployment.md.** If theme 6 is selected AND the user's answers indicate operational concerns matter (custom deploy steps, runbook procedures, ops handoff), note in `memory.md`: `deployment.md needed`. Bootstrap stage 14 will create it.
+**Operations theme triggers deployment.md.** If theme 6 is selected AND the user's answers indicate operational concerns matter (custom deploy steps, runbook procedures, ops handoff), note in `session_state.md`: `deployment.md needed`. Bootstrap stage 14 will create it.
 
 ## Question phrasing rules
 
@@ -56,7 +56,7 @@ After each round, wait for user OK / overrides / free text. Do not draft next ro
 
 ## Output
 
-After all rounds done for component C, write component summary to `memory.md`:
+After all rounds done for component C, write component summary to `session_state.md`:
 ```
 ## Component: <C>
 - Scale answer: <locked>
@@ -70,10 +70,10 @@ This summary drives the SRS draft for that component.
 
 ## Compression hook
 
-Per-component done = good semantic checkpoint to propose context compression. Note in `memory.md`:
+Per-component done = good semantic checkpoint to propose context compression. Note in `session_state.md`:
 ```
 ## Compression note <timestamp>
 - Just finished component <C>. Component summaries up to <C> are above. SRS not yet drafted.
 ```
 
-After compression, reread `SKILL.md` then `memory.md` to resume.
+After compression, reread `SKILL.md` then `session_state.md` to resume.
