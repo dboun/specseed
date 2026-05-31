@@ -428,6 +428,8 @@ def init(root, cfg, remote, dry=False, log=print):
         cfg["pull_cursor"] = rc.now_iso()
         cfg["cli_cursor"] = rc.now_iso()
     sync_push(root, cfg, remote, dry=dry, log=log)
+    if not dry:
+        cfg["initialized"] = True
     return cfg
 
 

@@ -71,7 +71,8 @@ def save_config(cfg, root=None):
 
 def default_config(provider, repo, allowlist=None):
     return {
-        "enabled": True, "provider": provider, "repo": repo,
+        "enabled": True, "configured": True, "initialized": False,
+        "provider": provider, "repo": repo,
         "allowlist": allowlist or [],
         "retry_delay_minutes": 30,   # after a failed claude run (e.g. session limit), wait this long before retrying
         "permanent": {"roadmap": None, "timeline": None, "control": None, "sprint": None},

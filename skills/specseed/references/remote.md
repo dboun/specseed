@@ -95,7 +95,9 @@ Single stdlib-JSON file. Holds config + the ID↔number map + the poll cursor.
 
 ```json
 {
-  "enabled": true,
+  "enabled": true,                       // false = local-only (mirror off)
+  "configured": true,                    // configure mode has run (don't re-preamble)
+  "initialized": false,                  // flips true after the first remote_sync init
   "provider": "github",                  // github | gitlab
   "repo": "owner/name",                  // or full URL; normalized by the wrappers
   "allowlist": ["octocat"],              // usernames whose CONTROL comments execute; [] = owner-only
@@ -254,27 +256,29 @@ All stdlib-only, reusing `github_functions.py` / `gitlab_functions.py` for trans
 
 ---
 
-## Onboarding (where the opt-in happens)
+## Onboarding (configure → init, two phases)
 
-Offered ONCE, at the END of bootstrap (after stage 11/12, work breakdown exists) and
-adopt (stage 9). Single question, default OFF:
+The opt-in is split so the technical decisions happen EARLY and the heavy mirror
+creation happens LATE (once work exists):
 
-> "Mirror this work to GitHub/GitLab so you can track + drive it from a phone? It's an
-> opinionated single-dev setup: local stays the source of truth, the remote is a
-> mirror + a command channel. (default: no)"
+**Phase 1 — configure (early).** `references/configure.md` captures the technical
+prefs into `remote.json` (provider, repo, allowlist, `retry_delay_minutes`,
+`enabled`, `initialized:false`) — verifying the PAT, explaining the limitations — but
+does NOT touch the remote. Runs as a first-run preamble before bootstrap/adopt, or via
+`/specseed configure`.
 
-If **yes**, collect: provider, repo (or detect from `git remote`), optional username
-allowlist, confirm the PAT is in env/`.env`. **State the retry default** ("if a run
-hits a session limit I'll retry after 30 min — tell me if you want a different
-interval") and store it as `retry_delay_minutes`. Then:
+**Phase 2 — init (late).** At the end of bootstrap (stage 13.5) / adopt (9.5), if
+`remote.json` is `enabled:true` and not yet `initialized`, the mirror is created with
+NO further questions:
 1. `python .specseed/scripts/remote_sync.py init` — creates the 4 dashboards, pins
-   the 3, seeds labels, writes `remote.json`, pushes the current work.
+   the 3, seeds labels, pushes the current work.
 2. Write the `<repo>_agents_runner.py` shim at repo root.
 3. Add the "Remote mirror" block to `CLAUDE.md` (runtime contract — see
    `CLAUDE_template.md`).
-4. Tell the user the start command + the pause/stop story.
+4. Flip `initialized:true`; tell the user the start command + the pause/stop story.
 
-If **no** → write nothing remote-related; the feature is invisible.
+If configure chose **local-only** (`enabled:false`) → init is skipped; the feature is
+invisible.
 
 This is **prefer-programmatic**: the agent calls the scripts, it does not hand-create
 github issues one by one.

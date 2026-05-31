@@ -1,6 +1,6 @@
 ---
 name: specseed
-description: Documentation-driven development spec creation skill. Use whenever user wants to create, draft, update, or revise software specification artifacts — vision, SRS (Software Requirements Spec), SAD (Software Architecture Doc), ADRs, SDD, requirements JSON — plus the project-management work breakdown (ROADMAP, epics, tickets, issues, sprints, TIMELINE) — for greenfield projects or adapting existing codebases. Trigger on `/specseed` slash command and on phrases like "spec out", "draft requirements", "plan this project", "update the SRS", "add a requirement", "generate tickets", "break into issues", "roadmap", "plan sprints", "assign to a sprint", "design doc", "what should we build", "recover/reverse-engineer a spec from this codebase", "onboard this existing project", "adopt this repo". Also trigger when user starts a new software project and discusses scope, requirements, or architecture without naming a doc — they likely need this.
+description: Documentation-driven development spec creation skill. Use whenever user wants to create, draft, update, or revise software specification artifacts — vision, SRS (Software Requirements Spec), SAD (Software Architecture Doc), ADRs, SDD, requirements JSON — plus the project-management work breakdown (ROADMAP, epics, tickets, issues, sprints, TIMELINE) — for greenfield projects or adapting existing codebases. Trigger on `/specseed` slash command and on phrases like "spec out", "draft requirements", "plan this project", "update the SRS", "add a requirement", "generate tickets", "break into issues", "roadmap", "plan sprints", "assign to a sprint", "design doc", "what should we build", "recover/reverse-engineer a spec from this codebase", "onboard this existing project", "adopt this repo", "configure specseed", "set up github/gitlab tracking", "mirror issues to github". Also trigger when user starts a new software project and discusses scope, requirements, or architecture without naming a doc — they likely need this.
 ---
 
 # specseed
@@ -37,12 +37,15 @@ After the first message, default to caveman-spirit terse comm (no filler, fragme
 
 This probe is the safety net for misrouting — it is evidence, not a guess. When it and the user's words disagree, surface the conflict and ask; do not let intent words override disk state.
 
+**Configure preamble (first run only).** When the probe lands on **bootstrap** (case 4) or **adopt** (case 3) AND there is **no `.specseed/memory/remote.json`** yet, run **configure mode** first (technical setup — `references/configure.md`): ≤2 rounds, heavy defaults (local-only is one keystroke), then continue into bootstrap/adopt. This gets the plumbing decisions out of the way up front. A bare `.specseed/memory/remote.json` it leaves behind is **config only** — it is NOT a spec and does NOT affect the routing above (mode still keys off `.specseed/spec/`). `/specseed configure` re-runs it anytime to change settings.
+
 ## Mode detection
 
 Read user message + conversation, **constrained by the reconnaissance above** (an existing `.specseed/spec/` forbids bootstrap; a present `session_state.md` means offer resume first). Pick ONE mode, commit for the session, do not drift. Auto-escalation between modes only happens where explicitly specified (see `tweak.md`).
 
 | Mode | Trigger | Route |
 |------|---------|-------|
+| **configure** | TECHNICAL setup only — local vs github/gitlab mirror, credentials, runner opts (NOT spec content). `/specseed configure`, or the auto-preamble on a repo's first bootstrap/adopt. Editable anytime | `references/configure.md` |
 | **bootstrap** | New project, no prior spec, user wants full spec from scratch | `references/bootstrap.md` |
 | **adopt** | Existing CODE, no `.specseed/`. Recover the spec from the codebase (+ import any docs already present) into `.specseed/`. Reverse-bootstrap; specseed never edits code | `references/adopt.md` |
 | **plan-next** | Existing `incremental`-bootstrapped spec; user wants to spec + break down the NEXT roadmap slice (`/specseed plan-next`, "plan the next sprint/phase"). Roadmap has un-detailed ticket titles (no folders). Append-only forward — no settled-doc changes | `references/plan-next.md` |
@@ -79,6 +82,7 @@ Then route to mode file.
 - `references/question-protocol.md` — question round format, action prompts, no-noise rule, anti-max-bias, memory cadence, auto-skip rule for obvious Qs
 - `references/component-questions.md` — per-component probing subroutine
 - `references/work-breakdown.md` — roadmap + epic/ticket/issue formation: INVEST, vertical slices, critical path (ticket tier), spike post-completion, sizing heuristics
+- `references/configure.md` — technical setup route (local vs github/gitlab mirror, credentials, runner opts). Runs as a first-run preamble before bootstrap/adopt, or on `/specseed configure`. Writes `.specseed/memory/remote.json` (config only)
 - `references/remote.md` — OPTIONAL, opt-in github/gitlab mirror (single-dev phone-driven workflow). Local stays ground truth; the remote is a mirror + bug-inbox + CONTROL command channel driven by an always-on `agents_runner.py`. Offered once at onboarding (bootstrap stage 13.5 / adopt 9.5); entirely off unless the user opts in
 
 ## Memory protocol

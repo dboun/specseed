@@ -166,9 +166,9 @@ If the user had docs under `spec/`/`docs/` that we imported + reconciled, offer 
 
 ---
 
-## Stage 9.5: Optional remote mirror (opt-in)
+## Stage 9.5: Remote mirror init (only if configured)
 
-Same offer as bootstrap **stage 13.5** — now that the recovered spec + forward work breakdown exist. OFF by default; one question; if yes, drive it programmatically via `remote_sync.py init` + the runner shim. Full model in `references/remote.md`.
+Same as bootstrap **stage 13.5** — the mirror choice was made earlier in **configure mode** (first-run preamble / `/specseed configure`), so don't re-ask. Read `.specseed/memory/remote.json`: `enabled:false`/absent → skip; `enabled:true` and not `initialized` → run `remote_sync.py init` + `--write-shim` + the CLAUDE block, set `initialized:true`. Full model in `references/remote.md`.
 
 ---
 
