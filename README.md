@@ -7,9 +7,11 @@ Designed for agent harnesses that can read files (Claude Code, Codex, similar). 
 
 ## What it does
 
-Runs in one of three modes (no need to explicitly specify, could also be inferred):
+Runs in one of five modes (no need to explicitly specify — chosen from disk evidence at session start, then inferred from the ask):
 
 - **bootstrap** — greenfield: produces the full `.specseed/` tree through a structured questioning flow
+- **adopt** — existing code, no spec: reverse-bootstraps the spec FROM the codebase (read-only on your source), imports any docs you already have, maps built work in the roadmap, breaks down remaining gaps
+- **plan-next** — extends an incremental bootstrap forward: specs + breaks down the next roadmap slice (append-only)
 - **adapt** — existing spec, non-trivial changes: localizes impact, patches in place, re-runs analyzers
 - **tweak** — single doc edits (add a req, flip a status, fix a typo)
 

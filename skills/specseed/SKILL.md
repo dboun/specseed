@@ -1,6 +1,6 @@
 ---
 name: specseed
-description: Documentation-driven development spec creation skill. Use whenever user wants to create, draft, update, or revise software specification artifacts — vision, SRS (Software Requirements Spec), SAD (Software Architecture Doc), ADRs, SDD, requirements JSON — plus the project-management work breakdown (ROADMAP, epics, tickets, issues, sprints, TIMELINE) — for greenfield projects or adapting existing codebases. Trigger on `/specseed` slash command and on phrases like "spec out", "draft requirements", "plan this project", "update the SRS", "add a requirement", "generate tickets", "break into issues", "roadmap", "plan sprints", "assign to a sprint", "design doc", "what should we build". Also trigger when user starts a new software project and discusses scope, requirements, or architecture without naming a doc — they likely need this.
+description: Documentation-driven development spec creation skill. Use whenever user wants to create, draft, update, or revise software specification artifacts — vision, SRS (Software Requirements Spec), SAD (Software Architecture Doc), ADRs, SDD, requirements JSON — plus the project-management work breakdown (ROADMAP, epics, tickets, issues, sprints, TIMELINE) — for greenfield projects or adapting existing codebases. Trigger on `/specseed` slash command and on phrases like "spec out", "draft requirements", "plan this project", "update the SRS", "add a requirement", "generate tickets", "break into issues", "roadmap", "plan sprints", "assign to a sprint", "design doc", "what should we build", "recover/reverse-engineer a spec from this codebase", "onboard this existing project", "adopt this repo". Also trigger when user starts a new software project and discusses scope, requirements, or architecture without naming a doc — they likely need this.
 ---
 
 # specseed
@@ -8,6 +8,7 @@ description: Documentation-driven development spec creation skill. Use whenever 
 Skill for producing and maintaining software specification artifacts. Routes by mode. Produces a `.specseed/` tree (repo) or chat artifacts.
 
 **Hard rule — never touch the main repo's own files.** All spec artifacts live under `<repo_root>/.specseed/`. The skill does NOT create or edit `spec/`, `docs/`, or any pre-existing source layout. The ONLY files the skill writes into the main repo proper are: `README.md`, root `CLAUDE.md`, per-component `CLAUDE.md` files, and top-level `AGENTS.md` — and each of those, if it already exists, triggers the merge protocol (see "Main-repo files & merge protocol" below). No `CONTRIBUTING.md` is ever written — its content folds into `CLAUDE.md`.
+Similarly, when running from the target repo to spec it out, the skills doesn't edit / auto-improve itself unless the user is very clear about it.
 
 Agent-agnostic — works in Claude Code, Codex, or any agent harness with filesystem access. Detects repo vs chat at session start and delivers accordingly.
 
@@ -29,7 +30,7 @@ After the first message, default to caveman-spirit terse comm (no filler, fragme
 
 1. **`.specseed/memory/session_state.md` exists?** → an interrupted session. **OFFER RESUME FIRST.** Read it, tell the user "you were at `<stage>`, about to `<next>`", and ask: **resume / start fresh**. Do NOT auto-resume; do NOT ignore it and start a new flow on top. (On resume: reread this `SKILL.md`, then `session_state.md`, then re-enter the mode/stage it names.)
 2. **`.specseed/spec/` exists with content** (any `vision.md` / `*-srs.md` / `sad.md` / `sdd.md`)? → a spec is ALREADY present. **Bootstrap is OFF the table** unless the user explicitly says "start over / throw it away". Even if the user's words sound greenfield ("spec out the payments feature"), an existing tree means **adapt** (change/extend settled docs), **plan-next** (roadmap has un-detailed titles + user wants the next slice), or **tweak** (tiny edit). Name what was found, route accordingly, confirm if ambiguous — never silently bootstrap over it.
-3. **Source files present but NO `.specseed/`** → existing code, no spec ("brownfield"). No dedicated mode yet — tell the user: bootstrap can run using the code as *context*, but it will not reverse-engineer the codebase. Ask before proceeding.
+3. **Source files present but NO `.specseed/`** → existing code, no spec → **adopt**. Recover the spec FROM the codebase (+ any docs already there) into `.specseed/`. NOT bootstrap — bootstrap is for a blank slate and would spec from conversation, drifting from the real code on day one. Name what was found (stack, rough component shape, any existing docs), route to adopt.
 4. **Empty / near-empty, no `.specseed/`** → greenfield → **bootstrap**.
 
 **Chat mode (no writeable FS):** skip the probe; route from conversation + any artifacts the user pasted.
@@ -43,6 +44,7 @@ Read user message + conversation, **constrained by the reconnaissance above** (a
 | Mode | Trigger | Route |
 |------|---------|-------|
 | **bootstrap** | New project, no prior spec, user wants full spec from scratch | `references/bootstrap.md` |
+| **adopt** | Existing CODE, no `.specseed/`. Recover the spec from the codebase (+ import any docs already present) into `.specseed/`. Reverse-bootstrap; specseed never edits code | `references/adopt.md` |
 | **plan-next** | Existing `incremental`-bootstrapped spec; user wants to spec + break down the NEXT roadmap slice (`/specseed plan-next`, "plan the next sprint/phase"). Roadmap has un-detailed ticket titles (no folders). Append-only forward — no settled-doc changes | `references/plan-next.md` |
 | **adapt** | Existing spec present, user wants to update/extend/revise non-trivially (incl. *changing* settled docs) | `references/adapt.md` |
 | **tweak** | Tiny single-doc edit ("add this one req to SRS", "change priority of REQ-X") | `references/tweak.md` (may auto-escalate to adapt) |
@@ -65,6 +67,7 @@ After mode picked, send ~12–15 lines:
 - Bullet: stages this session will cover (mode-specific, brief)
 - Bullet: end deliverables (mode-specific)
 - **Bootstrap mode only:** 1 line setting expectations — "Spec phase takes a beat upfront; the trade is that implementation should be faster, more parallel, and more independent of you afterwards. After we sketch the vision I'll propose a depth (lite / standard / incremental) so big projects don't get specced out for hours before any code."
+- **Adopt mode only:** 1 line setting expectations — "I'll read the code (read-only — I never edit your source) and recover the spec from it into `.specseed/`, importing any docs you already have. After recon I'll propose a depth; built work gets mapped in the roadmap, remaining gaps get broken into work."
 - 1 line: `/specseed stop` available anytime to exit cleanly (state preserved for resume)
 - 1 line: ask for initial context
 - 1 line: terse-comm switch note (see Step 0 above) — only on the very first response of the session
