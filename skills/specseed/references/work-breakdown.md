@@ -212,20 +212,25 @@ terminal or `awaiting_approval` is never overridden. `sprints_assemble.py`:
 sprint → `done` when all member tickets resolved. Both preserve a live status
 across re-assembles when the folder is still at its seed default.
 
-### GitHub / GitLab projection (design only — NOT integrated)
+### GitHub / GitLab projection (OPTIONAL, opt-in — see `references/remote.md`)
 
-The manual local workflow is the source of truth; integration is a later,
-label-only mapping. Sketch:
+The manual local workflow is **always** the source of truth. An opt-in mirror
+(offered once at onboarding) projects this status model onto github/gitlab issues so
+a single dev can drive everything from a phone. Mapping:
 
-| specseed | GitHub issue |
+| specseed status | github issue |
 |----------|--------------|
-| `todo` / `in_progress` / `blocked` / `in_review` / `awaiting_approval` | open + matching label (`status:…`); `claimed_by` → assignee |
-| `done` | closed (completed) |
-| `wont_do` | closed (not planned) |
-| `deprecated` | closed (not planned) + label `deprecated` |
+| `todo` / `in_progress` / `blocked` / `in_review` / `awaiting_approval` | open + `status:<state>` label; `claimed_by` → assignee |
+| `done` | closed (completed) + `status:done` |
+| `wont_do` | closed (not planned) + `status:wont_do` |
+| `deprecated` | closed (not planned) + `status:deprecated` |
 
-(Epics/tickets/issues all become GitHub issues distinguished by label — an API
-detail, deferred. Nothing here depends on it.)
+Epics, tickets, and issues each become **one flat github issue**; parent/child
+relationships are **markdown links in the body** (no nesting API, no relationship
+labels). Sprint membership = `sprint:<id>` label. The full workflow (the 4 permanent
+dashboards, reconciliation, CONTROL command channel, the always-on `agents_runner.py`,
+heal rules) lives in `references/remote.md`. Nothing in the local machinery depends
+on the mirror — it stays entirely off unless the user opts in.
 
 ## INVEST (applies to ISSUES)
 

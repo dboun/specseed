@@ -43,6 +43,8 @@ Three tiers: **epic → ticket → issue**, plus **sprints** as an orthogonal gr
 
 `requirements_generate_json.py` (SRS tables→reqs.json), `requirements_analyze.py` / `tickets_analyze.py` / `sprint_plan.py` (SHIPPED stdlib defaults that are also the editable analysis/scheduling seam — orgs may swap them; the rest of the scripts are non-swappable plumbing), `issues_assemble.py` + `tickets_assemble.py` + `sprints_assemble.py` (folders→json; assemble bottom-up: issues → tickets[effort/counts from issues] → sprints[effort/counts from tickets]), `issues_validate.py` + `tickets_validate.py` + `sprints_validate.py` (kept separate by design; sprints_validate also enforces NO backward sprint deps + budget + back-consistency), `claim_issue.py` (atomic flock claim; no-arg auto-picks next ready issue; sprint-scoped via `--sprint-scope`), `issue_info.py`, `roadmap_render.py` (bump ROADMAP "(X/Y)" counts) + `timeline_render.py` (regenerate TIMELINE.md sprint schedule), `verification_map.py` (req→ticket→issues→tests), `drift_check.py`.
 
+**Optional remote mirror** (only if user opts in — see `references/remote.md`): `github_functions.py` / `gitlab_functions.py` (stdlib REST wrappers), `remote_config.py` (remote.json + provider-agnostic adapter), `remote_sync.py` (local→remote engine: init/reconcile/push/dashboards), `remote_control.py` (CONTROL-issue command channel), `agents_runner.py` (always-on orchestrator loop; writes a `<repo>_agents_runner.py` shim). Local stays ground truth; the mirror is shipped plumbing, off by default.
+
 ## Conventions
 
 - Scripts: python3, **stdlib only**. Keep it that way (no PyYAML etc).

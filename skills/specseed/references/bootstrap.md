@@ -450,6 +450,23 @@ Read ./CLAUDE.md. In dirs you work on, read corresponding CLAUDE.md files in the
 
 ---
 
+## Stage 13.5: Optional remote mirror (opt-in)
+
+OFF by default. Offer ONCE, now that the work layer exists. One question (see `references/remote.md` "Onboarding"):
+
+> "Mirror this work to GitHub/GitLab so you can track + drive it from a phone? Opinionated single-dev setup: local stays the source of truth; the remote is a mirror + a command channel. (default: no)"
+
+- **No** → skip; write nothing remote-related.
+- **Yes** → collect provider + repo (detect from `git remote`) + optional username allowlist; confirm `GITHUB_PAT`/`GITLAB_PAT` is in env/`.env`; state the failure-retry default ("retries 30 min after a session limit — say if you want it changed", stored as `retry_delay_minutes`). Then **call the scripts** (prefer programmatic — don't hand-create issues):
+  1. `python .specseed/scripts/remote_sync.py init` — 4 dashboards (pin ROADMAP/TIMELINE/CONTROL), seed labels, write `.specseed/memory/remote.json`, push current work.
+  2. `python .specseed/scripts/agents_runner.py --write-shim <repo_name>` — writes `<repo_name>_agents_runner.py` at the repo root.
+  3. Add the optional **Remote mirror** block to `CLAUDE.md` (see `references/CLAUDE_template.md`).
+  4. Tell the user the start command (`python <repo_name>_agents_runner.py &`) + the pause/stop story.
+
+See `references/remote.md` for the full model (truth = local; reconciliation; CONTROL verbs; heal).
+
+---
+
 ## Stage 14: Session end
 
 - Deliver manifest (chat mode): single artifact listing every file with its canonical path

@@ -166,6 +166,12 @@ If the user had docs under `spec/`/`docs/` that we imported + reconciled, offer 
 
 ---
 
+## Stage 9.5: Optional remote mirror (opt-in)
+
+Same offer as bootstrap **stage 13.5** — now that the recovered spec + forward work breakdown exist. OFF by default; one question; if yes, drive it programmatically via `remote_sync.py init` + the runner shim. Full model in `references/remote.md`.
+
+---
+
 ## Stage 10: Session end
 
 - Summary: spec recovered for <components>, <N> built capabilities mapped in ROADMAP Phase 0, <M> forward gaps broken into sprint(s).

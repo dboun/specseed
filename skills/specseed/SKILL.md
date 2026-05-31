@@ -79,6 +79,7 @@ Then route to mode file.
 - `references/question-protocol.md` — question round format, action prompts, no-noise rule, anti-max-bias, memory cadence, auto-skip rule for obvious Qs
 - `references/component-questions.md` — per-component probing subroutine
 - `references/work-breakdown.md` — roadmap + epic/ticket/issue formation: INVEST, vertical slices, critical path (ticket tier), spike post-completion, sizing heuristics
+- `references/remote.md` — OPTIONAL, opt-in github/gitlab mirror (single-dev phone-driven workflow). Local stays ground truth; the remote is a mirror + bug-inbox + CONTROL command channel driven by an always-on `agents_runner.py`. Offered once at onboarding (bootstrap stage 13.5 / adopt 9.5); entirely off unless the user opts in
 
 ## Memory protocol
 
@@ -188,8 +189,17 @@ scripts/                        # may grow subfolders as more tooling is added
 ├── roadmap_render.py               # bump "(X/Y complete)" counts on ticket lines in ROADMAP.md from tickets.json
 ├── timeline_render.py              # regenerate TIMELINE.md (sprint schedule) from sprints.json + tickets.json
 ├── verification_map.py             # inverse map: req → ticket → issues → test files
-└── drift_check.py                  # mechanical spec-vs-reality drift surface
+├── drift_check.py                  # mechanical spec-vs-reality drift surface
+# ---- OPTIONAL remote mirror (only used if the user opts in — see references/remote.md) ----
+├── github_functions.py             # stdlib GitHub REST wrapper (+ GraphQL pin)
+├── gitlab_functions.py             # stdlib GitLab REST wrapper (sibling shape)
+├── remote_config.py                # remote.json I/O + provider-agnostic adapter
+├── remote_sync.py                  # local→remote mirror engine (init/reconcile/push/dashboards)
+├── remote_control.py                   # CONTROL-issue command channel (poll/authorize/dispatch)
+└── agents_runner.py                # the always-on orchestrator loop (+ --write-shim)
 ```
+
+The remote-mirror scripts + `.specseed/memory/remote.json` exist ONLY when the user opts into the mirror. They are shipped plumbing (not analysis seams) and never run otherwise.
 
 Notes:
 - **Three work tiers, always present:** `epic → ticket → issue`. **Epics + tickets are PM / non-technical** (outcomes, user-visible value). **Issues are technical** — the unit an agent claims and executes (carry `artifacts`, `effort_hours`, `plan.md`, `step_reports/`). An issue MAY belong to a ticket; a ticket MAY belong to an epic. There is NO separate "story" tier — a user story is a section inside a ticket's prose body.

@@ -191,6 +191,22 @@ python .specseed/scripts/drift_check.py
 ```
 If it flags drift in areas your issue touches (missing test files, stale settled docs vs recent commits), surface to the user before proceeding (`/specseed adapt`). Optional; skip if not present or the project is small/recent.
 
+## Remote mirror (only if enabled)
+
+> The skill writes this section ONLY when the user opted into the github/gitlab mirror.
+
+This repo mirrors its work layer to github/gitlab issues, driven by an always-on
+`<repo>_agents_runner.py` loop. **You don't touch github issues directly** — the
+runner projects status onto labels and posts `done`/`blocked` comments for you. Just
+do your normal issue work; finishing an issue (status `done`/`blocked` in
+`issues.json`) is what the runner mirrors.
+
+- **Local `.specseed/` is the source of truth.** Never hand-edit github issues.
+- Ingested bug reports arrive as draft tickets (`type: bug`, body `NEEDS TRIAGE`) —
+  treat them like any other `todo` (triage, size, slot into the DAG).
+- Don't start/stop the runner yourself unless asked; control is via the pinned CONTROL
+  issue or `.specseed/memory/runner.ctl`.
+
 ## Project conventions
 
 > The skill fills this section with the project's actual conventions. The former `CONTRIBUTING.md`, folded in. Keep it short and concrete.

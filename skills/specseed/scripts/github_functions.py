@@ -290,6 +290,40 @@ def reopen_github_issue(number: int, repo: str = None):
 
 
 # --------------------------------------------------------------------------- #
+# pinning  (GraphQL only — the REST API has no pin endpoint)
+# --------------------------------------------------------------------------- #
+def _graphql(query, variables=None):
+    _, _, parsed = _raw_request("POST", f"{API_ROOT}/graphql",
+                                {"query": query, "variables": variables or {}})
+    if isinstance(parsed, dict) and parsed.get("errors"):
+        msg = "; ".join(e.get("message", "?") for e in parsed["errors"])
+        raise GitHubError(0, f"graphql: {msg}", parsed)
+    return parsed
+
+
+def pin_github_issue(number: int, repo: str = None):
+    """Pin an issue to the repo (max 3 pinned per repo). GraphQL `pinIssue`.
+
+    Idempotent: re-pinning an already-pinned issue is a no-op error we swallow."""
+    node_id = get_github_issue(number, repo=repo)["node_id"]
+    try:
+        return _graphql(
+            "mutation($id:ID!){pinIssue(input:{issueId:$id}){issue{number}}}",
+            {"id": node_id})
+    except GitHubError as e:
+        if "already pinned" in (e.message or "").lower():
+            return {"ok": True, "already_pinned": True}
+        raise
+
+
+def unpin_github_issue(number: int, repo: str = None):
+    node_id = get_github_issue(number, repo=repo)["node_id"]
+    return _graphql(
+        "mutation($id:ID!){unpinIssue(input:{issueId:$id}){issue{number}}}",
+        {"id": node_id})
+
+
+# --------------------------------------------------------------------------- #
 # comments  (PRs are github_issues too, so these work on PR numbers as well)
 # --------------------------------------------------------------------------- #
 def add_comment_to_github_issue(number: int, body: str, repo: str = None):
@@ -470,6 +504,7 @@ COMMANDS = {fn.__name__: fn for fn in (
     get_authenticated_user, get_rate_limit, get_repo,
     create_github_issue, get_github_issue, list_github_issues,
     update_github_issue, close_github_issue, reopen_github_issue,
+    pin_github_issue, unpin_github_issue,
     add_comment_to_github_issue, list_github_issue_comments, list_repo_issue_comments,
     update_github_issue_comment, delete_github_issue_comment,
     list_labels, create_label, delete_label,
