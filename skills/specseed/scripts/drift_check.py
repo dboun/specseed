@@ -228,7 +228,7 @@ def main():
     args = p.parse_args()
 
     repo_root = Path(args.source_root).resolve()
-    spec_dir = repo_root / "spec"
+    spec_dir = repo_root / ".specseed" / "spec"
     tickets_path = spec_dir / "tickets.json"
     reqs_path = spec_dir / "reqs.json"
 

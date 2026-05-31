@@ -26,7 +26,7 @@ Don't load the whole file's worth of context if you don't need to. For SRS table
 Present a tight diff to the user. Format:
 
 ```
-File: spec/api-srs.md
+File: .specseed/spec/api-srs.md
 
 - | SRS-API-007 | System shall log all auth events | functional | must | — |
 + | SRS-API-007 | System shall log all auth events | functional | should | — |
@@ -34,7 +34,7 @@ File: spec/api-srs.md
 
 Or for JSON:
 ```
-File: spec/tickets.json
+File: .specseed/spec/tickets.json
 Ticket: FEAT-0042
 
   "status": "todo"  →  "status": "blocked"
@@ -54,8 +54,8 @@ Write the change. **Repo mode:** edit the file in place. **Chat mode:** deliver 
 ### 6. Trigger downstream scripts
 
 After apply:
-- If a SRS file changed → reqs.json must be regenerated → run (or remind user to run) `python spec/scripts/requirements_generate_json.py`, then `python spec/scripts/requirements_analyze.py`
-- If `tickets.json` changed → run (or remind) `python spec/scripts/tickets_validate.py`, then `python spec/scripts/tickets_analyze.py`
+- If a SRS file changed → reqs.json must be regenerated → run (or remind user to run) `python .specseed/scripts/requirements_generate_json.py`, then `python .specseed/scripts/requirements_analyze.py`
+- If `tickets.json` changed → run (or remind) `python .specseed/scripts/tickets_validate.py`, then `python .specseed/scripts/tickets_analyze.py`
 - If both SRS and tickets.json changed (SRS+ticket combo) → run all four in order: generate_json → requirements_analyze → tickets_validate → tickets_analyze
 - If vision/sad/adr changed → no script triggers, just the edit
 

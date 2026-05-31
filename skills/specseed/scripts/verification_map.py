@@ -2,14 +2,14 @@
 verification_map.py
 
 Produces the inverse map req → ticket(s) → test file(s) on demand from
-spec/reqs.json + spec/tickets.json. Replaces the dropped SRS `Verified by`
-column.
+.specseed/spec/reqs.json + .specseed/spec/tickets.json. Replaces the dropped
+SRS `Verified by` column.
 
 Usage:
-    python spec/scripts/verification_map.py
-    python spec/scripts/verification_map.py --check
-    python spec/scripts/verification_map.py --req SRS-API-001
-    python spec/scripts/verification_map.py --format markdown
+    python .specseed/scripts/verification_map.py
+    python .specseed/scripts/verification_map.py --check
+    python .specseed/scripts/verification_map.py --req SRS-API-001
+    python .specseed/scripts/verification_map.py --format markdown
 
 See module-spec docstring in skill notes for full contract.
 """
@@ -26,8 +26,8 @@ def main():
                    help="exit 1 if any req has no test coverage")
     p.add_argument("--req", default=None, help="show map for a single req only")
     p.add_argument("--format", choices=["json", "markdown"], default="json")
-    p.add_argument("--reqs-path", default="spec/reqs.json")
-    p.add_argument("--tickets-path", default="spec/tickets.json")
+    p.add_argument("--reqs-path", default=".specseed/spec/reqs.json")
+    p.add_argument("--tickets-path", default=".specseed/spec/tickets.json")
     p.add_argument("--include-deprecated", action="store_true",
                    help="include deprecated tickets in the map (off by default)")
     args = p.parse_args()

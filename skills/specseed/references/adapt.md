@@ -1,6 +1,6 @@
 # Adapt mode
 
-Existing `spec/` tree present. User wants to update, extend, or revise it non-trivially. Not a full re-spec.
+Existing `.specseed/spec/` tree present. User wants to update, extend, or revise it non-trivially. Not a full re-spec.
 
 Load `references/question-protocol.md` before any user-facing round. Most adapt sessions are SHORTER than bootstrap — apply anti-max-bias harder.
 
@@ -22,18 +22,18 @@ Load `references/question-protocol.md` before any user-facing round. Most adapt 
 ## Stage 1: Assess existing artifacts + drift
 
 Read in this order:
-1. `spec/vision.md`
-2. `spec/sad.md`
+1. `.specseed/spec/vision.md`
+2. `.specseed/spec/sad.md`
 3. All `*srs.md` (note which have `settled: true` frontmatter)
 4. All `*sdd.md`
-5. `spec/adr.csv`
-6. `spec/reqs.json`
-7. `spec/tickets.json`
-8. `spec/milestones.md` and `spec/deployment.md` if present
+5. `.specseed/spec/adr.csv`
+6. `.specseed/spec/reqs.json`
+7. `.specseed/spec/tickets.json`
+8. `.specseed/spec/milestones.md` and `.specseed/spec/deployment.md` if present
 
-Scan for open `spec_concern.md` files under `spec/ticket_tracking/*/`. These were written by implementation agents that hit a settled doc they thought was wrong mid-ticket. Note their existence; they're candidate triggers for this session (see stage 2).
+Scan for open `spec_concern.md` files under `.specseed/ticket_tracking/*/`. These were written by implementation agents that hit a settled doc they thought was wrong mid-ticket. Note their existence; they're candidate triggers for this session (see stage 2).
 
-**Run `spec/scripts/drift_check.py`** if present. It surfaces mechanical drift:
+**Run `.specseed/scripts/drift_check.py`** if present. It surfaces mechanical drift:
 - Test files referenced in tickets `artifacts.tests` that don't exist on disk
 - Settled docs whose `settled_at` predates significant recent commits to related source modules
 - (Other heuristic checks per the script's docstring)
@@ -59,7 +59,7 @@ Free-form answer expected — not a structured round. Capture in `memory.md` und
 
 **Spec-concern trigger.** If stage 1 found one or more open `spec_concern.md` files, offer them as triggers first:
 
-> "Implementation agent flagged a concern at `spec/ticket_tracking/<id>/spec_concern.md`. Address it now, or set your own trigger?"
+> "Implementation agent flagged a concern at `.specseed/ticket_tracking/<id>/spec_concern.md`. Address it now, or set your own trigger?"
 
 If user picks the concern, read the concern file, summarize it back to the user in one paragraph, confirm understanding, then proceed. The concern file itself becomes the trigger.
 
@@ -84,9 +84,9 @@ Map the trigger to specific docs + IDs:
 ```
 Impact map:
 - vision.md: NO CHANGE
-- spec/sad.md: NO CHANGE
-- spec/api-srs.md: 2 new reqs (SRS-API-042, SRS-API-043), 1 deprecated (SRS-API-017)  [SETTLED — reopen]
-- spec/api-sdd.md: new "Webhook retry" section
+- .specseed/spec/sad.md: NO CHANGE
+- .specseed/spec/api-srs.md: 2 new reqs (SRS-API-042, SRS-API-043), 1 deprecated (SRS-API-017)  [SETTLED — reopen]
+- .specseed/spec/api-sdd.md: new "Webhook retry" section
 - adr.csv: +1 row (retry strategy)
 - reqs.json: regenerate
 - tickets.json: 2 new tickets (FEAT-0023, FEAT-0024); FEAT-0011 acceptance criteria revised
@@ -145,11 +145,11 @@ Skip rounds entirely if delta-map is unambiguous and user's trigger already cove
 ## Stage 6: Re-run analyzers
 
 After patches:
-1. Re-run `spec/scripts/requirements_generate_json.py` (regenerates `reqs.json` from SRS)
-2. Re-run `spec/scripts/requirements_analyze.py` — any new cycles/orphans/dangling refs? Apply cycle resolution moves from bootstrap stage 9
-3. Run `spec/scripts/tickets_validate.py` after any ticket edit — fix schema issues
-4. Re-run `spec/scripts/tickets_analyze.py` — critical path shifted? Surface to user if so
-5. (Optional) re-run `spec/scripts/drift_check.py` to confirm the trigger drift item(s) are no longer flagged
+1. Re-run `.specseed/scripts/requirements_generate_json.py` (regenerates `reqs.json` from SRS)
+2. Re-run `.specseed/scripts/requirements_analyze.py` — any new cycles/orphans/dangling refs? Apply cycle resolution moves from bootstrap stage 9
+3. Run `.specseed/scripts/tickets_validate.py` after any ticket edit — fix schema issues
+4. Re-run `.specseed/scripts/tickets_analyze.py` — critical path shifted? Surface to user if so
+5. (Optional) re-run `.specseed/scripts/drift_check.py` to confirm the trigger drift item(s) are no longer flagged
 
 **Repo mode:** agent runs all five directly.
 **Chat mode:** skill reminds user with copy-paste-ready commands after delivering changed files.
@@ -199,7 +199,7 @@ If adapt would invalidate a currently `in_progress` or `done` ticket:
 - Surface to user as a warning before proceeding
 - Options: pause the in-progress ticket; mark done ticket as blocked-pending-rework; defer adapt until ticket finishes
 
-If adapt session itself grows large enough that ≥40% of spec docs need rework, recommend the user end this session and start a fresh bootstrap (with the old `spec/` as reference). Don't try to push through.
+If adapt session itself grows large enough that ≥40% of spec docs need rework, recommend the user end this session and start a fresh bootstrap (with the old `.specseed/spec/` as reference). Don't try to push through.
 
 ---
 
@@ -214,10 +214,10 @@ Locate all reqs belonging to the feature: by SRS section heading, by ID range, o
 ```
 Retirement candidates for feature "webhook retry":
 - SRS-API-031 through SRS-API-038 (8 reqs, 6 must / 2 should)
-- Section "## Webhook retry" in spec/api-srs.md
+- Section "## Webhook retry" in .specseed/spec/api-srs.md
 - Tickets: FEAT-0022 (done), FEAT-0023 (done), FEAT-0024 (todo)
 - Tests under tests/api/test_webhook_retry.py
-- SDD section "Webhook retry strategy" in spec/api-sdd.md
+- SDD section "Webhook retry strategy" in .specseed/spec/api-sdd.md
 - ADR row: "Picked exponential backoff for webhook retries"
 ```
 

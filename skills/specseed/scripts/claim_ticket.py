@@ -4,7 +4,7 @@ claim_ticket.py <ticket_id>
 Atomic ticket claim. Replaces the raw `jq` claim one-liner so multiple
 concurrent agents can't claim the same ticket and proceed.
 
-Uses `fcntl.flock` (advisory POSIX lock) on `spec/tickets.json` for the
+Uses `fcntl.flock` (advisory POSIX lock) on `.specseed/spec/tickets.json` for the
 read-verify-write critical section. Lock auto-releases on process exit
 (killed/stuck agents can't block claims forever). Stale claims (older than
 --stale-hours) are taken over.
@@ -86,7 +86,7 @@ def main():
                    help="do not take over stale claims; report conflict instead")
     p.add_argument("--lock-timeout", type=float, default=10.0,
                    help="max seconds to wait for file lock (default 10)")
-    p.add_argument("--tickets-path", default="spec/tickets.json")
+    p.add_argument("--tickets-path", default=".specseed/spec/tickets.json")
     args = p.parse_args()
 
     agent = args.agent or default_agent_id()

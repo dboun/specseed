@@ -1,7 +1,7 @@
 """
 tickets_validate.py
 
-Validates spec/tickets.json. See module-level spec in skill notes.
+Validates .specseed/spec/tickets.json. See module-level spec in skill notes.
 
 Checks:
  1. ID format /^[A-Z]+-\\d{4,}$/, unique
@@ -45,7 +45,7 @@ def parse_iso_timestamp(s):
 
 
 def parse_milestones(milestones_path):
-    """Parse spec/milestones.md to find milestone names like M1, M2.
+    """Parse .specseed/spec/milestones.md to find milestone names like M1, M2.
     Returns set of names, or None if file doesn't exist (milestones not in use).
     """
     if not milestones_path.exists():
@@ -216,9 +216,9 @@ def validate_one(tid, t, all_ids, reqs, milestones, repo_root):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--tickets-path", default="spec/tickets.json")
-    p.add_argument("--reqs-path", default="spec/reqs.json")
-    p.add_argument("--milestones-path", default="spec/milestones.md")
+    p.add_argument("--tickets-path", default=".specseed/spec/tickets.json")
+    p.add_argument("--reqs-path", default=".specseed/spec/reqs.json")
+    p.add_argument("--milestones-path", default=".specseed/spec/milestones.md")
     p.add_argument("--repo-root", default=".")
     args = p.parse_args()
 

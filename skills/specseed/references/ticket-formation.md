@@ -4,13 +4,13 @@ Used in bootstrap stage 10 and adapt mode when new tickets are needed.
 
 ## Inputs
 
-- `spec/reqs.json` (settled reqs, generated from SRS)
-- `spec/sad.md` and `spec/sdd.md` (or per-component variants)
-- `spec/memory.md` (recent context — component summaries from stage 4)
+- `.specseed/spec/reqs.json` (settled reqs, generated from SRS)
+- `.specseed/spec/sad.md` and `.specseed/spec/sdd.md` (or per-component variants)
+- `.specseed/memory.md` (recent context — component summaries from stage 4)
 
 ## Output
 
-`spec/tickets.json` — **source of truth, written directly** (no source markdown). Schema:
+`.specseed/spec/tickets.json` — **source of truth, written directly** (no source markdown). Schema:
 
 ```json
 {
@@ -51,7 +51,7 @@ Used in bootstrap stage 10 and adapt mode when new tickets are needed.
 - `artifacts.touches`: directories/files this ticket modifies
 - `artifacts.tests`: test file paths (when known; can be added during implementation)
 - `artifacts.migrations`: OPTIONAL — paths to forward migration scripts (DB schema, file-format changes, persistent-state changes). Present only when the ticket changes data shape. See "Migrations" section below
-- `milestone`: OPTIONAL field. Only present if user opted into milestones (`spec/milestones.md` exists). See "Milestones" section below
+- `milestone`: OPTIONAL field. Only present if user opted into milestones (`.specseed/spec/milestones.md` exists). See "Milestones" section below
 
 ### ID format
 
@@ -117,7 +117,7 @@ Not all merge points need one — small merges (both branches are 1–2 tickets 
 
 ## Critical path
 
-After `tickets.json` written, run `spec/scripts/tickets_analyze.py` (user-provided). Returns critical path = longest dep chain. Determines minimum project duration.
+After `tickets.json` written, run `.specseed/scripts/tickets_analyze.py` (user-provided). Returns critical path = longest dep chain. Determines minimum project duration.
 
 - Schedule critical-path tickets first. Best agent, highest priority
 - Parallel branches run alongside
@@ -174,7 +174,7 @@ If user agrees the spike's findings need no doc changes (rare but possible), mar
 Only relevant if the user asked for milestones during the context pre-stage or later.
 
 If opted in:
-- Create `spec/milestones.md` listing named milestones (M1, M2, ...) with:
+- Create `.specseed/spec/milestones.md` listing named milestones (M1, M2, ...) with:
   - Goal (one line per milestone)
   - Target date (if any)
   - List of ticket IDs included
@@ -195,7 +195,7 @@ When unsure, surface to user with a 1-line summary of the trade-off, don't ask o
 
 ## Validation
 
-After writing or editing `tickets.json`, ALWAYS run `spec/scripts/tickets_validate.py`:
+After writing or editing `tickets.json`, ALWAYS run `.specseed/scripts/tickets_validate.py`:
 - Schema check
 - ID uniqueness
 - Dangling `depends_on` refs (ticket IDs not in tickets.json)

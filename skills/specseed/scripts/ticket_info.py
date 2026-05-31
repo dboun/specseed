@@ -21,8 +21,8 @@ Exit codes:
   2 — bad args, missing files, malformed JSON
 
 Optional flags:
-  --tickets-path <p>  Override default `spec/tickets.json`
-  --reqs-path <p>     Override default `spec/reqs.json`
+  --tickets-path <p>  Override default `.specseed/spec/tickets.json`
+  --reqs-path <p>     Override default `.specseed/spec/reqs.json`
 """
 
 import argparse
@@ -34,8 +34,8 @@ from pathlib import Path
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("ticket_id")
-    p.add_argument("--tickets-path", default="spec/tickets.json")
-    p.add_argument("--reqs-path", default="spec/reqs.json")
+    p.add_argument("--tickets-path", default=".specseed/spec/tickets.json")
+    p.add_argument("--reqs-path", default=".specseed/spec/reqs.json")
     args = p.parse_args()
 
     tickets_path = Path(args.tickets_path)

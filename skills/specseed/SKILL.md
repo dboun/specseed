@@ -5,7 +5,9 @@ description: Documentation-driven development spec creation skill. Use whenever 
 
 # specseed
 
-Skill for producing and maintaining software specification artifacts. Routes by mode. Produces a `spec/` tree (repo) or chat artifacts.
+Skill for producing and maintaining software specification artifacts. Routes by mode. Produces a `.specseed/` tree (repo) or chat artifacts.
+
+**Hard rule — never touch the main repo's own files.** All spec artifacts live under `<repo_root>/.specseed/`. The skill does NOT create or edit `spec/`, `docs/`, or any pre-existing source layout. The ONLY files the skill writes into the main repo proper are: `README.md`, root `CLAUDE.md`, per-component `CLAUDE.md` files, and top-level `AGENTS.md` — and each of those, if it already exists, triggers the merge protocol (see "Main-repo files & merge protocol" below). No `CONTRIBUTING.md` is ever written — its content folds into `CLAUDE.md`.
 
 Agent-agnostic — works in Claude Code, Codex, or any agent harness with filesystem access. Detects repo vs chat at session start and delivers accordingly.
 
@@ -61,7 +63,7 @@ Then route to mode file.
 
 ## Memory protocol
 
-Session scratch at `spec/memory.md` (repo) or chat artifact (no-repo). Holds:
+Session scratch at `.specseed/memory.md` (repo) or chat artifact (no-repo). Holds:
 - Current workflow stage + sub-step
 - Per-component summaries when components done
 - Locked decisions not yet on disk
@@ -75,16 +77,17 @@ Session scratch at `spec/memory.md` (repo) or chat artifact (no-repo). Holds:
 
 **After any context compression: reread `SKILL.md`, then `memory.md` to resume.** Bake this into the last line of `memory.md`: `On resume: reread SKILL.md first, then this file.`
 
-**Delete `memory.md` at session end** (or move salient bits to a changelog if user asks). On `/specseed stop` mid-session, KEEP `memory.md` intact so resume works on next invocation.
+**Delete `.specseed/memory.md` at session end** (or move salient bits to a changelog if user asks). On `/specseed stop` mid-session, KEEP `.specseed/memory.md` intact so resume works on next invocation.
 
 ## Output destination
 
 Detect at session start:
 
 **Repo mode (any agent harness with writeable filesystem):**
-- Write all files to disk under the canonical hierarchy below
+- Write all spec files to disk under `<repo_root>/.specseed/` per the canonical hierarchy below
 - After any script-touched edit (reqs.json regen, tickets.json change, etc), agent runs the relevant analyzer/validator script itself
 - Tell user what was written, not the file contents
+- **Inform the user, early (first message of repo-mode session) and again at session end:** all spec artifacts live under `.specseed/` and their existing `spec/`/`docs/` (if any) is left untouched; the only files placed in the main repo are `README.md`, `CLAUDE.md` (root + per-component), and `AGENTS.md`
 
 **Chat mode (no repo / no filesystem):**
 - Deliver files as chat artifacts
@@ -92,35 +95,41 @@ Detect at session start:
 - **Adapt:** only the changed files as artifacts + a diff summary in chat
 - **Tweak:** only the changed file(s). Nothing else
 - After any edit that would trigger a script (reqs.json regen, validation), **remind** the user with copy-paste-ready commands. Do not assume the user has scripts wired
-- **Naming:** deliver each file with its full canonical path as its identifier (e.g. `spec/api-srs.md`, not bare `srs.md`) so multiple files of the same type don't collide visually in the chat history
+- **Naming:** deliver each file with its full canonical path as its identifier (e.g. `.specseed/spec/api-srs.md`, not bare `srs.md`) so multiple files of the same type don't collide visually in the chat history
 
 ## Output hierarchy (canonical)
 
+Everything the skill produces lives under `<repo_root>/.specseed/`, EXCEPT the agent-/user-facing entry files (`README.md`, `CLAUDE.md`(s), `AGENTS.md`) which must sit at their conventional locations in the main repo.
+
 ```
-README.md                       # user-facing, normal English, brief, anti-fluff
-CLAUDE.md                       # agent runtime entry — write from references/CLAUDE_template.md
-AGENTS.md                       # one line: "Read ./CLAUDE.md. In dirs you work on, read corresponding CLAUDE.md too."
-docs/
-└── CONTRIBUTING.md             # folder structure, branching, versioning, release artifacts, release gates
-spec/
-├── vision.md
-├── sad.md
-├── adr.csv                     # columns: Decision,Justification
-├── srs.md                      # OR per-component (<component>-srs.md)
-├── sdd.md                      # OR per-component (<component>-sdd.md)
-├── cross-cutting-srs.md        # OPTIONAL — virtual component for cross-cutting concerns
-├── reqs.json                   # generated from SRS tables
-├── tickets.json                # source of truth (NOT generated from md)
+# ---- main repo (the ONLY files the skill writes outside .specseed/) ----
+README.md                       # user-facing, normal English, brief, anti-fluff. Merge protocol if exists
+CLAUDE.md                       # agent runtime entry — write from references/CLAUDE_template.md. Merge protocol if exists
+AGENTS.md                       # one line: "Read ./CLAUDE.md. In dirs you work on, read corresponding CLAUDE.md too." Merge protocol if exists
+<component>/CLAUDE.md           # OPTIONAL per-component agent notes (multi-component repos). Merge protocol if exists
+# NO docs/CONTRIBUTING.md — its content folds into CLAUDE.md (see references/CLAUDE_template.md)
+
+# ---- .specseed/ (all spec artifacts + runtime) ----
+.specseed/
 ├── memory.md                   # session scratch — deleted at end; preserved on /specseed stop
-├── milestones.md               # OPTIONAL — only if user asks
-├── deployment.md               # OPTIONAL — only if Operations theme flagged in component questioning
+├── spec/
+│   ├── vision.md
+│   ├── sad.md
+│   ├── adr.csv                 # columns: Decision,Justification
+│   ├── srs.md                  # OR per-component (<component>-srs.md)
+│   ├── sdd.md                  # OR per-component (<component>-sdd.md)
+│   ├── cross-cutting-srs.md    # OPTIONAL — virtual component for cross-cutting concerns
+│   ├── reqs.json               # generated from SRS tables
+│   ├── tickets.json            # source of truth (NOT generated from md)
+│   ├── milestones.md           # OPTIONAL — only if user asks
+│   └── deployment.md           # OPTIONAL — only if Operations theme flagged in component questioning
 ├── ticket_tracking/
 │   └── <ticket_id>/
 │       ├── plan.md
 │       ├── spec_concern.md     # OPTIONAL — written by impl agent if settled doc looks wrong mid-ticket
 │       └── step_reports/
 │           └── <X>_<step>_<desc>.md
-└── scripts/
+└── scripts/                    # may grow subfolders as more tooling is added
     ├── requirements_generate_json.py   # parses SRS table rows → reqs.json
     ├── requirements_analyze.py         # USER-PROVIDED — cycle/orphan detection
     ├── tickets_validate.py     # schema + ID uniqueness + dangling-ref checks
@@ -141,6 +150,23 @@ Notes:
 - `claim_ticket.py` replaces the raw `jq` claim one-liner in `CLAUDE.md`. Uses `fcntl.flock` for atomic read-verify-write; auto-recovers stale claims (default >3h old). Lock acquisition has a short timeout (default 10s) so a stuck/dead process can't block claims indefinitely. Lock itself releases on process exit.
 - `drift_check.py` is a mechanical drift detector — runs as part of adapt mode assessment, optionally before impl agents claim long-running tickets.
 
+## Main-repo files & merge protocol
+
+The skill writes four kinds of file into the main repo (everything else goes under `.specseed/`): `README.md`, root `CLAUDE.md`, per-component `CLAUDE.md`, and top-level `AGENTS.md`. `CONTRIBUTING.md` is NOT one of them — its content (folder structure, branching, versioning, release, release gates, conventions) folds into `CLAUDE.md`.
+
+**Inform the user** (first message of a repo-mode session, and again at session end) which of these will land in the main repo and that everything else is confined to `.specseed/`.
+
+**If the file does NOT already exist:** write the skill's version directly.
+
+**If the file ALREADY exists** (`README.md`, any `CLAUDE.md`, or `AGENTS.md`): do NOT silently overwrite. Discuss a merge strategy with the user before writing:
+1. Read the existing file
+2. **Default recommendation: replace** with the skill's version (its structure is what the implementation agent + downstream machinery expect).
+3. **But scan the existing file for interesting/non-obvious additions** (project-specific commands, gotchas, conventions, links) the skill's version would drop. If any exist, surface them and **propose appending** them into the skill's version (e.g. under a "Project-specific notes" section) rather than losing them.
+4. Present the choice: **replace** / **replace + append-their-extras** / **keep theirs (skip)**. Recommend option 2 when the existing file has real content worth keeping, option 1 when it's boilerplate/stale.
+5. Never destroy the user's content without an explicit OK.
+
+This applies in both bootstrap (stage 11) and adapt/tweak when these files are (re)generated.
+
 ## Settled vs editable
 
 **Contract, not enforcement.** Settled is a soft-frozen marker honored by agents using this skill's `CLAUDE.md` template. The filesystem does not block edits. Other agents, scripts, or humans can edit settled docs freely — and doing so desyncs traceability (adapt mode assumes settled = stable). If your runtime doesn't follow the contract, the safety guarantees here don't apply.
@@ -149,14 +175,14 @@ After srs/sdd/sad/vision are **settled** (soft-frozen with user approval), the *
 
 If the implementation agent finds a settled doc looks wrong mid-ticket, it MUST:
 1. Mark its current ticket `status: "blocked"`
-2. Write `spec/ticket_tracking/<ticket_id>/spec_concern.md` describing what's wrong, why, and what it would change
-3. Tell the user: **"Use `/specseed adapt` to address spec concern: spec/ticket_tracking/<id>/spec_concern.md"**
+2. Write `.specseed/ticket_tracking/<ticket_id>/spec_concern.md` describing what's wrong, why, and what it would change
+3. Tell the user: **"Use `/specseed adapt` to address spec concern: .specseed/ticket_tracking/<id>/spec_concern.md"**
 
 The implementation agent does NOT edit the settled doc itself, ever. Adapt mode is the only path through. When adapt mode reopens a settled doc, it logs to `adr.csv`.
 
 ## User-provided scripts
 
-`spec/scripts/requirements_analyze.py` and `spec/scripts/tickets_analyze.py` are USER-PROVIDED — existing tools the user has. If not present at session start when a flow stage would call them, skill asks the user to provide them or describe their interface before proceeding.
+`.specseed/scripts/requirements_analyze.py` and `.specseed/scripts/tickets_analyze.py` are USER-PROVIDED — existing tools the user has. If not present at session start when a flow stage would call them, skill asks the user to provide them or describe their interface before proceeding.
 
 ## Carry-forward (post-rewrite)
 

@@ -1,6 +1,6 @@
 # Bootstrap mode
 
-Greenfield. No prior spec. Produce full `spec/` tree (or chat artifacts in progressive delivery).
+Greenfield. No prior spec. Produce full `.specseed/spec/` tree (or chat artifacts in progressive delivery).
 
 Load `references/question-protocol.md` before any user-facing round.
 
@@ -16,7 +16,7 @@ Load `references/question-protocol.md` before any user-facing round.
 8. ADRs + SDD (parallel, after settle)
 9. `reqs.json` generation + cycle resolution (run `requirements_generate_json.py`, then `requirements_analyze.py`; resolve cycles if any)
 10. Ticket formation + validation + critical path (use `ticket-formation.md`; run `tickets_validate.py` + `tickets_analyze.py`)
-11. Write `README.md` + `CLAUDE.md` (from `references/CLAUDE_template.md`) + `AGENTS.md` + `docs/CONTRIBUTING.md` + per-component `CLAUDE.md` (if N>1)
+11. Write main-repo entry files (merge protocol if any already exist): `README.md` + `CLAUDE.md` (from `references/CLAUDE_template.md`, with `CONTRIBUTING` content folded into its `## Project conventions` section) + `AGENTS.md` + per-component `CLAUDE.md` (if N>1). No separate `CONTRIBUTING.md`
 12. Optional artifacts (`milestones.md`, `deployment.md`) if triggered
 13. Session end (clean `memory.md`)
 
@@ -44,7 +44,7 @@ Write summary → `memory.md` under `## Context`.
 
 ## Stage 2: Vision draft
 
-Write `spec/vision.md`. **No IDs.** Sections:
+Write `.specseed/spec/vision.md`. **No IDs.** Sections:
 - Why (the problem and why now)
 - Stakeholders (who cares, in what role)
 - Scope (in / out)
@@ -87,7 +87,7 @@ Review context for signals that cross-cutting concerns materially matter:
 
 **If signals present:** propose a virtual `cross-cutting` component:
 
-> "Context suggests cross-cutting concerns matter (security + observability). Add a virtual `cross-cutting` component? Gets its own `spec/cross-cutting-srs.md` with `SRS-CC-NNN` IDs, treated like any other component by analyzers and tickets."
+> "Context suggests cross-cutting concerns matter (security + observability). Add a virtual `cross-cutting` component? Gets its own `.specseed/spec/cross-cutting-srs.md` with `SRS-CC-NNN` IDs, treated like any other component by analyzers and tickets."
 > - **A)** Yes, add it
 > - **B)** No, fold into per-component SRSs
 >
@@ -114,11 +114,11 @@ After each component's questioning done:
 
 Components processed sequentially. Do not interleave.
 
-**Operations theme flag:** if a component's questioning round includes the Operations theme (theme 6 in `component-questions.md`) AND the user's answer indicates ops concerns matter, mark in `memory.md` to add `spec/deployment.md` at stage 12.
+**Operations theme flag:** if a component's questioning round includes the Operations theme (theme 6 in `component-questions.md`) AND the user's answer indicates ops concerns matter, mark in `memory.md` to add `.specseed/spec/deployment.md` at stage 12.
 
 ### 4b. SRS draft for that component
 
-Per component (or single `spec/srs.md` if N=1), draft the SRS immediately after that component's questioning is done.
+Per component (or single `.specseed/spec/srs.md` if N=1), draft the SRS immediately after that component's questioning is done.
 
 **ID format:** `SRS-<COMP>-<NNN>` where `<COMP>` is short code (e.g. `API`, `UI`, `CORE`, `WORKER`, `CC` for cross-cutting). Numbering starts at 001 per component.
 
@@ -147,11 +147,11 @@ Continue to next component (back to 4a) until all components done.
 
 ## Stage 5: SAD draft
 
-`spec/sad.md`. Sections:
+`.specseed/spec/sad.md`. Sections:
 - Components (one block each: responsibility, owns-data, doesn't-own). Include the cross-cutting component if present, noting it's virtual (no deployment unit; reqs realized across other components)
 - Interfaces (between components + external)
 - Data flow (sequence-level for key paths)
-- Deployment topology (where things run — high-level; full deployment procedures, if any, go to optional `spec/deployment.md`)
+- Deployment topology (where things run — high-level; full deployment procedures, if any, go to optional `.specseed/spec/deployment.md`)
 - Key decisions (high-level pointers; full decisions live in `adr.csv`)
 
 If interface control (formal contracts between components or with external systems) matters, fold into Interfaces section rather than a separate doc.
@@ -205,7 +205,7 @@ Cheap, high-value. Add rows as decisions emerge during SDD work.
 
 ### SDD
 
-`spec/sdd.md` or `spec/<component>-sdd.md` (per-component if multi-component). Sections:
+`.specseed/spec/sdd.md` or `.specseed/spec/<component>-sdd.md` (per-component if multi-component). Sections:
 - APIs (endpoints / function signatures / message schemas)
 - Schemas (data models, DB tables)
 - Libraries / frameworks (with versions if pinned)
@@ -224,7 +224,7 @@ For the cross-cutting component (if present), SDD covers how cross-cutting reqs 
 
 ### Generate
 
-Run `spec/scripts/requirements_generate_json.py` to extract from SRS table rows.
+Run `.specseed/scripts/requirements_generate_json.py` to extract from SRS table rows.
 
 Output schema:
 ```json
@@ -241,11 +241,11 @@ Output schema:
 (No `verified_by` field — see stage 4b note.)
 
 **Repo mode:** agent runs script directly.
-**Chat mode:** skill reminds user with command: `python spec/scripts/requirements_generate_json.py` and delivers the script if user doesn't have it yet.
+**Chat mode:** skill reminds user with command: `python .specseed/scripts/requirements_generate_json.py` and delivers the script if user doesn't have it yet.
 
 ### Analyze + resolve
 
-Then run `spec/scripts/requirements_analyze.py` (user-provided) — surfaces cycles, orphans, dangling refs.
+Then run `.specseed/scripts/requirements_analyze.py` (user-provided) — surfaces cycles, orphans, dangling refs.
 
 #### Cycle resolution moves
 
@@ -265,15 +265,15 @@ Use `references/ticket-formation.md`.
 
 ### Form
 
-Skill writes `spec/tickets.json` directly (NOT generated from markdown — JSON is source of truth here, see SKILL.md output hierarchy notes).
+Skill writes `.specseed/spec/tickets.json` directly (NOT generated from markdown — JSON is source of truth here, see SKILL.md output hierarchy notes).
 
 ### Validate
 
-After writing, run `spec/scripts/tickets_validate.py` — schema + ID uniqueness + dangling-ref checks. Fix any reported issues before proceeding.
+After writing, run `.specseed/scripts/tickets_validate.py` — schema + ID uniqueness + dangling-ref checks. Fix any reported issues before proceeding.
 
 ### Critical path
 
-Run `spec/scripts/tickets_analyze.py` (user-provided) — returns critical path + build order. Show critical path to user.
+Run `.specseed/scripts/tickets_analyze.py` (user-provided) — returns critical path + build order. Show critical path to user.
 
 User may rebalance ticket grouping if critical path is unreasonably long (often a sign of overly narrow tickets or artificial dependencies).
 
@@ -281,7 +281,9 @@ User may rebalance ticket grouping if critical path is unreasonably long (often 
 
 ---
 
-## Stage 11: Top-level docs
+## Stage 11: Main-repo entry files
+
+These are the ONLY files written outside `.specseed/`. Before writing any of them, **for each that already exists on disk, follow the merge protocol** in `SKILL.md` ("Main-repo files & merge protocol"): read the existing file, default to replacing with the skill's version, but scan for project-specific additions worth keeping and offer to append them; never destroy user content without explicit OK. **Tell the user** which of these will be placed in the main repo and that everything else stays under `.specseed/`.
 
 ### README.md
 
@@ -290,19 +292,25 @@ User-facing (not agent-facing). **Normal English** (not caveman) — newcomers n
 Sections:
 - What this project is (1 paragraph, plain language)
 - Quick start / install / first run
-- Where things live (link to `spec/`, `docs/`, source dirs)
-- How to contribute (link `docs/CONTRIBUTING.md`)
+- Where things live (note: spec/design artifacts live under `.specseed/`; link source dirs)
+- How to contribute (point to the `## Project conventions` section of `CLAUDE.md`)
 - License / contact
+
+(Merge protocol applies if `README.md` already exists.)
 
 ### CLAUDE.md (root)
 
-Write the contents of `references/CLAUDE_template.md` to the repo root as `CLAUDE.md`. Customize only the bash one-liners if user has a different command preference; otherwise template-as-is.
+Write the contents of `references/CLAUDE_template.md` to the repo root as `CLAUDE.md`. Customize:
+- the bash one-liners if user has a different command preference;
+- the `## Project conventions` section — fill it with the project's folder structure, branching, versioning, release process, artifact storage, and release gates (this is the former `CONTRIBUTING.md` content, now folded in — **no separate `CONTRIBUTING.md` is written**). If the user has nothing specific on release gates, leave that line as a placeholder for them to fill later.
+
+(Merge protocol applies if `CLAUDE.md` already exists.)
 
 ### Per-component CLAUDE.md (multi-component projects only)
 
 If N>1 from stage 3, **propose** per-component `CLAUDE.md` files to the user (don't auto-write). Each per-component file lives in that component's source directory (e.g. `api/CLAUDE.md`, `worker/CLAUDE.md`) and holds component-specific guidance: build/test commands, file layout conventions, common gotchas, library version pins relevant only to that component.
 
-Propose with a one-liner per component summarizing what each would contain, based on `memory.md` per-component summaries. User picks: write all, write some, write none.
+Propose with a one-liner per component summarizing what each would contain, based on `memory.md` per-component summaries. User picks: write all, write some, write none. (Merge protocol applies to any that already exist.)
 
 Root `AGENTS.md` already directs agents to read these when they exist — no additional wiring needed.
 
@@ -313,24 +321,20 @@ Literally one line:
 Read ./CLAUDE.md. In dirs you work on, read corresponding CLAUDE.md files in there too.
 ```
 
-### docs/CONTRIBUTING.md
-
-Folder structure (high-level), branching, versioning, release, artifact storage. Short. Configuration-management concerns fold here.
-
-**Include a release-gates line:** "Define release gates here (test coverage thresholds, env smoke checks, manual sign-off, etc) if relevant to your project." If user has nothing specific to say about release gates, leave the line as a placeholder for them to fill later.
+(Merge protocol applies if `AGENTS.md` already exists — though a one-liner rarely has additions worth keeping.)
 
 ---
 
 ## Stage 12: Optional artifacts
 
-- **`spec/milestones.md`** — only if user asked for milestones during context pre-stage or later. Lists named milestones (M1, M2, ...) with target dates if any + list of ticket IDs in each. Tickets may carry a `milestone` field referencing these
-- **`spec/deployment.md`** — only if Operations theme was flagged during a component questioning round (see stage 4 note). Covers operational procedures, runbooks, deployment commands. Distinct from SAD's Deployment topology section (that's *where things run*; this is *how to run them*)
+- **`.specseed/spec/milestones.md`** — only if user asked for milestones during context pre-stage or later. Lists named milestones (M1, M2, ...) with target dates if any + list of ticket IDs in each. Tickets may carry a `milestone` field referencing these
+- **`.specseed/spec/deployment.md`** — only if Operations theme was flagged during a component questioning round (see stage 4 note). Covers operational procedures, runbooks, deployment commands. Distinct from SAD's Deployment topology section (that's *where things run*; this is *how to run them*)
 
 ---
 
 ## Stage 13: Session end
 
 - Deliver manifest (chat mode): single artifact listing every file with its canonical path
-- Delete `spec/memory.md` (or move salient bits to a changelog file if user wants — confirm before)
+- Delete `.specseed/memory.md` (or move salient bits to a changelog file if user wants — confirm before)
 - Tell user what was created + any open TODOs
 - Note: future spec changes → re-invoke skill in adapt or tweak mode

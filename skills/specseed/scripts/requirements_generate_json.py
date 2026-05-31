@@ -1,19 +1,19 @@
 """
 requirements_generate_json.py
 
-Parses all SRS markdown files in spec/ and extracts requirement table rows
-into spec/reqs.json.
+Parses all SRS markdown files in .specseed/spec/ and extracts requirement
+table rows into .specseed/spec/reqs.json.
 
 See module-level docstring in the skill spec for full contract. Summary:
-- Walks spec/ for *srs.md and srs.md
+- Walks .specseed/spec/ for *srs.md and srs.md
 - Finds markdown tables with required columns: ID, Requirement, Type, Priority,
   Depends on (NO Verified by — that data is derived on demand by
   verification_map.py from tickets.json)
 - Validates type ∈ {functional, non_functional, constraint}, priority ∈
   {must, should, could, wont}
-- Writes spec/reqs.json sorted by ID
+- Writes .specseed/spec/reqs.json sorted by ID
 - Errors on malformed rows (file+line); exits 1
-- Exits 2 if spec/ not found or no SRS files
+- Exits 2 if .specseed/spec/ not found or no SRS files
 """
 
 import json
@@ -83,15 +83,15 @@ def parse_depends_on(cell):
 
 
 def main():
-    spec_dir = Path("spec")
+    spec_dir = Path(".specseed/spec")
     if not spec_dir.exists():
-        print("ERROR: spec/ directory not found in current working directory",
+        print("ERROR: .specseed/spec/ directory not found in current working directory",
               file=sys.stderr)
         sys.exit(2)
 
     srs_files = sorted({p.resolve() for p in spec_dir.glob("*srs.md")})
     if not srs_files:
-        print("ERROR: no *srs.md files found under spec/", file=sys.stderr)
+        print("ERROR: no *srs.md files found under .specseed/spec/", file=sys.stderr)
         sys.exit(2)
 
     out = {}
