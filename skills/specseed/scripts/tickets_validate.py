@@ -15,7 +15,9 @@ Checks:
     last; re-checked here)
  2. Required fields: title, type, priority, status
  3. Enums: type ∈ {feature,bug,chore,spike}; priority ∈ {high,medium,low};
-    status ∈ {todo,in_progress,blocked,done,deprecated}
+    status ∈ {todo,in_progress,blocked,awaiting_approval,done,wont_do,
+    deprecated}. Optional approval_required, if present, must be a boolean.
+    (No in_review at the ticket tier — there is no code to review on a ticket.)
  4. depends_on refs exist in tickets.json; no cycles
  5. satisfies_reqs refs exist in reqs.json (warn if empty)
  6. epic ref (if non-null) has a folder under <pm-dir>/epics/ (skipped if absent)
@@ -35,7 +37,8 @@ from graphlib import TopologicalSorter, CycleError
 ID_RE = re.compile(r"^[A-Z]+-\d{4,}$")
 VALID_TYPES = {"feature", "bug", "chore", "spike"}
 VALID_PRIORITIES = {"high", "medium", "low"}
-VALID_STATUSES = {"todo", "in_progress", "blocked", "done", "deprecated"}
+VALID_STATUSES = {"todo", "in_progress", "blocked", "awaiting_approval",
+                  "done", "wont_do", "deprecated"}
 REQUIRED_FIELDS = ["title", "type", "priority", "status"]
 
 
@@ -61,6 +64,9 @@ def validate_one(tid, t, all_ids, reqs, epics_dir, issues):
         errors.append({"id": tid, "kind": "enum", "field": "priority", "value": t["priority"]})
     if t["status"] not in VALID_STATUSES:
         errors.append({"id": tid, "kind": "enum", "field": "status", "value": t["status"]})
+    if "approval_required" in t and not isinstance(t["approval_required"], bool):
+        errors.append({"id": tid, "kind": "schema", "field": "approval_required",
+                       "detail": f"must be a boolean, got {t['approval_required']!r}"})
 
     deps = t.get("depends_on", []) or []
     if not isinstance(deps, list):

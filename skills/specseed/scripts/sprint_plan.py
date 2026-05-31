@@ -54,9 +54,10 @@ def plan(tickets, budget):
     ValueError on cycle."""
     cp = critical_path_set(tickets)
 
-    # Build graph restricted to known tickets; skip deprecated tickets entirely.
+    # Build graph restricted to known tickets; skip abandoned tickets entirely
+    # (wont_do / deprecated — they will never be executed).
     active = {tid: t for tid, t in tickets.items()
-              if t.get("status") != "deprecated"}
+              if t.get("status") not in ("deprecated", "wont_do")}
     deps_of = {tid: [d for d in (t.get("depends_on", []) or []) if d in active]
                for tid, t in active.items()}
     indeg = {tid: 0 for tid in active}
@@ -167,7 +168,8 @@ def main():
 
     deps_of = {tid: (t.get("depends_on", []) or []) for tid, t in tickets.items()}
     unsized = [tid for tid, t in tickets.items()
-               if t.get("status") != "deprecated" and not (t.get("effort_hours", 0) or 0)]
+               if t.get("status") not in ("deprecated", "wont_do")
+               and not (t.get("effort_hours", 0) or 0)]
 
     proposed = []
     for i, (ids, eff, epics) in enumerate(sprints, start=1):

@@ -315,7 +315,7 @@ After the critical path is settled, batch tickets into sprints (see `work-breakd
 1. Read `.specseed/memory/sprint_planning.md` for any durable prefs.
 2. `python .specseed/scripts/sprint_plan.py` → advisory proposal (cohesion-aware, CP-first, ~168h budget).
 3. One bounded refinement pass (business dates, coherence, slack); present to user; capture any durable prefs back to `sprint_planning.md`.
-4. On approval: write `sprint:` into each ticket folder + create `sprints/<SPRINT_ID>/` folders with `tickets:` lists; mark the first sprint `active`.
+4. On approval: write `sprint:` into each ticket folder + create `sprints/<SPRINT_ID>/` folders with `tickets:` lists; mark the first sprint `in_progress` (the sprint claiming targets).
 5. Assemble + validate + render:
    ```bash
    python .specseed/scripts/sprints_assemble.py

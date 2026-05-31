@@ -137,6 +137,11 @@ def main():
         meta.setdefault("claimed_by", None)
         meta.setdefault("depends_on", [])
         meta.setdefault("artifacts", {})
+        # Mandatory-gate markers (authored in the folder; default off). When set,
+        # the implementing agent must route through the gate state (in_review /
+        # awaiting_approval) and may NOT self-advance past it — see CLAUDE.md.
+        meta.setdefault("review_required", False)
+        meta.setdefault("approval_required", False)
         # Preserve live runtime state when the folder is still at the seed default
         if meta["status"] == "todo" and iid in prev:
             p = prev[iid]

@@ -45,7 +45,8 @@ def main():
     p.add_argument("--pm-dir", default=".specseed/project_management")
     p.add_argument("--tickets-path", default=None)
     p.add_argument("--issues-path", default=None)
-    p.add_argument("--include-deprecated", action="store_true")
+    p.add_argument("--include-deprecated", action="store_true",
+                   help="also include abandoned (deprecated/wont_do) entries")
     args = p.parse_args()
 
     pm = Path(args.pm_dir)
@@ -54,7 +55,7 @@ def main():
     issues = load(Path(args.issues_path) if args.issues_path else pm / "issues.json")
 
     def live(entry):
-        return args.include_deprecated or entry.get("status") != "deprecated"
+        return args.include_deprecated or entry.get("status") not in ("deprecated", "wont_do")
 
     # issue id -> tests, scoped to live issues
     issue_tests = {iid: list((ie.get("artifacts") or {}).get("tests", []) or [])

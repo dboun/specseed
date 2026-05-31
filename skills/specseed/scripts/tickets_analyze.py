@@ -12,7 +12,7 @@ def analyze(tickets: dict) -> dict:
             "<ticket_id>": {
                 "effort_hours": <number>,                # required
                 "depends_on": ["<ticket_id>", ...],      # optional, default []
-                "status": "todo|in_progress|blocked|done|deprecated"  # optional, default "todo"
+                "status": "todo|in_progress|blocked|awaiting_approval|done|wont_do|deprecated"  # optional, default "todo"
             },
             ...
         }
@@ -78,16 +78,18 @@ def analyze(tickets: dict) -> dict:
     path.reverse()
 
     # Next todo: walk build_order, pick first ticket where:
-    #   - status is "todo" or "blocked" (i.e. not done/deprecated/in_progress)
-    #   - all depends_on are in {done, deprecated}
+    #   - status is "todo" or "blocked" (any other state — in_progress, the
+    #     review/approval gates, or a resolved state — is skipped)
+    #   - all depends_on are resolved (done/wont_do/deprecated)
+    RESOLVED = ("done", "wont_do", "deprecated")
     done_set = {
         tid for tid in tickets
-        if tickets[tid].get("status", "todo") in ("done", "deprecated")
+        if tickets[tid].get("status", "todo") in RESOLVED
     }
     next_todo = None
     for tid in order:
         status = tickets[tid].get("status", "todo")
-        if status in ("done", "deprecated", "in_progress"):
+        if status not in ("todo", "blocked"):
             continue
         deps = tickets[tid].get("depends_on", [])
         if all(d in done_set for d in deps):

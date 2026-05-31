@@ -11,17 +11,20 @@ Two modes:
   - `claim_issue.py <issue_id>` → claim that specific issue.
 
 "Ready" issue (for auto-pick): status in {todo, blocked}, unclaimed, its own
-intra-ticket depends_on all done, AND its parent ticket is reachable (the
-ticket's depends_on tickets are all done/deprecated). Among ready issues,
+intra-ticket depends_on all resolved, AND its parent ticket is reachable (the
+ticket's depends_on tickets are all resolved). "Resolved" = done | wont_do |
+deprecated. Issues in a handoff state (in_review / awaiting_approval) are NOT
+pickable — the work is in flight and the original claim is retained; another
+agent claiming would steal it. Among ready issues,
 ordering is prerequisite-first: by SPRINT rank, then parent-ticket topo rank,
 then issue topo rank, then id. NOTE: critical-path weighting is NOT applied here
 — readiness + topo only. Run tickets_analyze.py for the ticket critical path.
 
 Sprint scoping (--sprint-scope, default `spill`): if sprints.json is present,
-issues whose parent ticket is in an `active` sprint are picked first; only when
-NONE of those are ready does the picker spill to the next planned sprint (by
+issues whose parent ticket is in the `in_progress` sprint are picked first; only
+when NONE of those are ready does the picker spill to the next planned sprint (by
 sprint `order`), and finally to backlog (tickets in no/done sprint). `current`
-forbids the spill (active sprint only); `all` ignores sprints entirely (legacy
+forbids the spill (in_progress sprint only); `all` ignores sprints entirely (legacy
 behaviour). With no sprints.json, behaviour is always `all`. Sprint scoping
 applies only to AUTO-PICK; claiming a specific issue id is never sprint-gated.
 
@@ -44,7 +47,12 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-DONE_STATES = {"done", "deprecated"}
+# "Resolved" = terminal: stops blocking deps + counts a parent done.
+RESOLVED = {"done", "wont_do", "deprecated"}
+# Parent tickets in these states make their issues unreachable (abandoned work).
+ABANDONED = {"wont_do", "deprecated"}
+# In-flight handoff states: claim retained, NOT auto-pickable / not stealable.
+HANDOFF = {"in_review", "awaiting_approval"}
 PICKABLE = {"todo", "blocked"}
 
 
@@ -120,12 +128,12 @@ def load_sprints(sprints_path):
 
 
 # sprint rank tiers (lower = picked first)
-ACTIVE_TIER, PLANNED_TIER, BACKLOG_TIER = 0, 1, 2
+CURRENT_TIER, PLANNED_TIER, BACKLOG_TIER = 0, 1, 2
 
 
 def sprint_rank_map(sprints):
-    """sprint_id -> (tier, order). Active sprints rank ahead of planned (by
-    order); done/deprecated sprints are treated as backlog. Returns {} if no
+    """sprint_id -> (tier, order). The in_progress sprint ranks ahead of planned
+    (by order); done/deprecated sprints are treated as backlog. Returns {} if no
     sprints data."""
     if not sprints:
         return {}
@@ -133,8 +141,8 @@ def sprint_rank_map(sprints):
     for sid, s in sprints.items():
         status = s.get("status", "planned")
         order = s.get("order", 0)
-        if status == "active":
-            out[sid] = (ACTIVE_TIER, order)
+        if status == "in_progress":
+            out[sid] = (CURRENT_TIER, order)
         elif status == "planned":
             out[sid] = (PLANNED_TIER, order)
         else:  # done / deprecated → backlog priority
@@ -171,10 +179,10 @@ def issue_sprint_rank(issue, tickets, t_sprint, s_rank):
 
 
 def ticket_done_map(tickets, issues):
-    """ticket_id -> bool. A ticket counts as done if its status is done/
-    deprecated, OR it has issues and all of them are done/deprecated. This is
-    derived LIVE from issues.json so dependent tickets unblock without needing
-    a re-assemble during execution."""
+    """ticket_id -> bool. A ticket counts as done if its status is resolved
+    (done/wont_do/deprecated), OR it has issues and all of them are resolved.
+    This is derived LIVE from issues.json so dependent tickets unblock without
+    needing a re-assemble during execution."""
     by_ticket = {}
     for ie in issues.values():
         tk = ie.get("ticket")
@@ -182,23 +190,24 @@ def ticket_done_map(tickets, issues):
             by_ticket.setdefault(tk, []).append(ie.get("status"))
     done = {}
     for tid, t in (tickets or {}).items():
-        if t.get("status") in DONE_STATES:
+        if t.get("status") in RESOLVED:
             done[tid] = True
             continue
         statuses = by_ticket.get(tid)
-        done[tid] = bool(statuses) and all(s in DONE_STATES for s in statuses)
+        done[tid] = bool(statuses) and all(s in RESOLVED for s in statuses)
     return done
 
 
 def ticket_reachable(parent, tickets, tdone):
-    """Reachable if the parent exists, isn't deprecated, and all its depends_on
-    tickets are done (per tdone). Unknown tickets.json / parent → True."""
+    """Reachable if the parent exists, isn't abandoned (wont_do/deprecated), and
+    all its depends_on tickets are resolved (per tdone). Unknown tickets.json /
+    parent → True."""
     if tickets is None or parent is None:
         return True
     t = tickets.get(parent)
     if t is None:
         return True  # can't resolve; don't block
-    if t.get("status") == "deprecated":
+    if t.get("status") in ABANDONED:
         return False
     for d in t.get("depends_on", []) or []:
         if d not in tickets:
@@ -213,7 +222,7 @@ def issue_deps_met(issue, issues):
         dep = issues.get(d)
         if dep is None:
             continue  # dangling dep — validator's job; don't block here
-        if dep.get("status") not in DONE_STATES:
+        if dep.get("status") not in RESOLVED:
             return False
     return True
 
@@ -222,10 +231,10 @@ def pick_next(issues, tickets, tdone, skip, t_sprint, s_rank, sprint_scope):
     """Return id of next ready issue, or None.
 
     sprint_scope ∈ {current, spill, all}. With sprint data present, eligible
-    issues are sorted by sprint tier/order first (active before planned before
-    backlog) — so the picker spills to the next sprint only when nothing in the
-    active sprint is ready. `current` filters to the active sprint only; `all`
-    ignores sprint rank.
+    issues are sorted by sprint tier/order first (in_progress before planned
+    before backlog) — so the picker spills to the next sprint only when nothing
+    in the in_progress sprint is ready. `current` filters to the in_progress
+    sprint only; `all` ignores sprint rank.
     """
     ticket_graph = {}
     if tickets:
@@ -251,7 +260,7 @@ def pick_next(issues, tickets, tdone, skip, t_sprint, s_rank, sprint_scope):
             continue
         if use_sprints and sprint_scope == "current":
             tier, _ = issue_sprint_rank(ie, tickets, t_sprint, s_rank)
-            if tier != ACTIVE_TIER:
+            if tier != CURRENT_TIER:
                 continue
         eligible.append(iid)
 
@@ -274,9 +283,19 @@ def do_claim(iid, issues, agent, stale_hours, no_stale, tickets, tdone):
     ie = issues[iid]
     status = ie.get("status", "todo")
 
-    if status in DONE_STATES:
+    if status in RESOLVED:
         return {"claimed": False, "issue_id": iid,
                 "reason": f"issue is {status}", "stale": False}, False
+    if status in HANDOFF:
+        # in_review / awaiting_approval: work is in flight, claim retained.
+        # Don't let another agent steal it. A human/reviewer (or the owner)
+        # moves it on, or resets it to in_progress to reclaim.
+        return {"claimed": False, "issue_id": iid,
+                "reason": f"issue is {status} (in handoff — not claimable; "
+                          f"reset to in_progress to reclaim)",
+                "current_claim": {"by": ie.get("claimed_by"),
+                                  "at": ie.get("claimed_at")},
+                "stale": False}, False
     if not issue_deps_met(ie, issues):
         return {"claimed": False, "issue_id": iid,
                 "reason": "issue depends_on not all done", "stale": False}, False
@@ -366,7 +385,7 @@ def main():
             target = pick_next(issues, tickets, tdone, skip, t_sprint, s_rank,
                                args.sprint_scope)
             if target is None:
-                reason = ("no ready issue in the active sprint"
+                reason = ("no ready issue in the in_progress sprint"
                           if (s_rank and args.sprint_scope == "current")
                           else "no ready issue to claim")
                 report({"claimed": False, "issue_id": None,

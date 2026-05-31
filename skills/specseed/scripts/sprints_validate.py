@@ -11,7 +11,8 @@ absent — ticket-ref and ordering checks are skipped with a warning.
 
 Checks:
  1. ID format /^SPRINT_\\d{4}_W\\d{2}_[A-Z]+$/, unique, == folder name
- 2. status enum {planned, active, done, deprecated}
+ 2. status enum {planned, in_progress, done, deprecated}. The single
+    `in_progress` sprint is the one claiming targets (was `active`).
  3. tickets[] refs exist in tickets.json; each member ticket's `sprint` field
     points back to this sprint (back-consistency)
  4. a ticket appears in at most one sprint
@@ -21,7 +22,7 @@ Checks:
  6. budget: warn if a sprint's effort_hours exceeds budget * over-factor (soft).
  7. info/warn: intra-sprint serial chain length (longest dep chain among a
     sprint's own tickets); warn if a sprint is fully serial (no parallelism).
- 8. warn if more than one sprint is `active`.
+ 8. warn if more than one sprint is `in_progress`.
 
 Exit: 0 OK (or warnings only), 1 errors, 2 missing input.
 """
@@ -33,7 +34,7 @@ import sys
 from pathlib import Path
 
 ID_RE = re.compile(r"^SPRINT_\d{4}_W\d{2}_[A-Z]+$")
-VALID_STATUSES = {"planned", "active", "done", "deprecated"}
+VALID_STATUSES = {"planned", "in_progress", "done", "deprecated"}
 
 
 def longest_chain(nodes, deps_of):
@@ -111,7 +112,7 @@ def main():
         if s.get("status") not in VALID_STATUSES:
             errors.append({"id": sid, "kind": "enum", "field": "status",
                            "value": s.get("status")})
-        if s.get("status") == "active":
+        if s.get("status") == "in_progress":
             active_count += 1
         members = s.get("tickets", []) or []
         if not isinstance(members, list):
@@ -127,7 +128,7 @@ def main():
 
     if active_count > 1:
         warnings.append({"id": "*", "kind": "multi_active",
-                         "detail": f"{active_count} sprints marked active"})
+                         "detail": f"{active_count} sprints marked in_progress"})
 
     # Ticket-aware checks
     if tickets is None:

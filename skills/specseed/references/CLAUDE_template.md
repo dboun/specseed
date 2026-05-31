@@ -52,7 +52,7 @@ Output is JSON:
 
 "Ready" means: status todo/blocked, unclaimed, its own `depends_on` issues done, and its parent ticket reachable (the ticket's `depends_on` tickets all complete). Ticket completion is derived live from issues — downstream tickets unblock automatically as their issues finish.
 
-**Sprints (if `sprints.json` exists):** auto-pick is sprint-scoped — it prefers issues whose ticket is in the **active** sprint and only spills to the next planned sprint when none are ready (default `--sprint-scope spill`). So normally you just run `claim_issue.py` and get current-sprint work. Use `--sprint-scope current` to refuse spill (stop when the active sprint is drained), or `all` to ignore sprints. No `sprints.json` → unscoped.
+**Sprints (if `sprints.json` exists):** auto-pick is sprint-scoped — it prefers issues whose ticket is in the **in_progress** sprint and only spills to the next planned sprint when none are ready (default `--sprint-scope spill`). So normally you just run `claim_issue.py` and get current-sprint work. Use `--sprint-scope current` to refuse spill (stop when the in_progress sprint is drained), or `all` to ignore sprints. No `sprints.json` → unscoped.
 
 To see the ticket-level critical path / build order (priority context):
 ```bash
@@ -142,11 +142,21 @@ Spike report:
 ```
 Then surface followups to the user (decision → `/specseed` for an ADR row; new/changed reqs or SDD pattern → `/specseed adapt`). Only AFTER the user has acted (or said "no spec changes needed") mark the spike `done`.
 
+## Review & approval gates
+
+Your issue (and its ticket) may carry mandatory gates:
+- `review_required: true` → after coding, set your issue `status: "in_review"` (keep your claim) instead of jumping to done. Code review (another LLM or a human) happens here. Review comes back with changes? Just move back to `in_progress` and keep going — there's no separate "changes requested" state, and transitions aren't locked.
+- `approval_required: true` → when the work is otherwise complete, set `status: "awaiting_approval"` (keep your claim) and **stop**. A human signs off.
+
+**Hard rule:** if a gate is `*_required: true`, **you — the agent that did the work — may NOT advance past it to `done` yourself.** Land it in the gate state (`in_review` / `awaiting_approval`) and hand off. A *different* actor (human, or a reviewer/automation) moves it to `done`. No self-approval, no exception. (If neither flag is set, finish normally below.)
+
+These states keep your claim and are NOT auto-pickable, so nobody steals the issue mid-handoff. To reclaim work that bounced back, reset it to `in_progress`.
+
 ## Finish
 
-When all plan steps `[x]` and tests pass:
+When all plan steps `[x]`, tests pass, and any required gates are cleared (see above — do NOT skip a mandatory gate):
 1. (Spike only) complete the spike post-completion steps first.
-2. Mark your issue done + clear your claim in `issues.json`:
+2. Mark your issue done + clear your claim in `issues.json` (skip if a gate left it in `in_review`/`awaiting_approval` — a different actor closes those out):
    ```bash
    jq --arg id "<issue_id>" '.[$id].status="done" | .[$id].claimed_at=null | .[$id].claimed_by=null' \
       .specseed/project_management/issues.json > /tmp/i.json && mv /tmp/i.json .specseed/project_management/issues.json
@@ -167,7 +177,7 @@ When all plan steps `[x]` and tests pass:
 
 ## What you CAN edit
 
-- `issues.json` — your OWN issue's `status` (`todo`→`in_progress`→`done`/`blocked`), claim fields (set by `claim_issue.py`, cleared by you on done), `notes`, `artifacts.tests`/`artifacts.migrations` as work progresses
+- `issues.json` — your OWN issue's `status` (`todo`→`in_progress`→ optional `in_review`/`awaiting_approval` gates →`done`; or `blocked`; `wont_do`/`deprecated` are set by the skill/human, not you), claim fields (set by `claim_issue.py`, cleared by you on done), `notes`, `artifacts.tests`/`artifacts.migrations` as work progresses
 - Your issue's folder: `<issue_id>.md` frontmatter (mirror status; update artifacts/notes), `plan.md`, `spec_concern.md`, `step_reports/*`
 - All source code, test files, build configs in your issue's scope
 
@@ -197,7 +207,7 @@ If it flags drift in areas your issue touches (missing test files, stale settled
 ## Skill-side notes (not written to user's CLAUDE.md)
 
 The template is INTENTIONALLY medium-length. It includes:
-- Issue pickup + atomic claim via `claim_issue.py` (no-arg auto-pick = pick-and-claim under one lock; `--skip` for light parallel work; sprint-scoped when `sprints.json` exists — active sprint first, spill to next)
+- Issue pickup + atomic claim via `claim_issue.py` (no-arg auto-pick = pick-and-claim under one lock; `--skip` for light parallel work; sprint-scoped when `sprints.json` exists — in_progress sprint first, spill to next)
 - The three-tier work model (epic/ticket/issue) and the folders-vs-JSON source-of-truth split (folders = authored content, JSON = live runtime state)
 - `issue_info.py` for the issue + parent ticket + reqs join (reqs live on the ticket)
 - Plan + step-report conventions under `issues/<id>/`

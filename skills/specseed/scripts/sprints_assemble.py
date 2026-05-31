@@ -23,12 +23,13 @@ Derived fields (computed here, not authored):
 Run issues_assemble.py and tickets_assemble.py FIRST — the derived fields read
 tickets.json. If tickets.json is absent, effort/counts fall back to 0 (warning).
 
-status preserve: a sprint's status (planned|active|done) is authored in the
-folder, but live status is preserved from an existing sprints.json when the
-folder is still at the seed default `planned` (so a runtime `active` flag isn't
-clobbered by a re-assemble). Auto-advances to `done` when the sprint has member
-tickets and ALL are done/deprecated (unless deprecated/forced). --no-preserve
-opts out.
+status preserve: a sprint's status (planned|in_progress|done|deprecated) is
+authored in the folder, but live status is preserved from an existing
+sprints.json when the folder is still at the seed default `planned` (so a
+runtime `in_progress` flag isn't clobbered by a re-assemble). Auto-advances to
+`done` when the sprint has member tickets and ALL are resolved (done/wont_do/
+deprecated), unless deprecated/forced. --no-preserve opts out. The single
+`in_progress` sprint is the one claim_issue.py targets (was `active`).
 
 Frontmatter format: flat `key: value`, structured values as inline JSON. See
 issues_assemble.py docstring.
@@ -41,7 +42,7 @@ import json
 import sys
 from pathlib import Path
 
-DONE_STATES = {"done", "deprecated"}
+RESOLVED = {"done", "wont_do", "deprecated"}   # terminal — counts a member ticket complete
 
 
 def coerce(v):
@@ -172,7 +173,7 @@ def main():
                 if isinstance(eh, bool) or not isinstance(eh, (int, float)):
                     eh = 0
                 effort += eh
-                if t.get("status") in DONE_STATES:
+                if t.get("status") in RESOLVED:
                     done += 1
         meta["effort_hours"] = effort
         meta["tickets_total"] = total

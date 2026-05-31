@@ -52,7 +52,7 @@ each value as JSON, falling back to a bare string.
 ---
 id: EPIC-0001
 title: Account security
-status: todo            # todo | in_progress | done | deprecated
+status: todo            # todo | in_progress | done | wont_do | deprecated
 tickets: ["PROJ-0042", "PROJ-0043"]
 ---
 ## Goal
@@ -72,7 +72,8 @@ title: Add password reset flow
 epic: EPIC-0001          # or null
 type: feature            # feature | bug | chore | spike
 priority: high           # high | medium | low
-status: todo             # todo | in_progress | blocked | done | deprecated
+status: todo             # todo | in_progress | blocked | awaiting_approval | done | wont_do | deprecated
+approval_required: false # PM acceptance gate (HITL) — see "Status model"
 depends_on: ["PROJ-0040"]   # OTHER TICKET ids — this is the critical-path DAG
 satisfies_reqs: ["SRS-API-012", "SRS-API-013"]
 issues: ["FEAT-0101", "FEAT-0102"]
@@ -103,7 +104,9 @@ type: feature            # feature | bug | chore | spike
 component: api
 effort_hours: 0.5        # AGENT-TIME estimate (see below)
 depends_on: []           # OPTIONAL intra-ticket issue ids (local ordering only)
-status: todo             # todo | in_progress | blocked | done | deprecated
+status: todo             # todo | in_progress | blocked | in_review | awaiting_approval | done | wont_do | deprecated
+review_required: false   # mandatory code-review gate — see "Status model"
+approval_required: false # mandatory human sign-off (HITL) gate — see "Status model"
 claimed_at: null
 claimed_by: null
 artifacts: {"touches": ["src/api/auth/"], "tests": ["tests/api/test_reset.py"], "migrations": []}
@@ -123,10 +126,106 @@ notes: ""
 - issue `depends_on`: other ISSUE ids for local ordering within/near a ticket (NOT the critical path)
 - ticket `satisfies_reqs`: 1–8 req IDs this ticket proves (issues inherit via parent)
 - ticket `sprint`: the sprint this ticket is assigned to (or null). Time-box membership, ORTHOGONAL to `epic`. See "Sprints".
-- `status`: `todo` / `in_progress` / `blocked` / `done` / `deprecated`
-- `claimed_at` / `claimed_by` (issues only): set by `claim_issue.py` when status → `in_progress`; `null` otherwise
+- `status`: per-tier enum — see "Status model & lifecycle" below for the full per-tier sets, semantics, gates, and transitions.
+- `review_required` (issues): mandatory code-review gate. `approval_required` (issues + tickets): mandatory human sign-off (HITL) gate. Both default `false`. See "Status model".
+- `claimed_at` / `claimed_by` (issues only): set by `claim_issue.py` when status → `in_progress`; retained while `in_review` / `awaiting_approval` (work in flight); `null` for `todo` / `done` / `wont_do` / `deprecated`
 - `artifacts.touches` / `.tests` / `.migrations` (issues only): dirs/files, test paths, forward-migration paths
 - `effort_hours` (issues only): **estimated agent time** to complete the issue (e.g. ~0.5h for a medium issue), NOT human days. Critical-path effort per ticket is the sum of its issues'.
+
+## Status model & lifecycle
+
+One `status` enum per tier, tailored to that tier. Claim fields
+(`claimed_at`/`claimed_by`) are the one orthogonal axis (issues only). A future
+GitHub/GitLab integration projects `status` (+ claim) onto issue labels +
+open/closed — nothing extra to store now; the terminal states are what map to
+"closed".
+
+### Per-tier states
+
+| State | Issue | Ticket | Epic | Sprint | Meaning |
+|-------|:---:|:---:|:---:|:---:|---------|
+| `todo` | ✓ | ✓ | ✓ | — | not started |
+| `planned` | — | — | — | ✓ | sprint exists, not yet running |
+| `in_progress` | ✓ | ✓ | ✓ | ✓ | actively worked (sprint: the one claiming targets) |
+| `blocked` | ✓ | ✓ | — | — | stuck (dep or external) |
+| `in_review` | ✓ | — | — | — | code complete, under LLM/human review |
+| `awaiting_approval` | ✓ | ✓ | — | — | needs human sign-off (HITL gate) |
+| `done` | ✓ | ✓ | ✓ | ✓ | completed — terminal |
+| `wont_do` | ✓ | ✓ | ✓ | — | decided never to do — terminal |
+| `deprecated` | ✓ | ✓ | ✓ | ✓ | was real, now superseded/retired — terminal |
+
+- **`in_review` is issue-only** (no code to review on a ticket/epic). Epics stay
+  coarse (no blocked/review/approval). Sprints: a cancelled sprint is just
+  `deprecated`; incomplete tickets carry over, so no `wont_do`.
+- **`wont_do` vs `deprecated`:** `wont_do` = rejected, never built. `deprecated`
+  = once real, now obsolete (e.g. feature retired in adapt mode). Both terminal.
+- **Resolved** = `{done, wont_do, deprecated}` — stops blocking deps and counts a
+  parent complete. Every script that used to test "done/deprecated" tests this.
+- **Counts:** `(X/Y complete)` numerator = real `done`; denominator EXCLUDES
+  `wont_do`+`deprecated` (they drop out, so the bar reflects only live work).
+
+### Claim semantics (issues)
+
+- Pickable for claim: `{todo, blocked}` only.
+- Claim retained (someone owns in-flight work) for `{in_progress, in_review,
+  awaiting_approval}` — `claim_issue.py` will NOT auto-pick or steal these; reset
+  to `in_progress` to reclaim.
+- Claim null for `{todo, done, wont_do, deprecated}`.
+- A parent ticket in `{wont_do, deprecated}` makes its issues unreachable.
+
+### Gates (mandatory review / approval)
+
+Two authored booleans, default `false`:
+- issue `review_required` — code must pass through `in_review`.
+- issue + ticket `approval_required` — needs human sign-off; lands in
+  `awaiting_approval`. On a ticket it's a PM acceptance gate: when all child
+  issues finish, the ticket auto-resolves to `awaiting_approval` (not `done`)
+  until a human sets `done`.
+
+**The one hard rule (runtime contract, see `CLAUDE_template.md`):** the
+implementing agent — the one holding the claim — may NOT advance an issue/ticket
+PAST a mandatory gate it owns. With `approval_required`, it lands the work in
+`awaiting_approval` and stops; a *different* actor (human, or a reviewer/
+automation) advances it. Bypassing a mandated human gate by the agent that did
+the work is excluded.
+
+### Transitions are flexible, not a hard state machine
+
+Validators check enum membership + claim invariants only — NOT a transition
+graph. So agents stay flexible: approval came back negative → move back to
+`in_progress` (that IS "changes requested" — no separate state); skip `in_review`
+when no review is required; etc. The only constraint is the gate contract above.
+
+Auto-advance is therefore just *some actor* moving the status — which keeps a
+sane automated path open (e.g. a future "review confidence > 95% → auto-approve"
+policy is a non-implementer advancing `in_review` → `awaiting_approval`/`done`).
+That decision logic is a **swappable analysis seam** to be added later (same
+pattern as `tickets_analyze.py` / `sprint_plan.py`); the status model already
+supports it.
+
+### Auto-resolve rollup (tickets, sprints)
+
+`tickets_assemble.py`: when a ticket's children are ALL resolved → `done` if ≥1
+child is `done` (or `awaiting_approval` if `approval_required`), else
+`deprecated` if every child is `deprecated`, else `wont_do`. A status already
+terminal or `awaiting_approval` is never overridden. `sprints_assemble.py`:
+sprint → `done` when all member tickets resolved. Both preserve a live status
+across re-assembles when the folder is still at its seed default.
+
+### GitHub / GitLab projection (design only — NOT integrated)
+
+The manual local workflow is the source of truth; integration is a later,
+label-only mapping. Sketch:
+
+| specseed | GitHub issue |
+|----------|--------------|
+| `todo` / `in_progress` / `blocked` / `in_review` / `awaiting_approval` | open + matching label (`status:…`); `claimed_by` → assignee |
+| `done` | closed (completed) |
+| `wont_do` | closed (not planned) |
+| `deprecated` | closed (not planned) + label `deprecated` |
+
+(Epics/tickets/issues all become GitHub issues distinguished by label — an API
+detail, deferred. Nothing here depends on it.)
 
 ## INVEST (applies to ISSUES)
 
@@ -275,7 +374,7 @@ sprint folder `tickets: [...]`; `sprints_validate.py` enforces consistency.
 ---
 id: SPRINT_2026_W01_A
 title: Foundations
-status: planned          # planned | active | done | deprecated
+status: planned          # planned | in_progress | done | deprecated
 starts: 2026-01-05       # optional ISO date
 ends: 2026-01-11         # optional ISO date
 tickets: ["PROJ-0042", "PROJ-0043"]
@@ -293,11 +392,13 @@ effort; order = execution rank by start date then id).
 **ID format:** `SPRINT_<YYYY>_W<WW>_<X>` — ISO-ish year + week + a letter
 disambiguator (`A`, `B`, … for parallel tracks or a split week).
 
-**status lifecycle:** `planned` → `active` → `done`. Exactly one (or few)
-`active` at a time = the "current" sprint that claiming targets. `active` is the
-explicit flag — set it by hand (or in the sprint folder); `sprints_assemble.py`
-preserves a live `active` across re-assembles and auto-advances a sprint to
-`done` when all its tickets are done.
+**status lifecycle:** `planned` → `in_progress` → `done`. Exactly one (or few)
+`in_progress` at a time = the "current" sprint that claiming targets. (Same word
+as the issue/ticket "actively worked" state — a sprint has no separate "active"
+status.) `in_progress` is the explicit flag — set it by hand (or in the sprint
+folder); `sprints_assemble.py` preserves a live `in_progress` across re-assembles
+and auto-advances a sprint to `done` when all its tickets are resolved
+(done/wont_do/deprecated).
 
 ### Assignment — computation proposes, human refines
 
@@ -333,10 +434,10 @@ planner can't produce one; manual edits can.)
 ### Execution order (claiming)
 
 `claim_issue.py` is sprint-scoped: auto-pick prefers issues whose parent ticket
-is in the **active** sprint; only when none are ready does it **spill** to the
-next planned sprint, then to backlog (tickets in no sprint). `--sprint-scope
-current` forbids the spill (active sprint only); `all` ignores sprints. With no
-`sprints.json`, claiming is unscoped.
+is in the **in_progress** sprint; only when none are ready does it **spill** to
+the next planned sprint, then to backlog (tickets in no sprint). `--sprint-scope
+current` forbids the spill (in_progress sprint only); `all` ignores sprints. With
+no `sprints.json`, claiming is unscoped.
 
 ### TIMELINE.md
 

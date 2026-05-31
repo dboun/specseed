@@ -160,7 +160,7 @@ After patches:
    python .specseed/scripts/tickets_validate.py
    python .specseed/scripts/sprints_validate.py     # if sprints/ exists
    ```
-   (Assemble preserves live runtime status/claim — it won't reset in-flight or done issues, nor a sprint's `active` flag.)
+   (Assemble preserves live runtime status/claim — it won't reset in-flight or done issues, nor a sprint's `in_progress` flag.)
 4. Re-run `.specseed/scripts/tickets_analyze.py .specseed/project_management/tickets.json` — critical path shifted? Surface to user if so. Then refresh the views: `python .specseed/scripts/roadmap_render.py` (ROADMAP `(X/Y)` counts) and, if sprints exist, `python .specseed/scripts/timeline_render.py` (TIMELINE).
 5. (Optional) re-run `.specseed/scripts/drift_check.py` to confirm the trigger drift item(s) are no longer flagged
 
@@ -173,9 +173,9 @@ After patches:
 
 Edit the FOLDERS (source of truth), then re-assemble (stage 6 cascade).
 
-- Mark obsolete tickets/issues `status: "deprecated"` in their folder frontmatter (do not delete)
+- Mark obsolete tickets/issues `status: "deprecated"` in their folder frontmatter (do not delete) — `deprecated` = was real, now superseded/retired. Use `wont_do` instead for work that's being **cancelled before it was ever built** (rejected from scope). Both are terminal and drop out of the live work counts.
 - Add new tickets/issues if scope expanded (use `references/work-breakdown.md`) — new folders + back-links (ticket `issues:` ⟷ issue `ticket:`); add titles to `ROADMAP.md`
-- **Sprint assignment for new tickets** (if the project uses sprints): assign each new ticket a `sprint:` respecting the backward-dep rule (deps in same/earlier sprint) and the ~168h budget — usually the active or next planned sprint, or a new sprint folder. Update that sprint's `tickets:` list. Mind cohesion / `.specseed/memory/sprint_planning.md` prefs. A bigger re-balance can use `sprint_plan.py` as a fresh proposal. Deprecating a ticket → drop it from its sprint's `tickets:` and re-assemble.
+- **Sprint assignment for new tickets** (if the project uses sprints): assign each new ticket a `sprint:` respecting the backward-dep rule (deps in same/earlier sprint) and the ~168h budget — usually the in_progress or next planned sprint, or a new sprint folder. Update that sprint's `tickets:` list. Mind cohesion / `.specseed/memory/sprint_planning.md` prefs. A bigger re-balance can use `sprint_plan.py` as a fresh proposal. Deprecating (or `wont_do`-ing) a ticket → drop it from its sprint's `tickets:` and re-assemble.
 - Revise a ticket's product acceptance criteria (or an issue's technical AC) in its prose body if reqs changed; note in the issue `notes` field: `"AC revised <date>: <reason>"`
 - If a ticket/issue was `done` but its underlying req changed, set `status: "blocked"` with a note for the user to triage
 - If resolving a `spec_concern.md`, unblock the originating issue per stage 5

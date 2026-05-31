@@ -17,7 +17,7 @@ Common tweak patterns:
 - "Mark FEAT-0042 as blocked, reason: waiting on FEAT-0041" → that issue's folder frontmatter `project_management/issues/FEAT-0042/FEAT-0042.md` (FEAT-* is an issue)
 - "Change priority of PROJ-0042 to medium" → that ticket's folder `project_management/tickets/PROJ-0042/PROJ-0042.md`
 - "Move PROJ-0042 to SPRINT_2026_W02_A" → set ticket `sprint:` + update both sprints' `tickets:` lists (the SRS+ticket-style two-file carve-out; re-assemble sprints, re-render TIMELINE)
-- "Mark SPRINT_2026_W02_A active" → that sprint's folder frontmatter `status: active`
+- "Mark SPRINT_2026_W02_A active" → that sprint's folder frontmatter `status: in_progress` (the in_progress sprint is the one claiming targets)
 - "Fix typo in vision.md" → that file
 
 Note: ticket/issue edits change the FOLDER (source of truth), then re-assemble (step 6). Don't hand-edit `tickets.json`/`issues.json` — they're generated.

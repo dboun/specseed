@@ -16,7 +16,11 @@ Checks:
  2. Required fields: title, type, component, effort_hours, status,
     claimed_at, claimed_by, artifacts
  3. Enums: type ∈ {feature,bug,chore,spike}; status ∈ {todo,in_progress,
-    blocked,done,deprecated}
+    blocked,in_review,awaiting_approval,done,wont_do,deprecated}.
+    Optional gate fields review_required/approval_required, if present, must
+    be booleans. (The "implementing agent may not self-bypass a mandatory
+    gate" rule is a runtime CONTRACT — see CLAUDE_template.md — not enforced
+    statically here, since the validator has no actor history.)
  4. effort_hours: positive number (agent-time estimate)
  5. depends_on refs exist in issues.json; no cycles
  6. ticket ref (if non-null) exists in tickets.json (skipped if absent)
@@ -37,7 +41,13 @@ from graphlib import TopologicalSorter, CycleError
 
 ID_RE = re.compile(r"^[A-Z]+-\d{4,}$")
 VALID_TYPES = {"feature", "bug", "chore", "spike"}
-VALID_STATUSES = {"todo", "in_progress", "blocked", "done", "deprecated"}
+VALID_STATUSES = {"todo", "in_progress", "blocked", "in_review",
+                  "awaiting_approval", "done", "wont_do", "deprecated"}
+# statuses that REQUIRE a live claim (someone owns the in-flight work)
+CLAIMED_STATES = {"in_progress", "in_review", "awaiting_approval"}
+# terminal / not-started statuses that must NOT carry a claim
+UNCLAIMED_STATES = {"todo", "done", "wont_do", "deprecated"}
+GATE_FIELDS = ("review_required", "approval_required")
 TYPE_PREFIX = {"feature": "FEAT", "bug": "BUG", "chore": "CHORE", "spike": "SPIKE"}
 REQUIRED_FIELDS = ["title", "type", "component", "effort_hours", "status",
                    "claimed_at", "claimed_by", "artifacts"]
@@ -77,6 +87,11 @@ def validate_one(iid, e, all_ids, tickets, repo_root):
                                    f"(expected {TYPE_PREFIX[e['type']]}-NNNN)"})
     if e["status"] not in VALID_STATUSES:
         errors.append({"id": iid, "kind": "enum", "field": "status", "value": e["status"]})
+
+    for gf in GATE_FIELDS:
+        if gf in e and not isinstance(e[gf], bool):
+            errors.append({"id": iid, "kind": "schema", "field": gf,
+                           "detail": f"must be a boolean, got {e[gf]!r}"})
 
     eh = e["effort_hours"]
     if isinstance(eh, bool) or not isinstance(eh, (int, float)) or eh <= 0:
@@ -131,10 +146,10 @@ def validate_one(iid, e, all_ids, tickets, repo_root):
                        "detail": "both must be null or both populated"})
     else:
         has_claim = ca is not None
-        if status == "in_progress" and not has_claim:
+        if status in CLAIMED_STATES and not has_claim:
             errors.append({"id": iid, "kind": "claim_invariant",
-                           "detail": "status=in_progress but claim fields null"})
-        elif status in ("todo", "done", "deprecated") and has_claim:
+                           "detail": f"status={status} but claim fields null"})
+        elif status in UNCLAIMED_STATES and has_claim:
             errors.append({"id": iid, "kind": "claim_invariant",
                            "detail": f"status={status} but claim fields populated"})
         # status=blocked: either is acceptable

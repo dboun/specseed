@@ -83,9 +83,9 @@ def render(sprints, tickets, budget):
             lines.append("- (no tickets)")
         lines.append("")
 
-    # Unassigned tickets (have no sprint) — backlog
+    # Unassigned tickets (have no sprint) — backlog. Skip abandoned (wont_do/deprecated).
     backlog = [tid for tid, t in tickets.items()
-               if tid not in assigned and t.get("status") != "deprecated"]
+               if tid not in assigned and t.get("status") not in ("deprecated", "wont_do")]
     if backlog:
         lines.append("## Unassigned (backlog)")
         for tid in sorted(backlog):
