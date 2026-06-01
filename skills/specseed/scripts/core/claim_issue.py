@@ -16,9 +16,14 @@ ticket's depends_on tickets are all resolved). "Resolved" = done | wont_do |
 deprecated. Issues in a handoff state (in_review / awaiting_approval) are NOT
 pickable — the work is in flight and the original claim is retained; another
 agent claiming would steal it. Among ready issues,
-ordering is prerequisite-first: by SPRINT rank, then parent-ticket topo rank,
-then issue topo rank, then id. NOTE: critical-path weighting is NOT applied here
-— readiness + topo only. Run tickets_analyze.py for the ticket critical path.
+ordering is: SPRINT rank, then PRIORITY (high>medium>low; issue `priority`
+overrides, else inherits the parent ticket's, else medium), then `created_at`
+(FIFO among manual items, which carry it; spec-derived issues lack it → +inf, so
+they tie on this key and fall through to topo exactly as before — no regression),
+then parent-ticket topo rank, then issue topo rank, then id. So a high-priority
+manual issue placed in the in_progress sprint jumps to the top of the pile. NOTE:
+critical-path weighting is NOT applied here — readiness + topo only. Run
+tickets_analyze.py for the ticket critical path.
 
 Sprint scoping (--sprint-scope, default `spill`): if sprints.json is present,
 issues whose parent ticket is in the `in_progress` sprint are picked first; only
@@ -54,6 +59,33 @@ ABANDONED = {"wont_do", "deprecated"}
 # In-flight handoff states: claim retained, NOT auto-pickable / not stealable.
 HANDOFF = {"in_review", "awaiting_approval"}
 PICKABLE = {"todo", "blocked"}
+
+# priority sort tiers (lower = picked first). `normal` is accepted as an alias for
+# `medium`; anything unknown/absent defaults to medium.
+PRIORITY_RANK = {"high": 0, "medium": 1, "normal": 1, "low": 2}
+
+
+def effective_priority_rank(issue, tickets):
+    """Issue's own `priority` overrides; else inherit the parent ticket's; else medium."""
+    pr = issue.get("priority")
+    if pr is None and tickets:
+        parent = tickets.get(issue.get("ticket")) if issue.get("ticket") else None
+        if parent:
+            pr = parent.get("priority")
+    return PRIORITY_RANK.get(pr, 1)
+
+
+def created_sort_key(issue):
+    """Epoch seconds of `created_at` (manual items carry it); missing → +inf so
+    spec-derived issues sort AFTER same-priority dated manuals only as a final
+    tiebreak (they normally differ earlier in the key)."""
+    ts = parse_iso(issue.get("created_at"))
+    if ts is None:
+        return float("inf")
+    try:
+        return ts.timestamp()
+    except (OverflowError, OSError, ValueError):
+        return float("inf")
 
 
 def default_agent_id():
@@ -268,6 +300,8 @@ def pick_next(issues, tickets, tdone, skip, t_sprint, s_rank, sprint_scope):
         return None
     eligible.sort(key=lambda i: (
         issue_sprint_rank(issues[i], tickets, t_sprint, s_rank) if use_sprints else (0, 0),
+        effective_priority_rank(issues[i], tickets),
+        created_sort_key(issues[i]),
         t_rank.get(issues[i].get("ticket"), 1_000_000),
         i_rank.get(i, 1_000_000),
         i,

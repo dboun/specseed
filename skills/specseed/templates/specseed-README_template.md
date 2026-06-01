@@ -37,7 +37,7 @@ to stop them, what you control. Backend: **{{BACKEND}}**.
   project_management/  the work: ROADMAP.md, TIMELINE.md, epics/ tickets/ issues/ sprints/
                        APPROVALS.md  -> things waiting on your sign-off
   memory/              config + runtime state (config.json [portable], remote.json [per-repo, mirror], runner.ctl, runner.log)
-  scripts/             tooling. agents_runner.py is the only one you run; core/ + remote/ are agent-run.
+  scripts/             tooling. agents_runner.py (run the loop) + add_work.py (add a manual item) are yours to run; core/ + remote/ are agent-run.
 ```
 
 Source of truth is the **folders** on disk. The `*.json` files (`issues.json`,
@@ -87,6 +87,22 @@ Control the runner with no daemon, through a control file the loop checks every 
 **Pause vs stop:** pause keeps the process alive (it just stops claiming new work); stop
 ends it. If a run hits a usage or session limit, the runner backs off for a cooldown
 (default 30 min) and retries on its own.
+
+### Add an out-of-band item (bug / urgent fix / chore)
+
+To inject work that isn't in the plan, use `add_work.py` — it scaffolds a ticket + one
+issue and slots it in without re-solving the schedule:
+
+```bash
+python .specseed/scripts/add_work.py        # prompts for title/type/priority/...
+# or non-interactively:
+python .specseed/scripts/add_work.py --title "Login 500 on empty password" \
+    --type bug --priority high --component api --effort 0.5
+```
+
+A **high**-priority item lands in the current sprint and jumps to the top of the queue;
+**medium/low** go to the backlog for the next sprint. Either way the runner picks it up
+on its next pass — no replan needed.
 
 <!-- MIRROR-ONLY -->
 From your phone, comment a verb on the pinned **CONTROL** issue instead (the runner

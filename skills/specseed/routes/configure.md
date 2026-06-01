@@ -47,9 +47,17 @@ the hitl+git half into the READ-FIRST block of `CLAUDE.md`. Shape:
           "auto_merge": "clean_close", "refresh_on_merge": true},
   "backend": {"enabled": false, "provider": null},
   "runner": {"model": "opus", "effort": "high", "interval": 45, "max_turns": 400,
-             "allowed_tools": ["Read","Edit","Bash"], "retry_delay_minutes": 30}
+             "allowed_tools": ["Read","Edit","Bash"], "retry_delay_minutes": 30,
+             "models": {}},
+  "review": {"enabled": true, "scope": "hard",
+             "auto_approve": {"min_confidence": 90, "difficulty": ["easy"]}},
+  "qa": {"enabled": true, "mode": "suggest", "effort_threshold_hours": 4.0}
 }
 ```
+
+`runner.models` (optional) overrides the model per role — `implement` / `review` /
+`merge` — each falling back to `runner.model`. `review` + `qa` are OPTIONAL blocks
+(absent = the defaults shown); old configs written before they existed still validate.
 
 **2. `remote.json` — per-repo mirror STATE, written ONLY for a mirror.** Project-specific,
 never copied between repos. Holds `repo`, `allowlist` (per-repo, like the toolset), the
@@ -82,7 +90,7 @@ fields never leak in.
 - **GitHub pins max 3 issues** (ROADMAP / TIMELINE / CONTROL). **GitLab can't pin** at all.
 - You start the runner yourself (`python <repo>_agents_runner.py &`); sync lag ~30–60s + API latency.
 
-## Round 2 — git workflow + HITL gates (+ mirror options if mirror)
+## Round 2 — git workflow + HITL gates + review/QA (+ mirror options if mirror)
 
 All heavy-default → a single `defaults` / `OK` accepts everything and writes the
 config. Present the defaults inline; only the overrides cost the user anything.
@@ -127,7 +135,49 @@ These are project-wide defaults. **Per-issue gating is refined later** at work-b
 time (the risk-detection pass in `references/work-breakdown.md` proposes which specific
 issues need an `approval_required` sign-off) — configure just sets the baseline.
 
-### 2c. Mirror options (mirror only; skip if local-only or user says "defaults")
+### 2c. Code review + QA → `config.json` `review{}` / `qa{}`
+
+Two questions, `question-protocol.md` format. Heavy defaults; `defaults`/`OK` accepts both.
+
+```
+**N. Automated code review?**
+
+After an agent finishes an issue, a separate reviewer agent can check it and emit a
+confidence score; high-confidence easy issues auto-pass, the rest wait for your sign-off.
+- **A)** review HARD issues only (default)
+- **B)** review ALL issues (hard + easy)
+- **C)** review EASY issues only
+- **D)** no automated review
+
+Confidence: A 55% / B 25% / C 5% / D 15%
+Suggestion: **A**. Reviewing the risky work without paying review latency on every trivial issue.
+```
+
+If review is on, one follow-up (auto-declare at high confidence per the protocol's filter 2):
+the **auto-approve bar** — confidence ≥ `min_confidence` (default **90**) AND difficulty in the
+auto-approve set (default `["easy"]`, so **hard issues always need a human** regardless of
+confidence). Map onto `review.scope` (`hard`/`both`/`easy`/`none`) + `review.auto_approve`.
+
+```
+**N. End-of-ticket QA?**
+
+A QA agent can run a bounded checklist (smoke + regression over touched paths, scratch
+work in /tmp) as the LAST issue of a ticket, filing any problem as a new bug issue.
+- **A)** suggest per ticket (default) — propose QA on larger/riskier tickets at breakdown time
+- **B)** every ticket
+- **C)** off
+
+Confidence: A 70% / B 10% / C 20%
+Suggestion: **A**. QA where it pays off, without doubling effort on small tickets.
+```
+
+Map onto `qa.mode` (`suggest`/`all`/`off`). `qa.effort_threshold_hours` (default 4) tunes
+the suggest heuristic — leave default unless the user raises it.
+
+(Per-role models — a different model for review/merge — are an advanced `runner.models`
+knob; don't ask unless the user brings it up. Mention it exists if they ask about cost.)
+
+### 2d. Mirror options (mirror only; skip if local-only or user says "defaults")
 
 **1. Command allowlist.** github/gitlab usernames whose CONTROL-issue comments are allowed to run. Default: **PAT owner only**. → `remote.json` `allowlist` (per-repo state — usernames vary per project, so NOT in the portable config).
 
@@ -136,10 +186,10 @@ issues need an `approval_required` sign-off) — configure just sets the baselin
 ## Persist
 
 Write the config files:
-1. `config.json` — from Round 1 (`backend`), 2a/2b (`git`/`hitl`), and 2c-#2 (`runner`)
-   answers (or `default_config()` on `defaults`). Run
-   `python .specseed/scripts/core/config.py validate` to confirm it's well-formed.
-2. `remote.json` — **mirror only**: `repo` (Round 1 #2) + `allowlist` (2c-#1) + the rest
+1. `config.json` — from Round 1 (`backend`), 2a/2b (`git`/`hitl`), 2c (`review`/`qa`),
+   and 2d-#2 (`runner.retry_delay_minutes`) answers (or `default_config()` on `defaults`).
+   Run `python .specseed/scripts/core/config.py validate` to confirm it's well-formed.
+2. `remote.json` — **mirror only**: `repo` (Round 1 #2) + `allowlist` (2d-#1) + the rest
    of `default_state()`. Local-only writes nothing here.
 3. `.specseed/version.txt` — **stamp the tree's version, FIRST-SETUP ONLY.** If
    `.specseed/version.txt` does not exist, write the running skill's version into it
@@ -170,9 +220,9 @@ same way (re-prune for the new backend). Don't clobber an existing README on a n
 re-run.
 
 **Re-run via `/specseed configure`:** rewrite whichever file changed. If `config.json`'s
-hitl/git changed AND `CLAUDE.md` already exists in the repo, **re-render its
+hitl/git/review/qa changed AND `CLAUDE.md` already exists in the repo, **re-render its
 operating-policy block** (`config.py render-claude` → replace the block at the top of
-`CLAUDE.md`). If mirror structural fields (`backend.provider` / `remote.json` `repo`)
+`CLAUDE.md`; the block now also states the review-gate + QA-issue contract). If mirror structural fields (`backend.provider` / `remote.json` `repo`)
 changed, re-run `remote_sync.py init` (idempotent / self-healing).
 
 ## End message (template — phrase naturally)

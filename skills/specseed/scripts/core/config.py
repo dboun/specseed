@@ -4,7 +4,7 @@ config.py — load/validate `.specseed/memory/config.json`, the PORTABLE
 routes/configure.md + templates/CLAUDE_template.md "Operating policy").
 
 config.json is the one file a user can copy from repo to repo: it holds ONLY
-process ("how I work"), never project-specific data. Four blocks:
+process ("how I work"), never project-specific data. Blocks:
   - hitl.categories : action-class gates the *implementation* agent honors at
     runtime. Each fixed CATEGORY maps to a level: "block" (halt + write an
     approval request, then move on) / "surface" (do it, but announce) / "auto"
@@ -14,7 +14,12 @@ process ("how I work"), never project-specific data. Four blocks:
     mirror. Just `enabled` + `provider`; the per-repo `repo`/credentials/issue
     map live in `.specseed/memory/remote.json` (state, NOT portable).
   - runner         : how `agents_runner.py` drives the local Claude CLI (model,
-    effort, loop interval, turn cap, allowed tools, retry cooldown).
+    effort, loop interval, turn cap, allowed tools, retry cooldown, per-role
+    model overrides).
+  - review         : the code-review phase — scope (which issues) + the
+    confidence/difficulty auto-approve gate. Read by review_gate.py.
+  - qa             : end-of-ticket QA — whether to emit a terminal `type: qa`
+    issue per ticket (suggest / all / off).
 
 This file is config, NOT a spec — a bare config.json does not change mode routing.
 The skill writes it in configure mode and re-renders the CLAUDE.md block from it.
@@ -86,7 +91,33 @@ DEFAULT_RUNNER = {
     "max_turns": 400,
     "allowed_tools": ["Read", "Edit", "Bash"],
     "retry_delay_minutes": 30,          # after a failed claude run (e.g. session limit), wait this long before retrying
+    # per-ROLE model overrides; each falls back to `model` above when unset.
+    # implement = the impl agent, review = the code reviewer, merge = the merge/PR agent.
+    "models": {},                       # e.g. {"review": "sonnet", "merge": "haiku"}
 }
+
+# code-review phase. Default ON at `hard` (configure asks + suggests this).
+# The reviewer writes issues/<id>/review.json; review_gate.py reads it + this block
+# + the issue's `difficulty` to decide whether to auto-advance or land in awaiting_approval.
+DEFAULT_REVIEW = {
+    "enabled": True,
+    "scope": "hard",                    # which issues get reviewed: hard | easy | both | none
+    "auto_approve": {
+        "min_confidence": 90,           # reviewer confidence (0-100) needed to skip the human gate
+        "difficulty": ["easy"],         # difficulties allowed to auto-advance; `hard` never auto-advances
+    },
+}
+REVIEW_SCOPES = ("hard", "easy", "both", "none")
+
+# end-of-ticket QA. A terminal `type: qa` issue inside a ticket (depends_on all its
+# siblings). mode: suggest = work-breakdown proposes QA per ticket (smart, effort-based);
+# all = force on every ticket; off = never. `enabled:false` also disables.
+DEFAULT_QA = {
+    "enabled": True,
+    "mode": "suggest",                  # suggest | all | off
+    "effort_threshold_hours": 4.0,      # a ticket at/above this effort is a QA candidate (suggest mode)
+}
+QA_MODES = ("suggest", "all", "off")
 
 
 def default_config():
@@ -96,7 +127,42 @@ def default_config():
         "git": dict(DEFAULT_GIT),
         "backend": dict(DEFAULT_BACKEND),
         "runner": dict(DEFAULT_RUNNER),
+        "review": _deep_copy_review(),
+        "qa": dict(DEFAULT_QA),
     }
+
+
+def _deep_copy_review():
+    r = dict(DEFAULT_REVIEW)
+    r["auto_approve"] = dict(DEFAULT_REVIEW["auto_approve"])
+    r["auto_approve"]["difficulty"] = list(DEFAULT_REVIEW["auto_approve"]["difficulty"])
+    return r
+
+
+# --------------------------------------------------------------------------- #
+# typed accessors (back-compat: absent optional block → defaults)
+# --------------------------------------------------------------------------- #
+def review_config(cfg):
+    """The `review` block, with defaults filled for any missing key."""
+    base = _deep_copy_review()
+    r = (cfg or {}).get("review") or {}
+    base.update({k: v for k, v in r.items() if k != "auto_approve"})
+    aa = r.get("auto_approve") or {}
+    base["auto_approve"].update(aa)
+    return base
+
+
+def qa_config(cfg):
+    base = dict(DEFAULT_QA)
+    base.update((cfg or {}).get("qa") or {})
+    return base
+
+
+def runner_model(cfg, role):
+    """Model for a runner role ('implement'/'review'/'merge'), falling back to
+    runner.model when no override is set."""
+    runner = (cfg or {}).get("runner") or {}
+    return (runner.get("models") or {}).get(role) or runner.get("model") or "opus"
 
 
 # --------------------------------------------------------------------------- #
@@ -191,6 +257,53 @@ def validate(cfg):
         tools = runner.get("allowed_tools")
         if not isinstance(tools, list) or not all(isinstance(t, str) for t in tools):
             errs.append("runner.allowed_tools must be a list of strings")
+        models = runner.get("models", {})
+        if not isinstance(models, dict):
+            errs.append("runner.models must be an object (role -> model string)")
+        else:
+            for role, m in models.items():
+                if role not in ("implement", "review", "merge"):
+                    errs.append(f"runner.models has unknown role '{role}' "
+                                "(expected implement | review | merge)")
+                if not isinstance(m, str) or not m:
+                    errs.append(f"runner.models['{role}'] must be a non-empty string")
+
+    # review / qa are OPTIONAL blocks — absent = use defaults (back-compat with
+    # configs written before they existed). Validate only when present.
+    review = cfg.get("review")
+    if review is not None:
+        if not isinstance(review, dict):
+            errs.append("review block must be an object")
+        else:
+            if not isinstance(review.get("enabled", False), bool):
+                errs.append("review.enabled must be a boolean")
+            if review.get("scope", "hard") not in REVIEW_SCOPES:
+                errs.append(f"review.scope must be one of {REVIEW_SCOPES}")
+            aa = review.get("auto_approve", {})
+            if not isinstance(aa, dict):
+                errs.append("review.auto_approve must be an object")
+            else:
+                mc = aa.get("min_confidence", 0)
+                if not isinstance(mc, (int, float)) or isinstance(mc, bool) \
+                        or not (0 <= mc <= 100):
+                    errs.append("review.auto_approve.min_confidence must be a number 0-100")
+                diff = aa.get("difficulty", [])
+                if not isinstance(diff, list) or not all(d in ("easy", "hard") for d in diff):
+                    errs.append("review.auto_approve.difficulty must be a list of "
+                                "'easy'/'hard'")
+
+    qa = cfg.get("qa")
+    if qa is not None:
+        if not isinstance(qa, dict):
+            errs.append("qa block must be an object")
+        else:
+            if not isinstance(qa.get("enabled", False), bool):
+                errs.append("qa.enabled must be a boolean")
+            if qa.get("mode", "suggest") not in QA_MODES:
+                errs.append(f"qa.mode must be one of {QA_MODES}")
+            th = qa.get("effort_threshold_hours", 0)
+            if not isinstance(th, (int, float)) or isinstance(th, bool) or th < 0:
+                errs.append("qa.effort_threshold_hours must be a non-negative number")
     return errs
 
 
@@ -267,8 +380,38 @@ def render_claude(cfg):
              "After the human runs it, the agent transcribes results into a step report. No source "
              "edits while waiting on a run-action.")
     L.append("")
+    L.append(_render_completion_gates(cfg))
     L.append(_render_git(git))
     return "\n".join(L) + "\n"
+
+
+def _render_completion_gates(cfg):
+    review = review_config(cfg)
+    qa = qa_config(cfg)
+    L = []
+    L.append("### Completion gates (review / QA)")
+    L.append("")
+    L.append("Separate from the per-issue `review_required` / `approval_required` flags in "
+             "the issue frontmatter, which you must NEVER advance past yourself (the one hard "
+             "rule). Beyond those:")
+    if review.get("enabled") and review.get("scope") != "none":
+        scope = review.get("scope")
+        L.append(f"- **Code review is ON** (scope: `{scope}` issues). After you finish such an "
+                 "issue, leave it in `in_review` (do NOT mark it `done`). A separate reviewer "
+                 "writes `issues/<id>/review.json`; `review_gate.py` then advances it (auto if "
+                 "confidence clears the bar, else `awaiting_approval` for a human). If the "
+                 "reviewer requests changes the issue returns to `in_progress` — address the "
+                 "findings, don't re-review your own work.")
+    else:
+        L.append("- **Code review is OFF.**")
+    if qa.get("enabled") and qa.get("mode") != "off":
+        L.append("- **QA issues** (`type: qa`) may exist as the terminal issue of a ticket "
+                 "(they `depends_on` all siblings). When you claim one, run its checklist "
+                 "(smoke + regression over the touched paths; scratch work in `/tmp`). File any "
+                 "problem as a NEW `bug` issue under the SAME ticket (high priority if it blocks "
+                 "the ticket's value) — do NOT silently fix and do NOT expand the QA scope.")
+    L.append("")
+    return "\n".join(L)
 
 
 def _render_git(git):

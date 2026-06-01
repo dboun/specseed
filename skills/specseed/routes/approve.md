@@ -66,9 +66,12 @@ no-self-bypass rule working as intended):
 - A **run-action** the human executed: record the results they report into a new
   `step_reports/<X>_run-<desc>.md`, mark the gate `approve`d, set the issue back to
   `todo`/`in_progress` so the agent can consume the outputs. No source edits here.
-- A **completion gate** (`approval_required` on a finished issue/ticket): approve →
-  `done` (+ re-assemble so the ticket rolls up); reject → `in_progress` (changes
-  requested).
+- A **completion gate** (`approval_required` on a finished issue/ticket, OR a
+  **code-review sign-off** — `Kind: entity-approval` written by `review_gate.py` when a
+  review lands in `awaiting_approval`): approve → `done` (+ re-assemble so the ticket
+  rolls up); reject / "request changes" → `in_progress` (changes requested). This is the
+  completion path, NOT the generic `approve → todo` row above — a reviewed-and-approved
+  issue is finished, don't send it back to `todo`.
 - Multiple open `A<N>` on one issue → resolve each; only flip the issue status once the
   **last** open entry is resolved.
 

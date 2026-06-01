@@ -107,7 +107,7 @@ Then route to mode file.
 - `session_state.md` — **session scratch**, the resume/compression-survival file (was `.specseed/memory.md`). Deleted at session end; preserved on `/specseed stop`.
 - `sprint_planning.md` — **reusable** sprint-planning preferences that PERSIST across sessions (e.g. "keep auth + session tickets in one sprint", "leave ~15% slack"). Write ONLY durable, generalizable prefs the user states during planning — keep it tiny, not session chatter, not one-off placements. Never deleted at session end.
 
-Also co-located here but **config, not memory** (written by configure mode, never deleted at session end): `config.json` (the PORTABLE "how-you-work" file — HITL action-gates + git workflow + backend choice + runner knobs; copy it between repos) and `remote.json` (per-repo mirror STATE: repo, allowlist, issue map, cursors — NOT portable, mirror only).
+Also co-located here but **config, not memory** (written by configure mode, never deleted at session end): `config.json` (the PORTABLE "how-you-work" file — HITL action-gates + git workflow + backend choice + runner knobs + code-review gate + QA policy; copy it between repos) and `remote.json` (per-repo mirror STATE: repo, allowlist, issue map, cursors — NOT portable, mirror only).
 
 `session_state.md` (repo) or chat artifact (no-repo) holds:
 - Current workflow stage + sub-step
@@ -162,7 +162,7 @@ AGENTS.md                       # one line: "Read ./CLAUDE.md. In dirs you work 
 ├── memory/                     # ALL skill memory lives here (dir, not a single file)
 │   ├── session_state.md        #   session scratch — deleted at end; preserved on /specseed stop
 │   ├── sprint_planning.md      #   reusable sprint-planning prefs (tiny, persists across sessions)
-│   ├── config.json             #   CONFIG (PORTABLE): hitl gates + git workflow + backend choice + runner knobs (configure mode; ALWAYS present)
+│   ├── config.json             #   CONFIG (PORTABLE): hitl gates + git workflow + backend choice + runner knobs + review gate + qa policy (configure mode; ALWAYS present)
 │   └── remote.json             #   STATE (per-repo, NOT portable): mirror repo/allowlist/issue-map/cursors (only if mirror; see remote.md)
 ├── spec/                       # the WHAT/WHY/HOW layer (requirements & design)
 │   ├── vision.md
@@ -203,7 +203,8 @@ AGENTS.md                       # one line: "Read ./CLAUDE.md. In dirs you work 
 
 # ---- .specseed/scripts/ ----
 scripts/
-├── agents_runner.py            # the ONLY human-run entry — start/kill the always-on orchestrator loop (+ --write-shim). Top-level on purpose.
+├── agents_runner.py            # human-run entry — start/kill the always-on orchestrator loop (+ --write-shim). Top-level on purpose. Runs the work step + (if review on) a per-loop review step; per-role models via config.runner.models
+├── add_work.py                 # human-run entry — add a MANUAL work item (ticket + issue) out of band; high-priority → current sprint, else backlog; NO sprint replan
 ├── core/                       # agent-invoked plumbing + analysis seams (humans don't run these directly)
 │   ├── requirements_generate_json.py   # parses SRS table rows → reqs.json
 │   ├── requirements_analyze.py         # req cycle/orphan detection (shipped; editable analysis seam)
@@ -216,12 +217,13 @@ scripts/
 │   ├── tickets_analyze.py              # ticket critical path + build order (shipped; editable analysis seam) — PROJECT-level, NOT per-sprint
 │   ├── sprint_plan.py                  # ADVISORY sprint packing proposal (cohesion-aware, CP-first, budget); never writes
 │   ├── issue_info.py                   # issue + parent ticket + reqs joined from parent ticket
-│   ├── claim_issue.py                  # atomic issue claim; no-arg auto-picks next ready issue; sprint-scoped (--sprint-scope); --skip; stale recovery
+│   ├── claim_issue.py                  # atomic issue claim; no-arg auto-picks next ready issue; sprint-scoped (--sprint-scope); priority + created_at ordering; --skip; stale recovery
+│   ├── review_gate.py                  # code-review decision seam: reads issues/<id>/review.json + config.review + difficulty → auto-approve / awaiting_approval / changes (--apply mutates status)
 │   ├── roadmap_render.py               # bump "(X/Y complete)" counts on ticket lines in ROADMAP.md from tickets.json
 │   ├── timeline_render.py              # regenerate TIMELINE.md (sprint schedule) from sprints.json + tickets.json
 │   ├── verification_map.py             # inverse map: req → ticket → issues → test files
 │   ├── drift_check.py                  # mechanical spec-vs-reality drift surface
-│   ├── config.py                       # PORTABLE config: load/validate config.json (hitl + git + backend + runner); render-claude → CLAUDE.md block
+│   ├── config.py                       # PORTABLE config: load/validate config.json (hitl + git + backend + runner + review + qa); render-claude → CLAUDE.md block (incl. review/QA completion-gate contract)
 │   └── approvals_render.py             # scan issues/*/approval.md → APPROVALS.md + approvals.json (pending HITL gates)
 └── remote/                     # OPTIONAL mirror cluster (only present/used if the user opts in — see references/remote.md)
     ├── github_functions.py             # stdlib GitHub REST wrapper (+ GraphQL pin)
@@ -247,7 +249,7 @@ Notes:
 - **Assemble before analyze/claim/validate.** After editing any ticket/issue/sprint folder: run `issues_assemble.py` → `tickets_assemble.py` → `sprints_assemble.py` (each tier's derived fields read the tier below: ticket effort sums from issues, sprint effort sums from tickets — so order matters), then the validators / `tickets_analyze.py` / `claim_issue.py` / `timeline_render.py`.
 - **`tickets_*` and `issues_*` scripts are deliberately separate** (separate assemble, separate validate). Tickets and issues may live in different stores once tool integrations land; each tier validates the refs it can resolve and degrades gracefully when the other tier is absent.
 - `spec_concern.md` is written by the **implementation agent** (not this skill) when it discovers a settled doc looks wrong during issue execution. Adapt mode picks these up as valid triggers — see `routes/adapt.md` stage 2.
-- `claim_issue.py` replaces any raw `jq` claim. Uses `fcntl.flock` for atomic read-verify-write on `issues.json`; auto-recovers stale claims (default >3h old); no-arg call auto-picks the next ready issue and claims it in the same locked op; `--skip <ids>` excludes issues (lightweight parallel-agent support). Pickable = `{todo, blocked}`; `in_review`/`awaiting_approval` issues keep their claim and are NOT auto-picked or stolen (handoff in flight). **Sprint-scoped:** when `sprints.json` exists, auto-pick prefers issues in the `in_progress` sprint and only spills to the next planned sprint when none are ready (`--sprint-scope current` forbids the spill; `all` ignores sprints). No `sprints.json` → unscoped, exactly as before. Lock releases on process exit.
+- `claim_issue.py` replaces any raw `jq` claim. Uses `fcntl.flock` for atomic read-verify-write on `issues.json`; auto-recovers stale claims (default >3h old); no-arg call auto-picks the next ready issue and claims it in the same locked op; `--skip <ids>` excludes issues (lightweight parallel-agent support). Pickable = `{todo, blocked}`; `in_review`/`awaiting_approval` issues keep their claim and are NOT auto-picked or stolen (handoff in flight). **Sprint-scoped:** when `sprints.json` exists, auto-pick prefers issues in the `in_progress` sprint and only spills to the next planned sprint when none are ready (`--sprint-scope current` forbids the spill; `all` ignores sprints). No `sprints.json` → unscoped, exactly as before. **Ordering within scope:** sprint tier → priority (issue `priority` override else parent ticket's else medium) → `created_at` (FIFO among manual items; `+inf` for spec-derived, so an all-spec tree is unchanged) → topo ranks → id. So a `high`-priority manual item in the active sprint sorts to the top. Lock releases on process exit.
 - `drift_check.py` is a mechanical drift detector — runs as part of adapt mode assessment, optionally before impl agents claim long-running issues.
 
 ## Main-repo files & merge protocol

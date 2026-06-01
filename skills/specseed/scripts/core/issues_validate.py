@@ -15,12 +15,14 @@ Checks:
  1. ID format /^[A-Z]+-\\d{4,}$/, unique; prefix should match type (warn)
  2. Required fields: title, type, component, effort_hours, status,
     claimed_at, claimed_by, artifacts
- 3. Enums: type ∈ {feature,bug,chore,spike}; status ∈ {todo,in_progress,
+ 3. Enums: type ∈ {feature,bug,chore,spike,qa}; status ∈ {todo,in_progress,
     blocked,in_review,awaiting_approval,done,wont_do,deprecated}.
     Optional gate fields review_required/approval_required, if present, must
     be booleans. (The "implementing agent may not self-bypass a mandatory
     gate" rule is a runtime CONTRACT — see CLAUDE_template.md — not enforced
     statically here, since the validator has no actor history.)
+    Optional difficulty ∈ {easy,hard}, priority ∈ {high,medium,low},
+    created_at (ISO-8601) validated only when present (back-compat).
  4. effort_hours: positive number (agent-time estimate)
  5. depends_on refs exist in issues.json; no cycles
  6. ticket ref (if non-null) exists in tickets.json (skipped if absent)
@@ -40,7 +42,7 @@ from pathlib import Path
 from graphlib import TopologicalSorter, CycleError
 
 ID_RE = re.compile(r"^[A-Z]+-\d{4,}$")
-VALID_TYPES = {"feature", "bug", "chore", "spike"}
+VALID_TYPES = {"feature", "bug", "chore", "spike", "qa"}
 VALID_STATUSES = {"todo", "in_progress", "blocked", "in_review",
                   "awaiting_approval", "done", "wont_do", "deprecated"}
 # statuses that REQUIRE a live claim (someone owns the in-flight work)
@@ -48,7 +50,10 @@ CLAIMED_STATES = {"in_progress", "in_review", "awaiting_approval"}
 # terminal / not-started statuses that must NOT carry a claim
 UNCLAIMED_STATES = {"todo", "done", "wont_do", "deprecated"}
 GATE_FIELDS = ("review_required", "approval_required")
-TYPE_PREFIX = {"feature": "FEAT", "bug": "BUG", "chore": "CHORE", "spike": "SPIKE"}
+VALID_DIFFICULTY = {"easy", "hard"}
+VALID_PRIORITY = {"high", "medium", "low"}
+TYPE_PREFIX = {"feature": "FEAT", "bug": "BUG", "chore": "CHORE",
+               "spike": "SPIKE", "qa": "QA"}
 REQUIRED_FIELDS = ["title", "type", "component", "effort_hours", "status",
                    "claimed_at", "claimed_by", "artifacts"]
 
@@ -92,6 +97,20 @@ def validate_one(iid, e, all_ids, tickets, repo_root):
         if gf in e and not isinstance(e[gf], bool):
             errors.append({"id": iid, "kind": "schema", "field": gf,
                            "detail": f"must be a boolean, got {e[gf]!r}"})
+
+    # Optional fields (back-compat: absent is fine). difficulty drives the review
+    # gate; priority overrides the parent ticket's for claim ordering; created_at
+    # is set on manual items for FIFO tiebreaking.
+    if "difficulty" in e and e["difficulty"] not in VALID_DIFFICULTY:
+        errors.append({"id": iid, "kind": "enum", "field": "difficulty",
+                       "value": e["difficulty"]})
+    if "priority" in e and e["priority"] not in VALID_PRIORITY:
+        errors.append({"id": iid, "kind": "enum", "field": "priority",
+                       "value": e["priority"]})
+    if "created_at" in e and e["created_at"] is not None:
+        if not isinstance(e["created_at"], str) or parse_iso(e["created_at"]) is None:
+            errors.append({"id": iid, "kind": "schema", "field": "created_at",
+                           "detail": f"must be ISO-8601, got {e['created_at']!r}"})
 
     eh = e["effort_hours"]
     if isinstance(eh, bool) or not isinstance(eh, (int, float)) or eh <= 0:

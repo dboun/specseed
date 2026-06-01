@@ -25,7 +25,7 @@ Agent entry point. If no other instructions given, your default task is to **han
 
 Work is organized in three tiers under `.specseed/project_management/`:
 - **epics** (`EPIC-NNNN`) and **tickets** (`PROJ-NNNN`) — the PM / non-technical layer (outcomes, user-visible value). Tickets carry the requirements (`satisfies_reqs`) and the critical-path `depends_on` DAG.
-- **issues** (`FEAT/BUG/CHORE/SPIKE-NNNN`) — the technical layer. **This is what you claim and execute.** An issue belongs to a ticket (its `ticket` field).
+- **issues** (`FEAT/BUG/CHORE/SPIKE/QA-NNNN`) — the technical layer. **This is what you claim and execute.** An issue belongs to a ticket (its `ticket` field). A `QA-NNNN` issue is the terminal QA pass for a ticket (see *QA issues* below).
 
 Folders are the authored source of truth; `tickets.json` / `issues.json` are the generated indexes that carry **live runtime state** (status, claims) during execution.
 
@@ -149,11 +149,21 @@ Spike report:
 ```
 Then surface followups to the user (decision → `/specseed` for an ADR row; new/changed reqs or SDD pattern → `/specseed adapt`). Only AFTER the user has acted (or said "no spec changes needed") mark the spike `done`.
 
+## QA issues (`type: qa`)
+
+If your claimed issue is `type: qa`, it's the **terminal QA pass for a ticket** — it `depends_on` all the ticket's other issues, so it runs last. You are not adding features; you are checking the ticket's work holds together. Stay inside a bounded checklist (your technical acceptance criteria spell it out):
+
+- Smoke + regression over the paths the ticket's issues touched (`artifacts.touches`), plus the obvious integration paths between them. Scratch/throwaway work goes in `/tmp`.
+- **File every problem as a NEW `bug` issue under the SAME ticket** (run `claim_issue.py`-adjacent scaffolding or hand-author the folder). Make it `priority: high` if it blocks the ticket's value. Do **NOT** silently fix things inside the QA issue, and do **NOT** expand scope beyond the checklist — QA complements dev, it doesn't redo it.
+- The ticket can't roll up to `done` until QA and any bugs it spawned are resolved (that's the point — QA holds the ticket open until its findings are addressed).
+
+Finish the QA issue normally once the checklist is run and findings are filed.
+
 ## Review & approval gates
 
 Your issue (and its ticket) may carry mandatory gates:
-- `review_required: true` → after coding, set your issue `status: "in_review"` (keep your claim) instead of jumping to done. Code review (another LLM or a human) happens here. Review comes back with changes? Just move back to `in_progress` and keep going — there's no separate "changes requested" state, and transitions aren't locked.
-- `approval_required: true` → when the work is otherwise complete, set `status: "awaiting_approval"` (keep your claim) and **stop**. A human signs off.
+- `review_required: true` → after coding, set your issue `status: "in_review"` (keep your claim) instead of jumping to done. **Also** leave the issue in `in_review` (don't self-close) when the **⚠️ Operating policy → Completion gates** block says code review is on and your issue's `difficulty` is in scope — even if the flag isn't set. A separate reviewer agent then writes `issues/<id>/review.json` (a confidence + verdict); `review_gate.py` advances the issue (auto-close if confidence clears the bar, else `awaiting_approval` for a human). You do NOT write `review.json` or review your own work. Review comes back `changes_requested` → the issue returns to `in_progress`; address the findings and keep going (no separate "changes requested" state).
+- `approval_required: true` → when the work is otherwise complete, set `status: "awaiting_approval"` (keep your claim) and **stop**. A human signs off. (Review never bypasses this: an auto-approved review on an `approval_required` issue still lands in `awaiting_approval`.)
 
 **Hard rule:** if a gate is `*_required: true`, **you — the agent that did the work — may NOT advance past it to `done` yourself.** Land it in the gate state (`in_review` / `awaiting_approval`) and hand off. A *different* actor (human, or a reviewer/automation) moves it to `done`. No self-approval, no exception. (If neither flag is set, finish normally below.)
 

@@ -31,8 +31,18 @@ import argparse
 import json
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 from graphlib import TopologicalSorter, CycleError
+
+
+def parse_iso(s):
+    if not isinstance(s, str):
+        return None
+    try:
+        return datetime.fromisoformat(s[:-1] + "+00:00" if s.endswith("Z") else s)
+    except ValueError:
+        return None
 
 ID_RE = re.compile(r"^[A-Z]+-\d{4,}$")
 VALID_TYPES = {"feature", "bug", "chore", "spike"}
@@ -67,6 +77,11 @@ def validate_one(tid, t, all_ids, reqs, epics_dir, issues):
     if "approval_required" in t and not isinstance(t["approval_required"], bool):
         errors.append({"id": tid, "kind": "schema", "field": "approval_required",
                        "detail": f"must be a boolean, got {t['approval_required']!r}"})
+    # Optional created_at (set on manual items by add_work.py) — validate when present.
+    if "created_at" in t and t["created_at"] is not None:
+        if not isinstance(t["created_at"], str) or parse_iso(t["created_at"]) is None:
+            errors.append({"id": tid, "kind": "schema", "field": "created_at",
+                           "detail": f"must be ISO-8601, got {t['created_at']!r}"})
 
     deps = t.get("depends_on", []) or []
     if not isinstance(deps, list):
