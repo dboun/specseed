@@ -2,7 +2,7 @@
 
 This file is **the content the specseed skill writes to the user's repo root as `CLAUDE.md`**. It tells the implementation agent (Claude Code, Codex, or any other) how to pick up and execute the next **issue** (issues are the technical, claimable unit; epics + tickets are the PM layer above them).
 
-The skill writes this template by default, with three customizations: (1) the bash one-liners in the "Claim" section if the user has a different command preference; (2) the **`## Project conventions`** section, which the skill fills with the project's folder structure, branching, versioning, release process, and release gates (the former `CONTRIBUTING.md` content, now folded in — the skill no longer writes a separate `CONTRIBUTING.md`); (3) the **`## ⚠️ Operating policy`** block, which the skill generates from `.specseed/memory/policy.json` by running `python .specseed/scripts/core/policy.py render-claude` and **pastes at the very top of the file** (right after the `# CLAUDE.md` heading, before "Agent entry point"). That block is the HITL action-gate + git-workflow contract; it's READ-FIRST and must never be reordered below other sections. Re-run the render and replace the block whenever `/specseed configure` changes the policy.
+The skill writes this template by default, with three customizations: (1) the bash one-liners in the "Claim" section if the user has a different command preference; (2) the **`## Project conventions`** section, which the skill fills with the project's folder structure, branching, versioning, release process, and release gates (the former `CONTRIBUTING.md` content, now folded in — the skill no longer writes a separate `CONTRIBUTING.md`); (3) the **`## ⚠️ Operating policy`** block, which the skill generates from `.specseed/memory/config.json` by running `python .specseed/scripts/core/config.py render-claude` and **pastes at the very top of the file** (right after the `# CLAUDE.md` heading, before "Agent entry point"). That block is the HITL action-gate + git-workflow contract; it's READ-FIRST and must never be reordered below other sections. Re-run the render and replace the block whenever `/specseed configure` changes the policy.
 
 When writing to the user's repo, write the content below (everything between the `---BEGIN TEMPLATE---` and `---END TEMPLATE---` markers) as the file `CLAUDE.md` at the repo root — and splice the rendered operating-policy block in at the marked spot.
 
@@ -12,10 +12,10 @@ When writing to the user's repo, write the content below (everything between the
 
 # CLAUDE.md
 
-<!-- ⚠️ SKILL: paste the output of `python .specseed/scripts/core/policy.py render-claude`
+<!-- ⚠️ SKILL: paste the output of `python .specseed/scripts/core/config.py render-claude`
      here — the "## ⚠️ Operating policy — READ FIRST, ALWAYS" block (action gates +
-     park-and-continue + git workflow), generated from .specseed/memory/policy.json.
-     It MUST be the first section of the file. Omit only if no policy.json exists
+     park-and-continue + git workflow), generated from .specseed/memory/config.json.
+     It MUST be the first section of the file. Omit only if no config.json exists
      (older repos); then the action-gate/git contract is undefined and the agent
      should ask the user before any push / docker / network / destructive action. -->
 
@@ -225,7 +225,7 @@ do your normal issue work; finishing an issue (status `done`/`blocked` in
 > The skill fills this section with the project's actual conventions. The former `CONTRIBUTING.md`, folded in. Keep it short and concrete.
 
 - **Folder structure:** where source, tests, configs live. Spec/PM artifacts live under `.specseed/` (never edit those except as allowed above; only `/specseed` does).
-- **Branching:** governed by the **⚠️ Operating policy → Git workflow** block at the top of this file (rendered from `policy.json`). Don't restate or contradict it here; add only project-specific notes the policy doesn't cover.
+- **Branching:** governed by the **⚠️ Operating policy → Git workflow** block at the top of this file (rendered from `config.json`). Don't restate or contradict it here; add only project-specific notes the policy doesn't cover.
 - **Versioning:** scheme (semver, calver, none) and where the version is set.
 - **Release:** how a release is cut, where artifacts are stored.
 - **Release gates:** coverage thresholds, smoke checks, manual sign-off — define if relevant; else leave a placeholder.
@@ -236,7 +236,7 @@ do your normal issue work; finishing an issue (status `done`/`blocked` in
 ## Skill-side notes (not written to user's CLAUDE.md)
 
 The template is INTENTIONALLY medium-length. It includes:
-- The **⚠️ Operating policy** block spliced in at the top (rendered by `policy.py render-claude` from `policy.json`): HITL action gates (block/surface/auto across the 8 categories), the park-and-continue protocol + `approval.md` template, and the git-workflow contract. READ-FIRST; re-rendered when `/specseed configure` changes the policy.
+- The **⚠️ Operating policy** block spliced in at the top (rendered by `config.py render-claude` from `config.json`): HITL action gates (block/surface/auto across the 8 categories), the park-and-continue protocol + `approval.md` template, and the git-workflow contract. READ-FIRST; re-rendered when `/specseed configure` changes the policy.
 - The two-kinds-of-gate distinction (completion gate = is-this-unit-accepted; action gate = is-this-action-allowed-now) both landing in `awaiting_approval`, surfaced via `approval.md` + `APPROVALS.md`, resolved via the `/specseed approve` route or the CONTROL `approve`/`reject` verbs
 - Issue pickup + atomic claim via `claim_issue.py` (no-arg auto-pick = pick-and-claim under one lock; `--skip` for light parallel work; sprint-scoped when `sprints.json` exists — in_progress sprint first, spill to next)
 - The three-tier work model (epic/ticket/issue) and the folders-vs-JSON source-of-truth split (folders = authored content, JSON = live runtime state)

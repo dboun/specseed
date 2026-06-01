@@ -172,7 +172,7 @@ If the user had docs under `spec/`/`docs/` that we imported + reconciled, offer 
 
 ## Stage 9.5: Runner shim + (optional) remote mirror init
 
-Same as bootstrap **stage 13.5**. **Always** write the runner shim (`python .specseed/scripts/agents_runner.py --write-shim <repo_name>`) — the runner works local-only too, not just for the mirror. **Then** the mirror choice (already made in **configure mode**, don't re-ask): read `.specseed/memory/remote.json` — `enabled:false`/absent → local-only, shim is enough; `enabled:true` and not `initialized` → run `remote_sync.py init` + the CLAUDE mirror block, set `initialized:true`. Full model in `references/remote.md`.
+Same as bootstrap **stage 13.5**. **Always** write the runner shim (`python .specseed/scripts/agents_runner.py --write-shim <repo_name>`) — the runner works local-only too, not just for the mirror. **Then** the mirror choice (already made in **configure mode**, don't re-ask): read `config.backend.enabled` in `.specseed/memory/config.json` — `false`/no `remote.json` → local-only, shim is enough; `true` and `remote.json` not `initialized` → run `remote_sync.py init` + the CLAUDE mirror block, set `initialized:true`. Full model in `references/remote.md`.
 
 ---
 

@@ -1,26 +1,33 @@
 """
-policy.py — load/validate `.specseed/memory/policy.json` and render its
-human/agent-facing contract for CLAUDE.md (see routes/configure.md +
-templates/CLAUDE_template.md "Operating policy").
+config.py — load/validate `.specseed/memory/config.json`, the PORTABLE
+"how-you-work" config, and render its agent-facing contract for CLAUDE.md (see
+routes/configure.md + templates/CLAUDE_template.md "Operating policy").
 
-policy.json holds the two HITL axes the *implementation* agent honors at runtime:
-  - hitl.categories : action-class gates. Each of the fixed CATEGORIES maps to a
-    level: "block" (halt + write an approval request, then move on) /
-    "surface" (do it, but announce so the human sees) / "auto" (silent).
+config.json is the one file a user can copy from repo to repo: it holds ONLY
+process ("how I work"), never project-specific data. Four blocks:
+  - hitl.categories : action-class gates the *implementation* agent honors at
+    runtime. Each fixed CATEGORY maps to a level: "block" (halt + write an
+    approval request, then move on) / "surface" (do it, but announce) / "auto"
+    (silent).
   - git            : the git-workflow contract (branch model, push, PR, merge).
+  - backend        : the work-tracking choice — local-only vs a github/gitlab
+    mirror. Just `enabled` + `provider`; the per-repo `repo`/credentials/issue
+    map live in `.specseed/memory/remote.json` (state, NOT portable).
+  - runner         : how `agents_runner.py` drives the local Claude CLI (model,
+    effort, loop interval, turn cap, allowed tools, retry cooldown).
 
-This file is config, NOT a spec — a bare policy.json does not change mode routing.
+This file is config, NOT a spec — a bare config.json does not change mode routing.
 The skill writes it in configure mode and re-renders the CLAUDE.md block from it.
-Enforcement is a CONTRACT honored by the impl agent reading CLAUDE.md (like the
-settled-doc freeze), not something this script polices.
+The hitl/git enforcement is a CONTRACT honored by the impl agent reading CLAUDE.md
+(like the settled-doc freeze); the runner enforces backend/runner directly.
 
 Stdlib only.
 
 CLI:
-  python .specseed/scripts/core/policy.py show              # print resolved policy
-  python .specseed/scripts/core/policy.py validate          # exit 1 on schema errors
-  python .specseed/scripts/core/policy.py render-claude      # emit the CLAUDE.md block
-  python .specseed/scripts/core/policy.py init               # write a default policy.json (won't clobber)
+  python .specseed/scripts/core/config.py show              # print resolved config
+  python .specseed/scripts/core/config.py validate          # exit 1 on schema errors
+  python .specseed/scripts/core/config.py render-claude      # emit the CLAUDE.md block
+  python .specseed/scripts/core/config.py init               # write a default config.json (won't clobber)
 """
 
 import json
@@ -39,6 +46,7 @@ CATEGORIES = {
     "secrets":          "reading/writing credentials or secret material",
 }
 LEVELS = ("block", "surface", "auto")
+PROVIDERS = (None, "github", "gitlab")
 
 DEFAULT_CATEGORIES = {
     "container":        "block",
@@ -63,12 +71,31 @@ DEFAULT_GIT = {
     "refresh_on_merge": True,           # after a merge to the integration branch, merge it into other live branches
 }
 
+# backend (work-tracking) choice. Portable; the per-repo `repo` + issue map are
+# NOT here — they live in remote.json (state). `enabled:false` = local-only.
+DEFAULT_BACKEND = {
+    "enabled": False,                   # true = mirror the work onto a github/gitlab repo
+    "provider": None,                   # "github" | "gitlab" (required when enabled)
+}
 
-def default_policy():
+# runner knobs — how agents_runner.py drives the local Claude Code CLI.
+DEFAULT_RUNNER = {
+    "model": "opus",
+    "effort": "high",
+    "interval": 45,                     # seconds between loop passes
+    "max_turns": 400,
+    "allowed_tools": ["Read", "Edit", "Bash"],
+    "retry_delay_minutes": 30,          # after a failed claude run (e.g. session limit), wait this long before retrying
+}
+
+
+def default_config():
     return {
         "configured": True,
         "hitl": {"categories": dict(DEFAULT_CATEGORIES)},
         "git": dict(DEFAULT_GIT),
+        "backend": dict(DEFAULT_BACKEND),
+        "runner": dict(DEFAULT_RUNNER),
     }
 
 
@@ -83,34 +110,34 @@ def find_root(start=None):
     raise FileNotFoundError("no .specseed/ found from " + str(start))
 
 
-def policy_path(root=None):
-    return find_root(root) / ".specseed" / "memory" / "policy.json"
+def config_path(root=None):
+    return find_root(root) / ".specseed" / "memory" / "config.json"
 
 
-def load_policy(root=None):
-    p = policy_path(root)
+def load_config(root=None):
+    p = config_path(root)
     if not p.exists():
         return None
     return json.loads(p.read_text(encoding="utf-8"))
 
 
-def save_policy(pol, root=None):
-    p = policy_path(root)
+def save_config(cfg, root=None):
+    p = config_path(root)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(pol, indent=2) + "\n", encoding="utf-8")
+    p.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
     return p
 
 
 # --------------------------------------------------------------------------- #
 # validation
 # --------------------------------------------------------------------------- #
-def validate(pol):
+def validate(cfg):
     """Return a list of error strings ([] == valid)."""
     errs = []
-    if not isinstance(pol, dict):
-        return ["policy.json is not a JSON object"]
+    if not isinstance(cfg, dict):
+        return ["config.json is not a JSON object"]
 
-    hitl = pol.get("hitl") or {}
+    hitl = cfg.get("hitl") or {}
     cats = hitl.get("categories")
     if not isinstance(cats, dict):
         errs.append("hitl.categories missing or not an object")
@@ -124,7 +151,7 @@ def validate(pol):
             if lvl not in LEVELS:
                 errs.append(f"hitl.categories['{name}'] = {lvl!r}, not one of {LEVELS}")
 
-    git = pol.get("git")
+    git = cfg.get("git")
     if not isinstance(git, dict):
         errs.append("git block missing or not an object")
     else:
@@ -138,16 +165,42 @@ def validate(pol):
             errs.append("git.auto_merge must be 'never' or 'clean_close'")
         if not isinstance(git.get("refresh_on_merge", True), bool):
             errs.append("git.refresh_on_merge must be a boolean")
+
+    backend = cfg.get("backend")
+    if not isinstance(backend, dict):
+        errs.append("backend block missing or not an object")
+    else:
+        if not isinstance(backend.get("enabled", False), bool):
+            errs.append("backend.enabled must be a boolean")
+        if backend.get("provider") not in PROVIDERS:
+            errs.append(f"backend.provider must be one of {PROVIDERS}")
+        if backend.get("enabled") and not backend.get("provider"):
+            errs.append("backend.enabled is true but backend.provider is not set")
+
+    runner = cfg.get("runner")
+    if not isinstance(runner, dict):
+        errs.append("runner block missing or not an object")
+    else:
+        for key in ("model", "effort"):
+            if not isinstance(runner.get(key, ""), str) or not runner.get(key):
+                errs.append(f"runner.{key} must be a non-empty string")
+        for key in ("interval", "max_turns", "retry_delay_minutes"):
+            v = runner.get(key)
+            if not isinstance(v, int) or isinstance(v, bool) or v <= 0:
+                errs.append(f"runner.{key} must be a positive integer")
+        tools = runner.get("allowed_tools")
+        if not isinstance(tools, list) or not all(isinstance(t, str) for t in tools):
+            errs.append("runner.allowed_tools must be a list of strings")
     return errs
 
 
 # --------------------------------------------------------------------------- #
 # render the CLAUDE.md operating-policy block
 # --------------------------------------------------------------------------- #
-def render_claude(pol):
-    """Markdown for the READ-FIRST block in CLAUDE.md. Deterministic from policy."""
-    cats = (pol.get("hitl") or {}).get("categories") or {}
-    git = pol.get("git") or {}
+def render_claude(cfg):
+    """Markdown for the READ-FIRST block in CLAUDE.md. Deterministic from config."""
+    cats = (cfg.get("hitl") or {}).get("categories") or {}
+    git = cfg.get("git") or {}
     L = []
     L.append("## ⚠️ Operating policy — READ FIRST, ALWAYS")
     L.append("")
@@ -269,38 +322,38 @@ def main(argv):
     cmd = argv[0] if argv else "show"
     if cmd == "init":
         try:
-            p = policy_path()
+            p = config_path()
         except FileNotFoundError as e:
             print(f"ERROR: {e}", file=sys.stderr)
             return 2
         if p.exists():
-            print(f"policy.json already exists at {p} — not overwriting")
+            print(f"config.json already exists at {p} — not overwriting")
             return 0
-        save_policy(default_policy())
-        print(f"wrote default policy to {p}")
+        save_config(default_config())
+        print(f"wrote default config to {p}")
         return 0
 
-    pol = load_policy()
-    if pol is None:
+    cfg = load_config()
+    if cfg is None:
         if cmd == "show":
-            print("no policy.json (run configure mode, or `policy.py init`)")
+            print("no config.json (run configure mode, or `config.py init`)")
             return 0
-        print("ERROR: no policy.json found", file=sys.stderr)
+        print("ERROR: no config.json found", file=sys.stderr)
         return 2
 
     if cmd == "show":
-        print(json.dumps(pol, indent=2))
+        print(json.dumps(cfg, indent=2))
         return 0
     if cmd == "validate":
-        errs = validate(pol)
+        errs = validate(cfg)
         if errs:
             for e in errs:
                 print(f"ERROR: {e}", file=sys.stderr)
             return 1
-        print("OK: policy.json valid")
+        print("OK: config.json valid")
         return 0
     if cmd in ("render-claude", "render"):
-        sys.stdout.write(render_claude(pol))
+        sys.stdout.write(render_claude(cfg))
         return 0
     print(f"unknown: {cmd}  (show | validate | render-claude | init)", file=sys.stderr)
     return 2

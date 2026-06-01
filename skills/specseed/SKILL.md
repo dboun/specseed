@@ -46,7 +46,7 @@ After the first message, default to caveman-spirit terse comm (no filler, fragme
 
 This probe is the safety net for misrouting — it is evidence, not a guess. When it and the user's words disagree, surface the conflict and ask; do not let intent words override disk state.
 
-**Configure preamble (first run only).** When the probe lands on **bootstrap** (case 4) or **adopt** (case 3) AND there is **no `.specseed/memory/policy.json`** yet, run **configure mode** first (technical setup — `routes/configure.md`): ≤2 rounds, heavy defaults (local-only + default git/gates is one keystroke), then continue into bootstrap/adopt. This gets the plumbing + autonomy decisions out of the way up front. The `.specseed/memory/policy.json` (always) and `remote.json` (mirror choice) it leaves behind are **config only** — NOT a spec, and do NOT affect the routing above (mode still keys off `.specseed/spec/`). `/specseed configure` re-runs it anytime to change settings.
+**Configure preamble (first run only).** When the probe lands on **bootstrap** (case 4) or **adopt** (case 3) AND there is **no `.specseed/memory/config.json`** yet, run **configure mode** first (technical setup — `routes/configure.md`): ≤2 rounds, heavy defaults (local-only + default git/gates is one keystroke), then continue into bootstrap/adopt. This gets the plumbing + autonomy decisions out of the way up front. The `.specseed/memory/config.json` (always — the portable "how-you-work" file) and `remote.json` (per-repo mirror state, only if a mirror) it leaves behind are **config only** — NOT a spec, and do NOT affect the routing above (mode still keys off `.specseed/spec/`). `/specseed configure` re-runs it anytime to change settings.
 
 ## Mode detection
 
@@ -95,11 +95,11 @@ Then route to mode file.
 - `references/question-protocol.md` — question round format, action prompts, no-noise rule, anti-max-bias, memory cadence, auto-skip rule for obvious Qs
 - `references/component-questions.md` — per-component probing subroutine
 - `references/work-breakdown.md` — roadmap + epic/ticket/issue formation: INVEST, vertical slices, critical path (ticket tier), spike post-completion, sizing heuristics
-- `routes/configure.md` — technical setup route (local vs github/gitlab mirror, credentials, runner opts). Runs as a first-run preamble before bootstrap/adopt, or on `/specseed configure`. Writes `.specseed/memory/remote.json` (config only)
+- `routes/configure.md` — technical setup route (local vs github/gitlab mirror, credentials, runner opts). Runs as a first-run preamble before bootstrap/adopt, or on `/specseed configure`. Writes the portable `.specseed/memory/config.json` (always) + per-repo `remote.json` (mirror only) — config, not spec
 - `references/remote.md` — OPTIONAL, opt-in github/gitlab mirror (single-dev phone-driven workflow). Local stays ground truth; the remote is a mirror + bug-inbox + CONTROL command channel driven by an always-on `agents_runner.py`. Offered once at onboarding (bootstrap stage 13.5 / adopt 9.5); entirely off unless the user opts in
 - `routes/approve.md` — the `approve` route: walk + resolve pending HITL gates (`approval.md` requests the impl agent parked). Local human channel; also what the mirror's CONTROL `approve`/`reject` verbs invoke
 - `routes/migrate.md` — the `migrate` route: bring an older-version `.specseed/` tree up to the running skill's format. Reads the skill's `version.txt` + the tree's `.specseed/version.txt`, applies the in-range files from `migrations/`. See `migrations/README.md` for the x.y.z model + file format. Auto-offered by the reconnaissance version check (step 0)
-- **HITL policy** — the action-gate + git-workflow contract the impl agent obeys lives in `.specseed/memory/policy.json` (written by configure mode, ALWAYS — even local-only) and is rendered into the READ-FIRST block of `CLAUDE.md` by `scripts/core/policy.py`. Per-issue gating (which issues get an `approval_required` sign-off) is refined at work-breakdown time — see `references/work-breakdown.md` "Risk-detection & gating pass"
+- **HITL policy** — the action-gate + git-workflow contract the impl agent obeys lives in `.specseed/memory/config.json` (the portable config; written by configure mode, ALWAYS — even local-only) and is rendered into the READ-FIRST block of `CLAUDE.md` by `scripts/core/config.py`. Per-issue gating (which issues get an `approval_required` sign-off) is refined at work-breakdown time — see `references/work-breakdown.md` "Risk-detection & gating pass"
 
 ## Memory protocol
 
@@ -107,7 +107,7 @@ Then route to mode file.
 - `session_state.md` — **session scratch**, the resume/compression-survival file (was `.specseed/memory.md`). Deleted at session end; preserved on `/specseed stop`.
 - `sprint_planning.md` — **reusable** sprint-planning preferences that PERSIST across sessions (e.g. "keep auth + session tickets in one sprint", "leave ~15% slack"). Write ONLY durable, generalizable prefs the user states during planning — keep it tiny, not session chatter, not one-off placements. Never deleted at session end.
 
-Also co-located here but **config, not memory** (written by configure mode, never deleted at session end): `policy.json` (HITL action-gate + git-workflow contract) and `remote.json` (mirror backend choice).
+Also co-located here but **config, not memory** (written by configure mode, never deleted at session end): `config.json` (the PORTABLE "how-you-work" file — HITL action-gates + git workflow + backend choice + runner knobs; copy it between repos) and `remote.json` (per-repo mirror STATE: repo, allowlist, issue map, cursors — NOT portable, mirror only).
 
 `session_state.md` (repo) or chat artifact (no-repo) holds:
 - Current workflow stage + sub-step
@@ -162,8 +162,8 @@ AGENTS.md                       # one line: "Read ./CLAUDE.md. In dirs you work 
 ├── memory/                     # ALL skill memory lives here (dir, not a single file)
 │   ├── session_state.md        #   session scratch — deleted at end; preserved on /specseed stop
 │   ├── sprint_planning.md      #   reusable sprint-planning prefs (tiny, persists across sessions)
-│   ├── policy.json             #   CONFIG: HITL action-gate + git-workflow contract (configure mode; ALWAYS present)
-│   └── remote.json             #   CONFIG: mirror backend choice (only if mirror; see remote.md)
+│   ├── config.json             #   CONFIG (PORTABLE): hitl gates + git workflow + backend choice + runner knobs (configure mode; ALWAYS present)
+│   └── remote.json             #   STATE (per-repo, NOT portable): mirror repo/allowlist/issue-map/cursors (only if mirror; see remote.md)
 ├── spec/                       # the WHAT/WHY/HOW layer (requirements & design)
 │   ├── vision.md
 │   ├── sad.md
@@ -221,12 +221,12 @@ scripts/
 │   ├── timeline_render.py              # regenerate TIMELINE.md (sprint schedule) from sprints.json + tickets.json
 │   ├── verification_map.py             # inverse map: req → ticket → issues → test files
 │   ├── drift_check.py                  # mechanical spec-vs-reality drift surface
-│   ├── policy.py                       # HITL action-gate + git-workflow policy: load/validate policy.json; render-claude → CLAUDE.md block
+│   ├── config.py                       # PORTABLE config: load/validate config.json (hitl + git + backend + runner); render-claude → CLAUDE.md block
 │   └── approvals_render.py             # scan issues/*/approval.md → APPROVALS.md + approvals.json (pending HITL gates)
 └── remote/                     # OPTIONAL mirror cluster (only present/used if the user opts in — see references/remote.md)
     ├── github_functions.py             # stdlib GitHub REST wrapper (+ GraphQL pin)
     ├── gitlab_functions.py             # stdlib GitLab REST wrapper (sibling shape)
-    ├── remote_config.py                # remote.json I/O + provider-agnostic adapter
+    ├── remote_config.py                # remote.json STATE I/O + load_runtime (merge backend provider) + provider-agnostic adapter
     ├── remote_sync.py                  # local→remote mirror engine (init/reconcile/push/dashboards)
     └── remote_control.py               # CONTROL-issue command channel (poll/authorize/dispatch)
 ```

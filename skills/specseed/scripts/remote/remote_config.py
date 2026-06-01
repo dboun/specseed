@@ -1,18 +1,27 @@
 """
-remote_config.py — config/registry I/O + a provider-agnostic adapter for the
-optional remote-mirror workflow (see references/remote.md).
+remote_config.py — per-repo mirror STATE I/O + a provider-agnostic adapter for
+the optional remote-mirror workflow (see references/remote.md).
 
-Two jobs:
-  1. Locate `.specseed/`, load/save `.specseed/memory/remote.json` (config + the
-     specseed-id <-> github-issue-number map + poll cursors).
-  2. Expose a uniform `Remote` adapter over github_functions / gitlab_functions so
-     remote_sync.py / remote_cli.py don't branch on provider.
+`.specseed/memory/remote.json` holds ONLY project-specific state (the things you
+must NOT copy to another repo): the target `repo`, the command `allowlist`, the
+specseed-id <-> issue-number `map`, poll cursors, and the `permanent` dashboard
+issue numbers. The PORTABLE backend choice (enabled + provider) and runner knobs
+live in `.specseed/memory/config.json` (see scripts/core/config.py) — copy THAT
+between repos, never remote.json.
+
+Three jobs:
+  1. Locate `.specseed/`, load/save `remote.json` (state only — save filters to
+     STATE_KEYS so injected runtime fields like `provider` never leak in).
+  2. `load_runtime()` — merge config.json's backend `provider` onto the state dict
+     so the mirror engine can work from a single `cfg`.
+  3. Expose a uniform `Remote` adapter over github_functions / gitlab_functions so
+     remote_sync.py / remote_control.py don't branch on provider.
 
 Stdlib only. The PAT is NOT stored here — it stays in the env / `.env` that the
 function wrappers already read (GITHUB_PAT / GITLAB_PAT).
 
 CLI (debug):
-  python remote_config.py show              # print resolved config
+  python remote_config.py show              # print resolved state
   python remote_config.py ping              # auth check via the provider
 """
 
@@ -23,6 +32,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+CORE_DIR = SCRIPT_DIR.parent / "core"
+
+# The only keys persisted to remote.json. Anything else on a runtime cfg (e.g. the
+# `provider` injected from config.json, or `retry_delay_minutes`) is dropped on save.
+STATE_KEYS = ("repo", "allowlist", "permanent", "map",
+              "cli_cursor", "pull_cursor", "labels_seeded", "initialized")
 
 STATUS_STATES = ["todo", "in_progress", "blocked", "in_review",
                  "awaiting_approval", "done", "wont_do", "deprecated"]
@@ -51,33 +66,54 @@ def find_root(start=None):
     raise FileNotFoundError("no .specseed/ found from " + str(start))
 
 
-def config_path(root=None):
+def state_path(root=None):
     return find_root(root) / ".specseed" / "memory" / "remote.json"
 
 
-def load_config(root=None):
-    p = config_path(root)
+def load_state(root=None):
+    p = state_path(root)
     if not p.exists():
         return None
     return json.loads(p.read_text(encoding="utf-8"))
 
 
-def save_config(cfg, root=None):
-    p = config_path(root)
+def save_state(cfg, root=None):
+    """Persist ONLY the canonical state keys (drops any injected runtime fields)."""
+    p = state_path(root)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+    state = {k: cfg[k] for k in STATE_KEYS if k in cfg}
+    p.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
     return p
 
 
-def default_config(provider, repo, allowlist=None):
+def default_state(repo=None, allowlist=None):
     return {
-        "enabled": True, "configured": True, "initialized": False,
-        "provider": provider, "repo": repo,
-        "allowlist": allowlist or [],
-        "retry_delay_minutes": 30,   # after a failed claude run (e.g. session limit), wait this long before retrying
+        "repo": repo,
+        "allowlist": allowlist or [],   # github/gitlab usernames whose CONTROL comments run; [] = owner-only
         "permanent": {"roadmap": None, "timeline": None, "control": None, "sprint": None},
-        "map": {}, "cli_cursor": None, "pull_cursor": None, "labels_seeded": False,
+        "map": {}, "cli_cursor": None, "pull_cursor": None,
+        "labels_seeded": False, "initialized": False,
     }
+
+
+def _load_config_mod():
+    spec = importlib.util.spec_from_file_location("config", CORE_DIR / "config.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def load_runtime(root=None):
+    """Build the single mirror runtime cfg the engine works from: per-repo state
+    (remote.json) ∪ the portable backend `provider` (config.json). Returns
+    (cfg, enabled, config) where `enabled` is config.backend.enabled and `config`
+    is the full portable config (None if config.json is missing)."""
+    config = _load_config_mod().load_config(root)
+    backend = (config or {}).get("backend") or {}
+    enabled = bool(backend.get("enabled"))
+    state = load_state(root) or default_state()
+    cfg = {**state, "provider": backend.get("provider")}
+    return cfg, enabled, config
 
 
 def now_iso():
@@ -240,13 +276,14 @@ class Remote:
 # --------------------------------------------------------------------------- #
 def main(argv):
     cmd = argv[0] if argv else "show"
-    cfg = load_config()
+    cfg, enabled, _ = load_runtime()
     if cmd == "show":
-        print(json.dumps(cfg, indent=2) if cfg else "no remote.json (mirror off)")
+        print(json.dumps(cfg, indent=2))
+        print(f"# backend.enabled = {enabled}")
         return 0
     if cmd == "ping":
-        if not cfg:
-            print("mirror not configured", file=sys.stderr); return 1
+        if not enabled:
+            print("mirror not enabled (backend.enabled=false in config.json)", file=sys.stderr); return 1
         print(json.dumps(Remote(cfg).whoami(), indent=2)); return 0
     print(f"unknown: {cmd}  (show | ping)", file=sys.stderr)
     return 2

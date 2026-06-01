@@ -22,15 +22,20 @@ explicit command to change).
 
 ## What it writes
 
-Two files under `.specseed/memory/` (may be the first things created there). Both are
-**config only** — NOT a spec; they do NOT change mode routing (bootstrap/adopt still
-key off `.specseed/spec/`).
+The split is **PORTABLE config** vs **per-repo state**. `config.json` is the one file
+a user can copy between repos ("how I work"); `remote.json` is project-specific and
+must NOT be copied. Both live under `.specseed/memory/`, both are **config only** —
+NOT a spec; they do NOT change mode routing (bootstrap/adopt still key off
+`.specseed/spec/`).
 
-**1. `policy.json` — ALWAYS written** (even local-only). The HITL action-gate policy +
-git-workflow contract the impl agent obeys at runtime via `CLAUDE.md`. Schema +
-defaults in `.specseed/scripts/core/policy.py` (`default_policy()`); `policy.py validate`
-checks it; `policy.py render-claude` turns it into the READ-FIRST block of `CLAUDE.md`.
-Shape:
+**1. `config.json` — ALWAYS written (PORTABLE).** The whole "how-you-work" contract:
+HITL action-gates + git workflow (obeyed by the impl agent via `CLAUDE.md`), the
+**backend choice** (local vs github/gitlab — just on/off + provider, no repo), and the
+**runner knobs** (`agents_runner.py` model/effort/interval/turn-cap/tools/retry). Zero
+project-specific data, so it transfers cleanly. Schema + defaults in
+`.specseed/scripts/core/config.py` (`default_config()`); `config.py validate` checks it
+(and the runner fails fast on startup if it's invalid); `config.py render-claude` turns
+the hitl+git half into the READ-FIRST block of `CLAUDE.md`. Shape:
 ```json
 {
   "configured": true,
@@ -39,16 +44,21 @@ Shape:
                           "outside_repo":"block","secrets":"surface"}},
   "git": {"automation": true, "integration_branch": "dev", "base_branch": null,
           "branch_naming": "{issue_id}-{slug}", "push": "user", "pull_request": "never",
-          "auto_merge": "clean_close", "refresh_on_merge": true}
+          "auto_merge": "clean_close", "refresh_on_merge": true},
+  "backend": {"enabled": false, "provider": null},
+  "runner": {"model": "opus", "effort": "high", "interval": 45, "max_turns": 400,
+             "allowed_tools": ["Read","Edit","Bash"], "retry_delay_minutes": 30}
 }
 ```
 
-**2. `remote.json` — only the mirror backend choice.**
-- **local-only:** `{"enabled": false, "configured": true}`
-- **mirror:** full config — `enabled: true`, `provider`, `repo`, `allowlist`,
-  `retry_delay_minutes`, plus `initialized: false`. `initialized` flips `true` after
-  the mirror's first `init`, which runs at the **end of bootstrap/adopt** (once work
-  exists) — NOT here.
+**2. `remote.json` — per-repo mirror STATE, written ONLY for a mirror.** Project-specific,
+never copied between repos. Holds `repo`, `allowlist` (per-repo, like the toolset), the
+specseed-id↔issue-number `map`, poll cursors, the `permanent` dashboard issue numbers,
+`labels_seeded`, and `initialized: false`. `initialized` flips `true` after the mirror's
+first `init`, which runs at the **end of bootstrap/adopt** (once work exists) — NOT here.
+Local-only writes **no** `remote.json` at all (the absence + `backend.enabled:false` =
+local). The `save_state` writer persists only these state keys, so transient runtime
+fields never leak in.
 
 ## Round 1 — backend
 
@@ -57,9 +67,9 @@ Shape:
 - **B)** GitHub mirror — also mirror the work onto github issues (drive from a phone).
 - **C)** GitLab mirror — same, on GitLab.
 
-→ **local only:** write `remote.json` `{enabled:false, configured:true}`, then continue to **Round 2** (git workflow + HITL gates still apply locally — they govern how the impl agent behaves whether or not there's a mirror).
+→ writes `config.json` `backend` (`{enabled:false, provider:null}` local; `{enabled:true, provider:"github"|"gitlab"}` mirror). **local only:** continue to **Round 2** (git workflow + HITL gates still apply locally — they govern how the impl agent behaves whether or not there's a mirror); no `remote.json` is written.
 
-**2. (mirror only) Which repo?** Detect `git remote get-url origin`; confirm or override (accepts `owner/name`, full URL, or self-hosted GitLab host).
+**2. (mirror only) Which repo?** Detect `git remote get-url origin`; confirm or override (accepts `owner/name`, full URL, or self-hosted GitLab host). → `remote.json` `repo` (per-repo state, not portable).
 
 **3. (mirror only) Credentials.** Confirm `GITHUB_PAT` / `GITLAB_PAT` is in the env or a `.env` (the wrappers read both). Verify once with `python .specseed/scripts/remote/remote_config.py ping` (after the file's written) or `github_functions.py get_authenticated_user`. **No Anthropic API key needed** — the runner drives your local Claude Code CLI.
 
@@ -74,10 +84,10 @@ Shape:
 
 ## Round 2 — git workflow + HITL gates (+ mirror options if mirror)
 
-All heavy-default → a single `defaults` / `OK` accepts everything and writes both
-files. Present the defaults inline; only the overrides cost the user anything.
+All heavy-default → a single `defaults` / `OK` accepts everything and writes the
+config. Present the defaults inline; only the overrides cost the user anything.
 
-### 2a. Git workflow → `policy.json` `git{}`
+### 2a. Git workflow → `config.json` `git{}`
 
 State the default shape in one breath, then ask only what the user wants to change:
 
@@ -94,9 +104,9 @@ State the default shape in one breath, then ask only what the user wants to chan
 
 Apply the auto-skip rule: if the user just says `defaults`, write `DEFAULT_GIT` and move on. Map answers onto the `git{}` fields (`integration_branch`, `push`, `auto_merge`, `pull_request`, `automation`).
 
-### 2b. HITL action gates → `policy.json` `hitl.categories{}`
+### 2b. HITL action gates → `config.json` `hitl.categories{}`
 
-Show the 8-category default table (from `policy.py`), one line:
+Show the 8-category default table (from `config.py`), one line:
 
 | category | covers | default |
 |---|---|---|
@@ -119,16 +129,18 @@ issues need an `approval_required` sign-off) — configure just sets the baselin
 
 ### 2c. Mirror options (mirror only; skip if local-only or user says "defaults")
 
-**1. Command allowlist.** github/gitlab usernames whose CONTROL-issue comments are allowed to run. Default: **PAT owner only**.
+**1. Command allowlist.** github/gitlab usernames whose CONTROL-issue comments are allowed to run. Default: **PAT owner only**. → `remote.json` `allowlist` (per-repo state — usernames vary per project, so NOT in the portable config).
 
-**2. Failure retry.** On a failed run (e.g. a usage/session limit), retry after N minutes. Default **30**.
+**2. Failure retry.** On a failed runner step (e.g. a usage/session limit), retry after N minutes. Default **30**. → `config.json` `runner.retry_delay_minutes` (portable; applies even local-only).
 
 ## Persist
 
 Write the config files:
-1. `policy.json` — from Round 2a/2b answers (or `default_policy()` on `defaults`). Run
-   `python .specseed/scripts/core/policy.py validate` to confirm it's well-formed.
-2. `remote.json` — backend choice from Round 1 (+ 2c options if mirror).
+1. `config.json` — from Round 1 (`backend`), 2a/2b (`git`/`hitl`), and 2c-#2 (`runner`)
+   answers (or `default_config()` on `defaults`). Run
+   `python .specseed/scripts/core/config.py validate` to confirm it's well-formed.
+2. `remote.json` — **mirror only**: `repo` (Round 1 #2) + `allowlist` (2c-#1) + the rest
+   of `default_state()`. Local-only writes nothing here.
 3. `.specseed/version.txt` — **stamp the tree's version, FIRST-SETUP ONLY.** If
    `.specseed/version.txt` does not exist, write the running skill's version into it
    (one line, x.y.z — copy from the skill's own `version.txt`, sibling of `SKILL.md`).
@@ -148,7 +160,7 @@ doc (start/kill the runner, approvals, change the plan, github/gitlab). Speciali
 
 - Fill `{{PROJECT}}`, `{{RUNNER}}` (= `<repo>_agents_runner.py`), `{{BACKEND}}`
   (`local only` / `GitHub mirror` / `GitLab mirror`), `{{INTEGRATION_BRANCH}}` (from
-  `policy.json` `git.integration_branch`).
+  `config.json` `git.integration_branch`).
 - **Prune** the marked blocks per backend: keep `LOCAL-ONLY` blocks and delete
   `MIRROR-ONLY` blocks when local-only; do the reverse when a mirror is configured.
 - Delete the leading authoring HTML comment.
@@ -157,11 +169,11 @@ On a `/specseed configure` **re-run** that changes the backend, rewrite the READ
 same way (re-prune for the new backend). Don't clobber an existing README on a no-op
 re-run.
 
-**Re-run via `/specseed configure`:** rewrite whichever file changed. If `policy.json`
-changed AND `CLAUDE.md` already exists in the repo, **re-render its operating-policy
-block** (`policy.py render-claude` → replace the block at the top of `CLAUDE.md`). If
-mirror structural fields (provider/repo) changed, re-run `remote_sync.py init`
-(idempotent / self-healing).
+**Re-run via `/specseed configure`:** rewrite whichever file changed. If `config.json`'s
+hitl/git changed AND `CLAUDE.md` already exists in the repo, **re-render its
+operating-policy block** (`config.py render-claude` → replace the block at the top of
+`CLAUDE.md`). If mirror structural fields (`backend.provider` / `remote.json` `repo`)
+changed, re-run `remote_sync.py init` (idempotent / self-healing).
 
 ## End message (template — phrase naturally)
 

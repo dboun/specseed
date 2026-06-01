@@ -5,11 +5,17 @@ ONE laptop, single writer. Each iteration: (unless paused) claim + run the next 
 issue via the LOCAL `claude` CLI. No Anthropic API key — it shells out to the
 already-authenticated Claude Code CLI on this machine (prompt piped on stdin).
 
-Works in BOTH backends, keyed off `.specseed/memory/remote.json`:
-  - **local-only** (no remote.json, or `enabled:false`): just the work loop +
-    file-based control. No mirror reconcile, no CONTROL issue, no comments.
-  - **mirror** (`enabled:true`): additionally reconcile the github/gitlab mirror each
-    pass, process CONTROL-issue commands, and comment status transitions back.
+Config comes from `.specseed/memory/config.json` (the portable "how-you-work"
+file — validated on startup; the runner refuses to start if it's invalid or
+missing). `config.backend.enabled` picks the backend; `config.runner` supplies
+the model/effort/interval/turn-cap/allowed-tools/retry knobs below. Per-repo
+mirror STATE (repo, issue map, cursors) lives separately in `remote.json`.
+
+Works in BOTH backends, keyed off `config.backend.enabled`:
+  - **local-only** (`backend.enabled:false`): just the work loop + file-based control.
+    No mirror reconcile, no CONTROL issue, no comments.
+  - **mirror** (`backend.enabled:true`): additionally reconcile the github/gitlab mirror
+    each pass, process CONTROL-issue commands, and comment status transitions back.
 
 Start (the skill writes a `<repo>_agents_runner.py` shim at the repo root):
     python <repo>_agents_runner.py &
@@ -30,16 +36,27 @@ import sys
 import time
 from pathlib import Path
 
-# The remote-mirror cluster lives in the sibling `remote/` package dir.
+# Sibling script dirs: the portable config loader (core/) + the remote-mirror
+# cluster (remote/).
 sys.path.insert(0, str(Path(__file__).resolve().parent / "remote"))
+sys.path.insert(0, str(Path(__file__).resolve().parent / "core"))
+import config as cfgmod
 import remote_config as rc
 import remote_control
 import remote_sync
 
-# Hardcoded for now. Prompt is piped on stdin (so `-p` takes no positional prompt).
-CLAUDE_CMD = ["claude", "-p", "--model", "opus", "--effort", "high",
-              "--permission-mode", "auto", "--allowedTools", "Read,Edit,Bash",
-              "--max-turns", "400"]
+# Built in main() from config.runner. Prompt is piped on stdin (so `-p` takes no
+# positional prompt).
+CLAUDE_CMD = None
+
+
+def build_claude_cmd(runner):
+    return ["claude", "-p",
+            "--model", str(runner["model"]),
+            "--effort", str(runner["effort"]),
+            "--permission-mode", "auto",
+            "--allowedTools", ",".join(runner["allowed_tools"]),
+            "--max-turns", str(runner["max_turns"])]
 
 WORK_PROMPT = ("Per ./CLAUDE.md, claim and fully implement the next ready issue "
                "(run .specseed/scripts/core/claim_issue.py, then execute it to its "
@@ -240,13 +257,14 @@ def one_pass(root, cfg, remote, log):
         except Exception as e:
             log(f"work error: {e}")
     if remote is not None:
-        rc.save_config(cfg, root)
+        rc.save_state(cfg, root)
     return cfg, False
 
 
 def main(argv):
+    global CLAUDE_CMD
     ap = argparse.ArgumentParser(description="specseed orchestrator loop (local-only or github/gitlab mirror)")
-    ap.add_argument("--interval", type=int, default=45, help="seconds between passes")
+    ap.add_argument("--interval", type=int, default=None, help="seconds between passes (default: config.runner.interval)")
     ap.add_argument("--once", action="store_true", help="single pass then exit")
     args = ap.parse_args(argv)
 
@@ -254,13 +272,27 @@ def main(argv):
     signal.signal(signal.SIGTERM, _on_signal)
 
     root = rc.find_root()
-    cfg = rc.load_config(root)
-    mirror = bool(cfg and cfg.get("enabled"))
-    if mirror:
-        remote = rc.Remote(cfg)                  # needs cfg.provider / cfg.repo
-    else:
-        remote = None                            # local-only: work loop + file control
-        cfg = cfg or {}                          # so cfg.get(...) (retry_delay etc) is safe
+
+    # Portable config — fail fast if missing/invalid (the runner's contract).
+    config = cfgmod.load_config(root)
+    if config is None:
+        print("ERROR: no .specseed/memory/config.json — run `/specseed configure` first",
+              file=sys.stderr)
+        return 2
+    errs = cfgmod.validate(config)
+    if errs:
+        print("ERROR: config.json invalid:", file=sys.stderr)
+        for e in errs:
+            print(f"  - {e}", file=sys.stderr)
+        return 2
+
+    runner = config["runner"]
+    CLAUDE_CMD = build_claude_cmd(runner)
+    interval = args.interval if args.interval is not None else runner["interval"]
+
+    cfg, mirror, _ = rc.load_runtime(root)       # cfg = mirror state ∪ {provider}
+    cfg["retry_delay_minutes"] = runner["retry_delay_minutes"]  # runner-owned; dropped on save_state
+    remote = rc.Remote(cfg) if mirror else None  # local-only: work loop + file control
     logp = rc.find_root(root) / ".specseed" / "memory" / "runner.log"
 
     def log(msg):
@@ -269,12 +301,13 @@ def main(argv):
         with open(logp, "a", encoding="utf-8") as f:
             f.write(line + "\n")
 
-    log(f"runner up ({'mirror: ' + cfg.get('provider', '?') if mirror else 'local-only'})")
+    log(f"runner up ({'mirror: ' + str(cfg.get('provider')) if mirror else 'local-only'}; "
+        f"model {runner['model']}/{runner['effort']}, interval {interval}s)")
     while not _STOP:
         cfg, stop = one_pass(root, cfg, remote, log)
         if stop or args.once:
             break
-        for _ in range(args.interval):           # interruptible sleep
+        for _ in range(interval):                # interruptible sleep
             if _STOP or remote_control.read_ctl(root) == "stop":
                 break
             time.sleep(1)

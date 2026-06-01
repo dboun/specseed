@@ -449,9 +449,9 @@ def main(argv):
     args = ap.parse_args(argv)
 
     root = rc.find_root()
-    cfg = rc.load_config(root)
-    if cfg is None:
-        print("no remote.json — run onboarding first (mirror is off)", file=sys.stderr)
+    cfg, enabled, _ = rc.load_runtime(root)
+    if not enabled:
+        print("mirror not enabled (backend.enabled=false in config.json)", file=sys.stderr)
         return 1
     remote = rc.Remote(cfg)
     log = print
@@ -469,7 +469,7 @@ def main(argv):
         push_dashboards(root, cfg, remote, dry=args.dry_run, log=log)
 
     if not args.dry_run:
-        rc.save_config(cfg, root)
+        rc.save_state(cfg, root)
     return 0
 
 

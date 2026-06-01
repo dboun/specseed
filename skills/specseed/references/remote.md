@@ -89,31 +89,33 @@ the body trailer as fallback if the registry is lost.
 
 ---
 
-## Registry + config — `.specseed/memory/remote.json`
+## Registry — `.specseed/memory/remote.json` (per-repo STATE)
 
-Single stdlib-JSON file. Holds config + the ID↔number map + the poll cursor.
+Single stdlib-JSON file. Holds ONLY project-specific mirror state — the target repo,
+the command allowlist, the ID↔number map, the poll cursors, the dashboard issue
+numbers. It is **NOT portable**: never copy it to another repo. The PORTABLE backend
+choice (`enabled` + `provider`) and runner knobs live in `config.json` (see
+`scripts/core/config.py`); copy THAT between repos.
 
 ```json
 {
-  "enabled": true,                       // false = local-only (mirror off)
-  "configured": true,                    // configure mode has run (don't re-preamble)
-  "initialized": false,                  // flips true after the first remote_sync init
-  "provider": "github",                  // github | gitlab
   "repo": "owner/name",                  // or full URL; normalized by the wrappers
-  "allowlist": ["octocat"],              // usernames whose CONTROL comments execute; [] = owner-only
-  "retry_delay_minutes": 30,             // after a failed claude run (session limit / exit!=0), wait this long before retrying
+  "allowlist": ["octocat"],              // per-repo: usernames whose CONTROL comments execute; [] = owner-only
   "permanent": {                          // numbers of the 4 dashboards
     "roadmap": 1, "timeline": 2, "control": 3, "sprint": 4
   },
   "map": { "PROJ-0042": 17, "FEAT-0101": 18 },   // specseed-id -> github issue number
   "cli_cursor": "2026-05-31T12:00:00Z",   // last processed CONTROL comment timestamp
   "pull_cursor": "2026-05-31T12:00:00Z",  // last processed new-issue scan
-  "labels_seeded": true
+  "labels_seeded": true,
+  "initialized": false                    // flips true after the first remote_sync init
 }
 ```
 
-Config lives here (not a separate settings file) per the user's call. The PAT does
-NOT live here — it stays in the environment / `.env` the wrappers already read.
+The mirror engine works from a single runtime `cfg` = this state ∪ the `provider` from
+config.json (`remote_config.load_runtime()`); `save_state()` persists only the keys
+above, so the injected `provider` / `retry_delay_minutes` never leak back in. The PAT
+does NOT live here — it stays in the environment / `.env` the wrappers already read.
 
 ---
 
@@ -190,10 +192,11 @@ arbitrary shell is intentionally NOT a verb — the channel is for control, not 
 ## The runner — `<repo>_agents_runner.py`
 
 A thin shim the skill writes at the repo root; logic lives in the shared
-`agents_runner.py` under `.specseed/scripts/`. **The same runner serves local-only**
-(no `remote.json` / `enabled:false`): it runs the work loop + file-based control below,
-and skips steps 2–3 (reconcile + CONTROL). The mirror loop described here is the
-`enabled:true` superset.
+`agents_runner.py` under `.specseed/scripts/`. It loads `config.json` (the portable
+config) on startup and **fails fast if it's missing or invalid**. **The same runner
+serves local-only** (`config.backend.enabled:false`): it runs the work loop + file-based
+control below, and skips steps 2–3 (reconcile + CONTROL). The mirror loop described here
+is the `backend.enabled:true` superset.
 
 ```bash
 python <repo>_agents_runner.py &        # start (background)
@@ -208,20 +211,26 @@ Loop, every ~30–60s:
    done/blocked, post the progress comment (see below) and re-render dashboards.
 5. Sleep.
 
-The `claude` invocation is **hardcoded for now** (the task prompt is piped on stdin,
-so `-p` carries no positional prompt; output is appended to `runner.log`):
+The `claude` invocation is **built from `config.runner`** (the task prompt is piped on
+stdin, so `-p` carries no positional prompt; output is appended to `runner.log`).
+With the defaults (`model: opus`, `effort: high`, `allowed_tools: [Read,Edit,Bash]`,
+`max_turns: 400`):
 
 ```
 claude -p --model opus --effort high --permission-mode auto \
        --allowedTools "Read,Edit,Bash" --max-turns 400
 ```
 
+The loop interval also comes from `config.runner.interval` (default 45s; `--interval`
+overrides).
+
 **Retry on failure.** If a `claude` run exits non-zero (e.g. a usage/session limit),
-the runner arms a **cooldown** (`retry_delay_minutes`, default **30**) and skips
-*only claude attempts* during it — reconcile + CONTROL polling keep running, so you
+the runner arms a **cooldown** (`config.runner.retry_delay_minutes`, default **30**) and
+skips *only claude attempts* during it — reconcile + CONTROL polling keep running, so you
 stay in control and the `status` verb shows the time left. The next attempt fires
 automatically once the cooldown clears; a success clears it early. `retry_delay_minutes`
-is set at onboarding and editable in `remote.json` (or by asking the agent).
+is portable config (`config.json`, applies even local-only), editable there or by asking
+the agent.
 
 **Control without launchd** (user asked for something elegant, no daemons):
 - **Pause after current:** `pause` verb on the CONTROL issue, OR locally
@@ -282,8 +291,12 @@ handled reply isn't reprocessed.
 
 ## Scripts involved
 
-- `remote_config.py` — load/save `remote.json`; provider dispatch (imports
-  `github_functions` or `gitlab_functions`); label/body rendering helpers.
+- `remote_config.py` — load/save `remote.json` STATE; `load_runtime()` merges the
+  portable `backend.provider` from `config.json` onto the state; `save_state()` writes
+  back only the canonical state keys; provider dispatch (imports `github_functions` or
+  `gitlab_functions`); label/body rendering helpers.
+- `config.py` (core, not remote-only) — the portable `config.json` (hitl + git +
+  `backend{enabled,provider}` + `runner{}`); the runner loads + validates it on startup.
 - `remote_sync.py` — `init` / `reconcile` (pull → drift → heal → push) / dashboard
   rendering. `--dry-run` prints intended calls without mutating.
 - `remote_control.py` — poll + authorize + dispatch CONTROL verbs (incl. `approvals`
@@ -302,15 +315,15 @@ All stdlib-only, reusing `github_functions.py` / `gitlab_functions.py` for trans
 The opt-in is split so the technical decisions happen EARLY and the heavy mirror
 creation happens LATE (once work exists):
 
-**Phase 1 — configure (early).** `routes/configure.md` captures the technical
-prefs into `remote.json` (provider, repo, allowlist, `retry_delay_minutes`,
-`enabled`, `initialized:false`) — verifying the PAT, explaining the limitations — but
-does NOT touch the remote. Runs as a first-run preamble before bootstrap/adopt, or via
-`/specseed configure`.
+**Phase 1 — configure (early).** `routes/configure.md` captures the technical prefs:
+the portable bits into `config.json` (`backend{enabled,provider}`, `runner.retry_delay_minutes`)
+and the per-repo bits into `remote.json` (`repo`, `allowlist`, `initialized:false`) —
+verifying the PAT, explaining the limitations — but does NOT touch the remote. Runs as a
+first-run preamble before bootstrap/adopt, or via `/specseed configure`.
 
 **Phase 2 — init (late).** At the end of bootstrap (stage 13.5) / adopt (9.5), if
-`remote.json` is `enabled:true` and not yet `initialized`, the mirror is created with
-NO further questions:
+`config.backend.enabled` is true and `remote.json` is not yet `initialized`, the mirror
+is created with NO further questions:
 1. `python .specseed/scripts/remote/remote_sync.py init` — creates the 4 dashboards, pins
    the 3, seeds labels, pushes the current work.
 2. Write the `<repo>_agents_runner.py` shim at repo root.
@@ -318,8 +331,8 @@ NO further questions:
    `CLAUDE_template.md`).
 4. Flip `initialized:true`; tell the user the start command + the pause/stop story.
 
-If configure chose **local-only** (`enabled:false`) → init is skipped; the feature is
-invisible.
+If configure chose **local-only** (`backend.enabled:false`) → init is skipped; the
+feature is invisible.
 
 This is **prefer-programmatic**: the agent calls the scripts, it does not hand-create
 github issues one by one.

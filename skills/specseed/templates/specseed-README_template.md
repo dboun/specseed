@@ -6,7 +6,7 @@ FILL the {{PLACEHOLDERS}}:
   {{PROJECT}}              project name
   {{RUNNER}}               the runner shim filename = "<repo>_agents_runner.py"
   {{BACKEND}}              "local only" | "GitHub mirror" | "GitLab mirror"
-  {{INTEGRATION_BRANCH}}   policy.json git.integration_branch (default: dev)
+  {{INTEGRATION_BRANCH}}   config.json git.integration_branch (default: dev)
 
 PRUNE the marked blocks:
   <!-- MIRROR-ONLY --> ... <!-- /MIRROR-ONLY -->   keep ONLY if a github/gitlab mirror is configured.
@@ -36,7 +36,7 @@ to stop them, what you control. Backend: **{{BACKEND}}**.
   spec/                WHAT/WHY/HOW: vision, srs, sad, sdd, reqs.json. The contract.
   project_management/  the work: ROADMAP.md, TIMELINE.md, epics/ tickets/ issues/ sprints/
                        APPROVALS.md  -> things waiting on your sign-off
-  memory/              runtime state + config (policy.json, runner.ctl, runner.log)
+  memory/              config + runtime state (config.json [portable], remote.json [per-repo, mirror], runner.ctl, runner.log)
   scripts/             tooling. agents_runner.py is the only one you run; core/ + remote/ are agent-run.
 ```
 
@@ -110,7 +110,7 @@ parks that work (writes the request, sets the issue to `awaiting_approval`) and 
 to other ready work. Nothing silently waits on you while other work could proceed.
 
 Gated categories and their level (block / surface / auto) live in
-`.specseed/memory/policy.json` and are rendered into `CLAUDE.md`. Typical blocks:
+`.specseed/memory/config.json` and are rendered into `CLAUDE.md`. Typical blocks:
 installing dependencies, destructive data ops, anything that leaves the repo (deploy,
 publish), writing outside the repo, running containers or heavy compute.
 
@@ -145,12 +145,18 @@ them by hand desyncs the traceability the agents rely on).
 | `/specseed tweak` | a one-line change (add a requirement, change a priority) |
 | `/specseed adapt` | a real change to the spec, including reopening settled docs |
 | `/specseed plan-next` | break down the next slice of the roadmap into work |
-| `/specseed configure` | change backend, git workflow, or the approval gates |
+| `/specseed configure` | change backend, git workflow, the approval gates, or the runner knobs |
 | `/specseed migrate` | update this `.specseed/` tree after the specseed skill itself was upgraded (usually offered automatically at session start) |
 
 If an agent thinks a settled spec doc is wrong mid-build, it stops, writes a
 `spec_concern.md` next to its issue, and tells you to run `/specseed adapt`. It does not
 edit the spec itself.
+
+**Reusing your setup across repos.** `.specseed/memory/config.json` holds only "how you
+work" (gates, git workflow, backend choice, runner knobs) — no project-specific data — so
+you can copy it into another repo's `.specseed/memory/` to start from your usual setup
+(then `/specseed configure` to fill in repo-specific bits). Do **not** copy `remote.json`:
+it is per-repo state (the target repo, issue map, cursors) and is recreated per project.
 
 <!-- MIRROR-ONLY -->
 ## The github/gitlab mirror
@@ -191,7 +197,7 @@ to land.
 
 - `.specseed/memory/runner.log`  the runner's log (start here when a build misbehaves)
 - `.specseed/memory/runner.ctl`  the control file (`run` / `pause` / `stop`)
-- `.specseed/memory/policy.json`  what is gated, and the git workflow
+- `.specseed/memory/config.json`  your portable config: what is gated, the git workflow, backend + runner knobs
 - `.specseed/project_management/APPROVALS.md`  work parked on your sign-off
 - A stuck issue: `python .specseed/scripts/core/issue_info.py <ID>` shows its state.
   Claims older than a few hours are auto-recovered on the next claim.

@@ -471,15 +471,16 @@ write the runner entry so the user can start the loop:
 
 **Then — mirror init only if configured.** The mirror choice was already made in
 **configure mode** (the first-run preamble or `/specseed configure`) — do NOT re-ask
-here. Read `.specseed/memory/remote.json`:
+here. Read `config.backend.enabled` in `.specseed/memory/config.json` (the per-repo
+`remote.json` carries `initialized`):
 
-- **absent, or `enabled: false`** → local-only. Shim above is enough; write nothing remote.
-- **`enabled: true` and not yet `initialized`** → create the mirror programmatically
+- **`backend.enabled: false`** (or no `remote.json`) → local-only. Shim above is enough; write nothing remote.
+- **`backend.enabled: true` and `remote.json` not yet `initialized`** → create the mirror programmatically
   (prefer scripts — don't hand-create issues):
   1. `python .specseed/scripts/remote/remote_sync.py init` — 4 dashboards (pin ROADMAP/TIMELINE/CONTROL), seed labels, push current work.
   2. Add the optional **Remote mirror** block to `CLAUDE.md` (see `templates/CLAUDE_template.md`).
   3. Set `initialized: true` in `remote.json`; point the user at the CONTROL-issue verbs (also in `.specseed/README.md`).
-- **`enabled: true` and already `initialized`** (re-run) → just `remote_sync.py reconcile` to push the latest work.
+- **`backend.enabled: true` and `remote.json` already `initialized`** (re-run) → just `remote_sync.py reconcile` to push the latest work.
 
 If the user never configured but now wants the mirror → point them to `/specseed configure`. See `references/remote.md` for the full model.
 

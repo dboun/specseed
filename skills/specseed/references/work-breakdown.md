@@ -324,7 +324,7 @@ narrow tickets or artificial dependencies — rebalance.
 
 Runs **once after issues are formed**, before sprint planning (bootstrap stage 11 /
 adopt stage 8 / adapt stage 7). The project-wide gate *levels* are already set in
-`.specseed/memory/policy.json` (configure mode) — this pass decides which **specific
+`.specseed/memory/config.json` (configure mode) — this pass decides which **specific
 issues** need a per-issue human sign-off, flags issues that will trip action gates at
 runtime, and proposes structural splits. It does NOT enforce anything (runtime action
 gates fire regardless, per the `CLAUDE.md` operating-policy block); it's early-warning
@@ -333,7 +333,7 @@ gates fire regardless, per the `CLAUDE.md` operating-policy block); it's early-w
 1. **Scan** each formed issue's scope (`artifacts.touches`, technical acceptance
    criteria, description) for actions in the 8 categories: `container`,
    `heavy_compute`, `network`, `deps`, `data_destructive`, `external_publish`,
-   `outside_repo`, `secrets` (taxonomy + descriptions in `scripts/core/policy.py`). Also flag
+   `outside_repo`, `secrets` (taxonomy + descriptions in `scripts/core/config.py`). Also flag
    anything user-facing/irreversible the categories miss.
 2. **Tabulate.** One consolidated table: issue × detected category × the policy level
    for that category × suggested per-issue action (set `approval_required`, and/or

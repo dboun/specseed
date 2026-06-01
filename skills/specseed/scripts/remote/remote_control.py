@@ -156,12 +156,12 @@ def main(argv):
         print("usage: remote_control.py poll", file=sys.stderr)
         return 2
     root = rc.find_root()
-    cfg = rc.load_config(root)
-    if cfg is None:
-        print("mirror off", file=sys.stderr)
+    cfg, enabled, _ = rc.load_runtime(root)
+    if not enabled:
+        print("mirror off (backend.enabled=false in config.json)", file=sys.stderr)
         return 1
     actions, cfg = process(root, cfg, rc.Remote(cfg))
-    rc.save_config(cfg, root)
+    rc.save_state(cfg, root)
     print(json.dumps(actions, indent=2))
     return 0
 
