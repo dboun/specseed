@@ -21,6 +21,9 @@ skills/specseed/
     tweak.md          #   single-doc edits (+ escalation rules)
     configure.md      #   technical setup: backend (local/github/gitlab) + git workflow + HITL gate policy → policy.json
     approve.md        #   resolve parked HITL gates (walk/approve/reject); local twin of the remote approve/reject verbs
+    migrate.md        #   bring an older-version .specseed/ tree up to the running skill's format (applies migrations/ files in range)
+  version.txt         # the skill's own version (x.y.z, one line). Ships via install.sh. Bumped by the release procedure
+  migrations/         # one file per breaking (y/x) boundary, named by target version (0.2.0.md…). Consumed by migrate.md; authored at release time
   references/         # shared building blocks LOADED BY routes (not routed-to directly)
     work-breakdown.md #   roadmap + epic/ticket/issue formation (3-tier) + risk-detection & gating pass (HITL)
     remote.md         #   OPTIONAL opt-in github/gitlab mirror + CONTROL channel + HITL gate lifecycle
@@ -38,6 +41,33 @@ skills/specseed/
 install.sh            # copies skills/specseed → ~/.claude/skills and ~/.agents/skills (recursive, preserves subdirs)
 README.md
 ```
+
+## Versioning & releases
+
+The skill is versioned `x.y.z` in `skills/specseed/version.txt` (one line; ships via `install.sh`). A target repo records what built its tree in `<repo>/.specseed/version.txt`; the `migrate` route reconciles the two. Full model in `skills/specseed/migrations/README.md`.
+
+- **z (patch)** — every change. NON-breaking to an existing `.specseed/` tree. No migration file.
+- **y (minor)** — breaking to produced artifacts (spec/frontmatter format, script CLI/IO, folder layout, JSON schema): "old trees misbehave unless migrated". Needs a migration file. Agent may bump y.
+- **x (major)** — **user-only** decision (major rethink). Agent may *suggest* x, never sets it autonomously.
+- Stay `0.y.z` until the skill is usable + verified.
+
+**Cutting a release (when the user says "let's cut a release" / "create a release").** Do NOT pre-author migrations; everything happens at cut time by comparing commits:
+
+1. **Find the previous release** — `git describe --tags --abbrev=0` (or `git tag`). Confirm the version + commit with the user. (None yet → previous is the untagged 0.1.0; see "Initial tag" below.)
+2. **Diff** `<prev_tag>..HEAD`. Classify what changed in the SKILL surface that a `.specseed/` tree depends on: spec/frontmatter format, script CLI or I/O contract, folder layout, JSON schema, the entry-file templates.
+3. **Decide the bump** with the user: any breaking change to the above → **y** (or **x** if the user calls it a major rethink); otherwise **z**.
+4. **If y or x:** author `skills/specseed/migrations/<new_version>.md` (format in `migrations/README.md`) describing how to transform a tree from the previous format to the new one, derived from the diff. This is a **single hop** (`from:` = previous release, `to:` = new version): cover only THIS release's changes, not anything older. Files chain at migrate time, so never restate prior migrations. Mark uncertain steps `# REVIEW:`. (z bump → no migration file.)
+5. **Bump** `skills/specseed/version.txt` to the new version. Commit (migration file + version bump together).
+6. **Tag + push** — present the user the exact commands (tag the release commit `vX.Y.Z`, push the tag). Tagging/pushing is outward-facing: hand the commands over (or ask) rather than running git unprompted.
+
+**Initial tag (0.1.0, one-time).** 0.1.0 is the released state on `main` (commit `bcd2234`), currently untagged. To tag + push it (run manually):
+
+```bash
+git tag -a v0.1.0 bcd2234 -m "specseed 0.1.0"
+git push origin v0.1.0
+```
+
+The current `release-0.2/formalize` branch is unreleased work; `version.txt` stays `0.1.0` until a 0.2.0 release is formally cut (which is when its migration file gets authored).
 
 ## Mental model (the work layer specseed builds)
 

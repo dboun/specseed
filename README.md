@@ -25,6 +25,29 @@ The output lives under `.specseed/` — `spec/` (vision, SRS, SAD, SDD, ADRs, re
 Just run `bash install.sh` or `chmod +x install.sh; ./install.sh`.
 
 
+## Versioning & releases
+
+The skill carries a version in `skills/specseed/version.txt`, as `x.y.z`:
+
+- **z (patch)** bumps on essentially every change. Non-breaking: an existing `.specseed/` tree keeps working as is.
+- **y (minor)** bumps when the produced artifacts change in a breaking way (spec or frontmatter format, a script's CLI or output, the folder layout, a JSON schema). An older tree needs migrating before the new skill drives it cleanly.
+- **x (major)** bumps only when you decide the skill has been substantially rethought. The agent can suggest it but never sets it on its own.
+
+It stays on `0.y.z` until the skill is genuinely usable and verified.
+
+When the skill runs against a repo whose `.specseed/` tree was built by an older version, it notices the gap at session start and offers to **migrate** the tree to the current format first (also `/specseed migrate` on demand). Each breaking release ships a migration file under `skills/specseed/migrations/`; migrate applies the ones between the tree's version and the skill's, in order, then re-stamps `.specseed/version.txt`.
+
+### Cutting a release
+
+Tell the agent "let's cut a release". It will: find the previous release tag, compare it against the current commit, decide the bump with you, write a migration file if the change is breaking, bump `version.txt`, and hand you the exact `git tag` / `git push` commands for the release commit. Nothing is tagged or pushed without you. The full procedure lives in `CLAUDE.md` ("Versioning & releases").
+
+The first release, `0.1.0`, is the state on `main` and is not yet tagged. To tag and push it:
+
+```bash
+git tag -a v0.1.0 bcd2234 -m "specseed 0.1.0"
+git push origin v0.1.0
+```
+
 ## License / contact
 
 See [LICENSE](./LICENSE) file.

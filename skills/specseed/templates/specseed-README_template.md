@@ -146,6 +146,7 @@ them by hand desyncs the traceability the agents rely on).
 | `/specseed adapt` | a real change to the spec, including reopening settled docs |
 | `/specseed plan-next` | break down the next slice of the roadmap into work |
 | `/specseed configure` | change backend, git workflow, or the approval gates |
+| `/specseed migrate` | update this `.specseed/` tree after the specseed skill itself was upgraded (usually offered automatically at session start) |
 
 If an agent thinks a settled spec doc is wrong mid-build, it stops, writes a
 `spec_concern.md` next to its issue, and tells you to run `/specseed adapt`. It does not

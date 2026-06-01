@@ -129,6 +129,12 @@ Write the config files:
 1. `policy.json` — from Round 2a/2b answers (or `default_policy()` on `defaults`). Run
    `python .specseed/scripts/core/policy.py validate` to confirm it's well-formed.
 2. `remote.json` — backend choice from Round 1 (+ 2c options if mirror).
+3. `.specseed/version.txt` — **stamp the tree's version, FIRST-SETUP ONLY.** If
+   `.specseed/version.txt` does not exist, write the running skill's version into it
+   (one line, x.y.z — copy from the skill's own `version.txt`, sibling of `SKILL.md`).
+   This marks which skill format built the tree so the migrate route can later detect
+   drift. Don't overwrite it on a `/specseed configure` re-run (migrate owns it after
+   creation).
 
 **Do NOT run `remote_sync.py init` here** — there's no work to push yet. It runs
 automatically at the end of bootstrap/adopt because the prefs are stored (see bootstrap

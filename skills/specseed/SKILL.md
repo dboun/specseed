@@ -36,6 +36,7 @@ After the first message, default to caveman-spirit terse comm (no filler, fragme
 
 **Mode is chosen from disk evidence, not the user's words alone.** In repo mode, STAT the filesystem before committing a mode. Deterministic, in order:
 
+0. **Version check (run before everything else when a `.specseed/` tree exists).** Compare `<repo>/.specseed/version.txt` against the skill's own `version.txt` (sibling of this `SKILL.md`). Missing tree stamp → treat as `0.1.0`. If the tree's **minor** (or major) version is BEHIND the skill's → the tree may be in an outdated format. **OFFER MIGRATE FIRST** (route `routes/migrate.md`): tell the user "this `.specseed/` was built by `<tree_ver>`, skill is `<skill_ver>`; migrate before continuing?" and recommend yes. A patch-only gap (same x.y, lower z) is non-breaking → don't interrupt; migrate silently re-stamps at the end of whatever runs, or skip. Tree version > skill version → warn the skill install is stale (`install.sh`), don't downgrade. Tree current → proceed to step 1. (No `.specseed/` yet → skip; fresh trees get stamped at creation.)
 1. **`.specseed/memory/session_state.md` exists?** → an interrupted session. **OFFER RESUME FIRST.** Read it, tell the user "you were at `<stage>`, about to `<next>`", and ask: **resume / start fresh**. Do NOT auto-resume; do NOT ignore it and start a new flow on top. (On resume: reread this `SKILL.md`, then `session_state.md`, then re-enter the mode/stage it names.)
 2. **`.specseed/spec/` exists with content** (any `vision.md` / `*-srs.md` / `sad.md` / `sdd.md`)? → a spec is ALREADY present. **Bootstrap is OFF the table** unless the user explicitly says "start over / throw it away". Even if the user's words sound greenfield ("spec out the payments feature"), an existing tree means **adapt** (change/extend settled docs), **plan-next** (roadmap has un-detailed titles + user wants the next slice), or **tweak** (tiny edit). Name what was found, route accordingly, confirm if ambiguous — never silently bootstrap over it.
 3. **Source files present but NO `.specseed/`** → existing code, no spec → **adopt**. Recover the spec FROM the codebase (+ any docs already there) into `.specseed/`. NOT bootstrap — bootstrap is for a blank slate and would spec from conversation, drifting from the real code on day one. Name what was found (stack, rough component shape, any existing docs), route to adopt.
@@ -60,6 +61,7 @@ Read user message + conversation, **constrained by the reconnaissance above** (a
 | **adapt** | Existing spec present, user wants to update/extend/revise non-trivially (incl. *changing* settled docs) | `routes/adapt.md` |
 | **tweak** | Tiny single-doc edit ("add this one req to SRS", "change priority of REQ-X") | `routes/tweak.md` (may auto-escalate to adapt) |
 | **approve** | Resolve pending human-approval gates (the impl agent parked gated work). `/specseed approve`, "next thing needing approval", "approve/reject/hold <ID>". Read-only on code; touches `approval.md` + issue status | `routes/approve.md` |
+| **migrate** | A `.specseed/` tree built by an older skill version needs bringing up to the running skill's format. Auto-offered by the reconnaissance version check; or `/specseed migrate`. Edits only the tree (+ entry files); no re-spec | `routes/migrate.md` |
 
 **plan-next vs adapt:** plan-next *extends forward* into un-specced roadmap titles (append-only, never reopens `settled` docs); adapt *changes* existing/settled specs. If unsure: does the work touch a settled doc? → adapt. Does it only add the next slice? → plan-next. See `routes/plan-next.md` "Boundary".
 
@@ -96,6 +98,7 @@ Then route to mode file.
 - `routes/configure.md` — technical setup route (local vs github/gitlab mirror, credentials, runner opts). Runs as a first-run preamble before bootstrap/adopt, or on `/specseed configure`. Writes `.specseed/memory/remote.json` (config only)
 - `references/remote.md` — OPTIONAL, opt-in github/gitlab mirror (single-dev phone-driven workflow). Local stays ground truth; the remote is a mirror + bug-inbox + CONTROL command channel driven by an always-on `agents_runner.py`. Offered once at onboarding (bootstrap stage 13.5 / adopt 9.5); entirely off unless the user opts in
 - `routes/approve.md` — the `approve` route: walk + resolve pending HITL gates (`approval.md` requests the impl agent parked). Local human channel; also what the mirror's CONTROL `approve`/`reject` verbs invoke
+- `routes/migrate.md` — the `migrate` route: bring an older-version `.specseed/` tree up to the running skill's format. Reads the skill's `version.txt` + the tree's `.specseed/version.txt`, applies the in-range files from `migrations/`. See `migrations/README.md` for the x.y.z model + file format. Auto-offered by the reconnaissance version check (step 0)
 - **HITL policy** — the action-gate + git-workflow contract the impl agent obeys lives in `.specseed/memory/policy.json` (written by configure mode, ALWAYS — even local-only) and is rendered into the READ-FIRST block of `CLAUDE.md` by `scripts/core/policy.py`. Per-issue gating (which issues get an `approval_required` sign-off) is refined at work-breakdown time — see `references/work-breakdown.md` "Risk-detection & gating pass"
 
 ## Memory protocol
@@ -154,6 +157,7 @@ AGENTS.md                       # one line: "Read ./CLAUDE.md. In dirs you work 
 
 # ---- .specseed/ (all spec artifacts + runtime) ----
 .specseed/
+├── version.txt                 # the skill version this tree was last built/migrated to (single line x.y.z). Missing → assume 0.1.0. Drives the migrate route. Stamped at creation (configure Persist), re-stamped by migrate
 ├── README.md                   # HUMAN operator manual (run/kill the runner, approve, configure, github/gitlab). Written at first setup from templates/specseed-README_template.md
 ├── memory/                     # ALL skill memory lives here (dir, not a single file)
 │   ├── session_state.md        #   session scratch — deleted at end; preserved on /specseed stop
