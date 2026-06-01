@@ -28,7 +28,7 @@ key off `.specseed/spec/`).
 
 **1. `policy.json` — ALWAYS written** (even local-only). The HITL action-gate policy +
 git-workflow contract the impl agent obeys at runtime via `CLAUDE.md`. Schema +
-defaults in `.specseed/scripts/policy.py` (`default_policy()`); `policy.py validate`
+defaults in `.specseed/scripts/core/policy.py` (`default_policy()`); `policy.py validate`
 checks it; `policy.py render-claude` turns it into the READ-FIRST block of `CLAUDE.md`.
 Shape:
 ```json
@@ -61,7 +61,7 @@ Shape:
 
 **2. (mirror only) Which repo?** Detect `git remote get-url origin`; confirm or override (accepts `owner/name`, full URL, or self-hosted GitLab host).
 
-**3. (mirror only) Credentials.** Confirm `GITHUB_PAT` / `GITLAB_PAT` is in the env or a `.env` (the wrappers read both). Verify once with `python .specseed/scripts/remote_config.py ping` (after the file's written) or `github_functions.py get_authenticated_user`. **No Anthropic API key needed** — the runner drives your local Claude Code CLI.
+**3. (mirror only) Credentials.** Confirm `GITHUB_PAT` / `GITLAB_PAT` is in the env or a `.env` (the wrappers read both). Verify once with `python .specseed/scripts/remote/remote_config.py ping` (after the file's written) or `github_functions.py get_authenticated_user`. **No Anthropic API key needed** — the runner drives your local Claude Code CLI.
 
 ## Mirror limitations — state plainly BEFORE Round 2 (don't bury)
 
@@ -125,14 +125,31 @@ issues need an `approval_required` sign-off) — configure just sets the baselin
 
 ## Persist
 
-Write **both** files:
+Write the config files:
 1. `policy.json` — from Round 2a/2b answers (or `default_policy()` on `defaults`). Run
-   `python .specseed/scripts/policy.py validate` to confirm it's well-formed.
+   `python .specseed/scripts/core/policy.py validate` to confirm it's well-formed.
 2. `remote.json` — backend choice from Round 1 (+ 2c options if mirror).
 
 **Do NOT run `remote_sync.py init` here** — there's no work to push yet. It runs
 automatically at the end of bootstrap/adopt because the prefs are stored (see bootstrap
 stage 13.5).
+
+### Also write `.specseed/README.md` (the human operator manual) — FIRST SETUP ONLY
+
+If `.specseed/README.md` does NOT already exist, write it from
+`templates/specseed-README_template.md`. This is the human-facing "how to run things"
+doc (start/kill the runner, approvals, change the plan, github/gitlab). Specialize it:
+
+- Fill `{{PROJECT}}`, `{{RUNNER}}` (= `<repo>_agents_runner.py`), `{{BACKEND}}`
+  (`local only` / `GitHub mirror` / `GitLab mirror`), `{{INTEGRATION_BRANCH}}` (from
+  `policy.json` `git.integration_branch`).
+- **Prune** the marked blocks per backend: keep `LOCAL-ONLY` blocks and delete
+  `MIRROR-ONLY` blocks when local-only; do the reverse when a mirror is configured.
+- Delete the leading authoring HTML comment.
+
+On a `/specseed configure` **re-run** that changes the backend, rewrite the README the
+same way (re-prune for the new backend). Don't clobber an existing README on a no-op
+re-run.
 
 **Re-run via `/specseed configure`:** rewrite whichever file changed. If `policy.json`
 changed AND `CLAUDE.md` already exists in the repo, **re-render its operating-policy

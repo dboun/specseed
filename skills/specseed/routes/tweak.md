@@ -59,7 +59,7 @@ Write the change. **Repo mode:** edit the file in place. **Chat mode:** deliver 
 ### 6. Trigger downstream scripts
 
 After apply:
-- If a SRS file changed → reqs.json must be regenerated → run (or remind user to run) `python .specseed/scripts/requirements_generate_json.py`, then `python .specseed/scripts/requirements_analyze.py`
+- If a SRS file changed → reqs.json must be regenerated → run (or remind user to run) `python .specseed/scripts/core/requirements_generate_json.py`, then `python .specseed/scripts/core/requirements_analyze.py`
 - If a ticket/issue folder changed → re-assemble + validate (issues first): `issues_assemble.py` → `tickets_assemble.py` → `issues_validate.py` → `tickets_validate.py`, then `tickets_analyze.py .specseed/project_management/tickets.json`. If a ticket's issue set changed, run `roadmap_render.py` to refresh ROADMAP `(X/Y)` counts.
 - If a sprint folder changed OR a ticket's `sprint:` changed → also `sprints_assemble.py` → `sprints_validate.py` → `timeline_render.py` (regenerates TIMELINE.md).
 - If both SRS and a ticket/issue changed (SRS+ticket combo) → run the req scripts then the assemble/validate cascade
@@ -70,7 +70,7 @@ After apply:
 
 ### 7. Escalation check
 
-Run through escalation triggers (next section). If any fire, escalate to adapt mode immediately — announce to user, then load `references/adapt.md`. Otherwise: done.
+Run through escalation triggers (next section). If any fire, escalate to adapt mode immediately — announce to user, then load `routes/adapt.md`. Otherwise: done.
 
 ---
 
@@ -95,7 +95,7 @@ What stays tweak: exactly ONE req added/changed in SRS, exactly ONE ticket added
 When escalating:
 1. Announce: `This is bigger than a tweak. Switching to adapt mode.`
 2. Carry over context already gathered (target doc(s), trigger description)
-3. Load `references/adapt.md` and pick up at its stage 3 (localize impact) — stages 1 and 2 are already covered by what tweak gathered
+3. Load `routes/adapt.md` and pick up at its stage 3 (localize impact) — stages 1 and 2 are already covered by what tweak gathered
 
 ---
 

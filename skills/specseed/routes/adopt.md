@@ -72,7 +72,7 @@ If stage 1 found `AGENTS.md` / `CLAUDE.md` / `.cursorrules` / `CONTRIBUTING.md` 
 
 1. Read them. Extract the project's conventions (build/test commands, branching, review rules, style, how agents are told to behave).
 2. **Confirm with the user** — "found these rules: <summary>. Keep them?"
-3. **State the diffs from the specseed way** so nothing surprises them: settled-doc soft-freeze contract, the issue-claim workflow, the per-tier status model, `spec_concern.md` escalation path (see `references/CLAUDE_template.md`). Where their rules conflict with specseed's runtime contract, surface it and let them choose.
+3. **State the diffs from the specseed way** so nothing surprises them: settled-doc soft-freeze contract, the issue-claim workflow, the per-tier status model, `spec_concern.md` escalation path (see `templates/CLAUDE_template.md`). Where their rules conflict with specseed's runtime contract, surface it and let them choose.
 
 These conventions feed the `## Project conventions` section of the `CLAUDE.md` specseed writes at stage 9 (merge protocol — never silently clobber their existing one).
 
@@ -170,9 +170,9 @@ If the user had docs under `spec/`/`docs/` that we imported + reconciled, offer 
 
 ---
 
-## Stage 9.5: Remote mirror init (only if configured)
+## Stage 9.5: Runner shim + (optional) remote mirror init
 
-Same as bootstrap **stage 13.5** — the mirror choice was made earlier in **configure mode** (first-run preamble / `/specseed configure`), so don't re-ask. Read `.specseed/memory/remote.json`: `enabled:false`/absent → skip; `enabled:true` and not `initialized` → run `remote_sync.py init` + `--write-shim` + the CLAUDE block, set `initialized:true`. Full model in `references/remote.md`.
+Same as bootstrap **stage 13.5**. **Always** write the runner shim (`python .specseed/scripts/agents_runner.py --write-shim <repo_name>`) — the runner works local-only too, not just for the mirror. **Then** the mirror choice (already made in **configure mode**, don't re-ask): read `.specseed/memory/remote.json` — `enabled:false`/absent → local-only, shim is enough; `enabled:true` and not `initialized` → run `remote_sync.py init` + the CLAUDE mirror block, set `initialized:true`. Full model in `references/remote.md`.
 
 ---
 

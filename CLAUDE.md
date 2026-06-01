@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Invoke `./skills/specseed/references/caveman.md` skill.
+Invoke `./skills/specseed/references_ext/caveman.md` skill.
 
 This repo is the **source + installer for the `specseed` skill** (a Claude Code / Codex skill). It is NOT an application — there is nothing to "run". You are a dev of this skill: you edit the skill's instructions (markdown) and its tooling (python scripts).
 
@@ -13,22 +13,29 @@ The specseed skill doesn't rely on any external skill being present (e.g. in `~/
 ```
 skills/specseed/
   SKILL.md            # entry/router: modes, output hierarchy, protocols. START HERE.
-  references/         # the actual behavior — loaded by SKILL.md as needed
+  routes/             # the flows the skill ROUTES INTO (one per mode-table entry)
     bootstrap.md      #   greenfield flow (stages 1–14) + depth dial (lite/standard/incremental) at stage 3.5
     plan-next.md      #   extend an incremental bootstrap forward: spec+break-down the next roadmap slice (append-only; not adapt)
     adopt.md          #   existing code, no .specseed/: reverse-bootstrap the spec FROM the codebase (+import docs). read-only on code
     adapt.md          #   non-trivial changes to an existing spec (incl. CHANGING settled docs)
     tweak.md          #   single-doc edits (+ escalation rules)
-    work-breakdown.md #   roadmap + epic/ticket/issue formation (3-tier) + risk-detection & gating pass (HITL)
     configure.md      #   technical setup: backend (local/github/gitlab) + git workflow + HITL gate policy → policy.json
     approve.md        #   resolve parked HITL gates (walk/approve/reject); local twin of the remote approve/reject verbs
+  references/         # shared building blocks LOADED BY routes (not routed-to directly)
+    work-breakdown.md #   roadmap + epic/ticket/issue formation (3-tier) + risk-detection & gating pass (HITL)
     remote.md         #   OPTIONAL opt-in github/gitlab mirror + CONTROL channel + HITL gate lifecycle
     component-questions.md, question-protocol.md   # questioning subroutines
-    CLAUDE_template.md# the CLAUDE.md specseed writes into TARGET repos (impl-agent runtime; READ-FIRST operating-policy block)
-    caveman.md        # doc-writing DENSITY style (terse, signal-dense)
-    humanizer.md      # doc-writing NATURALNESS pass (strip AI tells from human-read prose; em-dash ban). See SKILL.md Step 0
+  templates/          # artifacts the skill EMITS verbatim into a TARGET repo
+    CLAUDE_template.md          # the CLAUDE.md specseed writes into TARGET repos (impl-agent runtime; READ-FIRST operating-policy block)
+    specseed-README_template.md # the .specseed/README.md operator manual (human-facing: run/kill/approve/configure/remote)
+  references_ext/     # external-origin doc-style passes (integrated from other skills)
+    caveman.md        #   doc-writing DENSITY style (terse, signal-dense)
+    humanizer.md      #   doc-writing NATURALNESS pass (strip AI tells from human-read prose; em-dash ban). See SKILL.md Step 0
   scripts/            # stdlib-only python3 tooling (NO third-party deps)
-install.sh            # copies skills/specseed → ~/.claude/skills and ~/.agents/skills
+    agents_runner.py  #   the ONLY human-run entry (start/kill the orchestrator loop); rest is agent-invoked
+    core/             #   plumbing + analysis seams (assemble/validate/claim/render/analyze/policy/approvals/drift)
+    remote/           #   OPTIONAL mirror cluster (github/gitlab/remote_config/sync/control); off unless user opts in
+install.sh            # copies skills/specseed → ~/.claude/skills and ~/.agents/skills (recursive, preserves subdirs)
 README.md
 ```
 
@@ -46,13 +53,17 @@ Three tiers: **epic → ticket → issue**, plus **sprints** as an orthogonal gr
 
 ## Scripts (in skills/specseed/scripts/)
 
+`agents_runner.py` sits at `scripts/` top-level (the only human-run entry). All names below live in `scripts/core/`; the remote-mirror cluster lives in `scripts/remote/`. (Paths in the target repo mirror this: `.specseed/scripts/core/...`, `.specseed/scripts/remote/...`.)
+
 `requirements_generate_json.py` (SRS tables→reqs.json), `requirements_analyze.py` / `tickets_analyze.py` / `sprint_plan.py` (SHIPPED stdlib defaults that are also the editable analysis/scheduling seam — orgs may swap them; the rest of the scripts are non-swappable plumbing), `issues_assemble.py` + `tickets_assemble.py` + `sprints_assemble.py` (folders→json; assemble bottom-up: issues → tickets[effort/counts from issues] → sprints[effort/counts from tickets]), `issues_validate.py` + `tickets_validate.py` + `sprints_validate.py` (kept separate by design; sprints_validate also enforces NO backward sprint deps + budget + back-consistency), `claim_issue.py` (atomic flock claim; no-arg auto-picks next ready issue; sprint-scoped via `--sprint-scope`), `issue_info.py`, `roadmap_render.py` (bump ROADMAP "(X/Y)" counts) + `timeline_render.py` (regenerate TIMELINE.md sprint schedule), `verification_map.py` (req→ticket→issues→tests), `drift_check.py`, `policy.py` (load/validate `policy.json`; `render-claude` → the READ-FIRST operating-policy block in CLAUDE.md), `approvals_render.py` (scan `issues/*/approval.md` → `APPROVALS.md` + `approvals.json` for pending HITL gates).
 
-**Optional remote mirror** (only if user opts in — see `references/remote.md`): `github_functions.py` / `gitlab_functions.py` (stdlib REST wrappers), `remote_config.py` (remote.json + provider-agnostic adapter), `remote_sync.py` (local→remote engine: init/reconcile/push/dashboards), `remote_control.py` (CONTROL-issue command channel), `agents_runner.py` (always-on orchestrator loop; writes a `<repo>_agents_runner.py` shim). Local stays ground truth; the mirror is shipped plumbing, off by default.
+**`agents_runner.py`** (top-level, `scripts/agents_runner.py`) — the always-on orchestrator loop + `--write-shim` (writes the `<repo>_agents_runner.py` shim). **Backend-agnostic:** keyed off `remote.json`, it runs **local-only** (just the claim+run work loop + file-based `runner.ctl` control) OR **mirror** (additionally reconcile + the CONTROL channel). `remote is None` inside the loop = the local branch. It imports the remote cluster but no-ops the mirror steps when local.
+
+**Optional remote mirror cluster** (`scripts/remote/`, only used if user opts in — see `references/remote.md`): `github_functions.py` / `gitlab_functions.py` (stdlib REST wrappers), `remote_config.py` (remote.json + provider-agnostic adapter), `remote_sync.py` (local→remote engine: init/reconcile/push/dashboards), `remote_control.py` (CONTROL-issue command channel). Local stays ground truth; the mirror is shipped plumbing, off by default.
 
 ## Conventions
 
 - Scripts: python3, **stdlib only**. Keep it that way (no PyYAML etc).
 - Test a script by building a tiny `.specseed/` fixture under `/tmp` and running the chain (issues_assemble → tickets_assemble → sprints_assemble → validators → sprint_plan → claim_issue → timeline_render → verification_map). Clean up after.
-- Skill doc-writing style: caveman-spirit — lean, fragments OK, no filler (see `references/caveman.md`). User-facing comms start normal then go terse.
-- Produced spec PROSE (vision/README/SAD-SDD prose/ticket prose/ADR justifications) also gets a **humanizer** anti-AI-tell pass (`references/humanizer.md`, scope + em-dash ban in `SKILL.md` Step 0). Two axes: caveman = density, humanizer = naturalness. Machine artifacts (frontmatter/JSON/SRS tables) + the runtime `CLAUDE.md` are exempt. This applies to skill OUTPUT, not the skill's own internal docs.
+- Skill doc-writing style: caveman-spirit — lean, fragments OK, no filler (see `references_ext/caveman.md`). User-facing comms start normal then go terse.
+- Produced spec PROSE (vision/README/SAD-SDD prose/ticket prose/ADR justifications) also gets a **humanizer** anti-AI-tell pass (`references_ext/humanizer.md`, scope + em-dash ban in `SKILL.md` Step 0). Two axes: caveman = density, humanizer = naturalness. Machine artifacts (frontmatter/JSON/SRS tables) + the runtime `CLAUDE.md` are exempt. This applies to skill OUTPUT, not the skill's own internal docs.

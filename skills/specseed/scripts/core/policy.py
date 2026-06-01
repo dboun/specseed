@@ -1,7 +1,7 @@
 """
 policy.py — load/validate `.specseed/memory/policy.json` and render its
-human/agent-facing contract for CLAUDE.md (see references/configure.md +
-references/CLAUDE_template.md "Operating policy").
+human/agent-facing contract for CLAUDE.md (see routes/configure.md +
+templates/CLAUDE_template.md "Operating policy").
 
 policy.json holds the two HITL axes the *implementation* agent honors at runtime:
   - hitl.categories : action-class gates. Each of the fixed CATEGORIES maps to a
@@ -17,10 +17,10 @@ settled-doc freeze), not something this script polices.
 Stdlib only.
 
 CLI:
-  python .specseed/scripts/policy.py show              # print resolved policy
-  python .specseed/scripts/policy.py validate          # exit 1 on schema errors
-  python .specseed/scripts/policy.py render-claude      # emit the CLAUDE.md block
-  python .specseed/scripts/policy.py init               # write a default policy.json (won't clobber)
+  python .specseed/scripts/core/policy.py show              # print resolved policy
+  python .specseed/scripts/core/policy.py validate          # exit 1 on schema errors
+  python .specseed/scripts/core/policy.py render-claude      # emit the CLAUDE.md block
+  python .specseed/scripts/core/policy.py init               # write a default policy.json (won't clobber)
 """
 
 import json
@@ -180,7 +180,7 @@ def render_claude(pol):
              "(create if absent) — see the template below.")
     L.append("3. Set the issue `status: \"awaiting_approval\"` in `issues.json` (KEEP your claim "
              "fields — work is in flight).")
-    L.append("4. Run `python .specseed/scripts/approvals_render.py` to refresh the pending index.")
+    L.append("4. Run `python .specseed/scripts/core/approvals_render.py` to refresh the pending index.")
     L.append("5. **Move on** to the next ready non-gated issue (`claim_issue.py`). Do not block the "
              "loop waiting. The parked issue resumes when a human resolves the request.")
     L.append("")

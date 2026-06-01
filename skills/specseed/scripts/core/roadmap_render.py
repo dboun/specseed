@@ -15,8 +15,8 @@ On a ticket line: an existing trailing "(\\d+/\\d+ complete)" is replaced; if
 absent, " (X/Y complete)" is appended.
 
 Usage:
-    python .specseed/scripts/roadmap_render.py
-    python .specseed/scripts/roadmap_render.py --check   # exit 1 if drift, don't write
+    python .specseed/scripts/core/roadmap_render.py
+    python .specseed/scripts/core/roadmap_render.py --check   # exit 1 if drift, don't write
 
 Exit: 0 OK (or --check with no drift), 1 (--check found drift), 2 missing input.
 """

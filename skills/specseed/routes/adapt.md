@@ -33,7 +33,7 @@ Read in this order:
 
 Scan for open `spec_concern.md` files under `.specseed/project_management/issues/*/`. These were written by implementation agents that hit a settled doc they thought was wrong mid-issue. Note their existence; they're candidate triggers for this session (see stage 2).
 
-**Run `.specseed/scripts/drift_check.py`** if present. It surfaces mechanical drift:
+**Run `.specseed/scripts/core/drift_check.py`** if present. It surfaces mechanical drift:
 - Test files referenced in tickets `artifacts.tests` that don't exist on disk
 - Settled docs whose `settled_at` predates significant recent commits to related source modules
 - (Other heuristic checks per the script's docstring)
@@ -149,20 +149,20 @@ Skip rounds entirely if delta-map is unambiguous and user's trigger already cove
 ## Stage 6: Re-run analyzers
 
 After patches:
-1. Re-run `.specseed/scripts/requirements_generate_json.py` (regenerates `reqs.json` from SRS)
-2. Re-run `.specseed/scripts/requirements_analyze.py` — any new cycles/orphans/dangling refs? Apply cycle resolution moves from bootstrap stage 9
+1. Re-run `.specseed/scripts/core/requirements_generate_json.py` (regenerates `reqs.json` from SRS)
+2. Re-run `.specseed/scripts/core/requirements_analyze.py` — any new cycles/orphans/dangling refs? Apply cycle resolution moves from bootstrap stage 9
 3. After any ticket/issue/sprint folder edit, re-assemble + validate the tiers (issues → tickets → sprints; each derives from the tier below):
    ```bash
-   python .specseed/scripts/issues_assemble.py
-   python .specseed/scripts/tickets_assemble.py
-   python .specseed/scripts/sprints_assemble.py    # if sprints/ exists
-   python .specseed/scripts/issues_validate.py
-   python .specseed/scripts/tickets_validate.py
-   python .specseed/scripts/sprints_validate.py     # if sprints/ exists
+   python .specseed/scripts/core/issues_assemble.py
+   python .specseed/scripts/core/tickets_assemble.py
+   python .specseed/scripts/core/sprints_assemble.py    # if sprints/ exists
+   python .specseed/scripts/core/issues_validate.py
+   python .specseed/scripts/core/tickets_validate.py
+   python .specseed/scripts/core/sprints_validate.py     # if sprints/ exists
    ```
    (Assemble preserves live runtime status/claim — it won't reset in-flight or done issues, nor a sprint's `in_progress` flag.)
-4. Re-run `.specseed/scripts/tickets_analyze.py .specseed/project_management/tickets.json` — critical path shifted? Surface to user if so. Then refresh the views: `python .specseed/scripts/roadmap_render.py` (ROADMAP `(X/Y)` counts) and, if sprints exist, `python .specseed/scripts/timeline_render.py` (TIMELINE).
-5. (Optional) re-run `.specseed/scripts/drift_check.py` to confirm the trigger drift item(s) are no longer flagged
+4. Re-run `.specseed/scripts/core/tickets_analyze.py .specseed/project_management/tickets.json` — critical path shifted? Surface to user if so. Then refresh the views: `python .specseed/scripts/core/roadmap_render.py` (ROADMAP `(X/Y)` counts) and, if sprints exist, `python .specseed/scripts/core/timeline_render.py` (TIMELINE).
+5. (Optional) re-run `.specseed/scripts/core/drift_check.py` to confirm the trigger drift item(s) are no longer flagged
 
 **Repo mode:** agent runs these directly.
 **Chat mode:** skill reminds user with copy-paste-ready commands after delivering changed files.

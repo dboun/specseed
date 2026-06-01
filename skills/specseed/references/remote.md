@@ -190,7 +190,10 @@ arbitrary shell is intentionally NOT a verb — the channel is for control, not 
 ## The runner — `<repo>_agents_runner.py`
 
 A thin shim the skill writes at the repo root; logic lives in the shared
-`agents_runner.py` under `.specseed/scripts/`.
+`agents_runner.py` under `.specseed/scripts/`. **The same runner serves local-only**
+(no `remote.json` / `enabled:false`): it runs the work loop + file-based control below,
+and skips steps 2–3 (reconcile + CONTROL). The mirror loop described here is the
+`enabled:true` superset.
 
 ```bash
 python <repo>_agents_runner.py &        # start (background)
@@ -263,7 +266,7 @@ Local `.specseed/` stays ground truth — the mirror is just the channel.
 - **Resolve (consume reply).** The human comments `approve <ID> <opt>` or
   `reject <ID> <note>` on the **CONTROL** issue. `remote_control` dispatches it as a
   work verb; the runner runs `/specseed approve <ID> …` headless (the same `approve`
-  route a local human uses — `references/approve.md`). The route appends a
+  route a local human uses — `routes/approve.md`). The route appends a
   `## Resolved` marker to `approval.md`, flips the issue (`todo` to resume / `wont_do` /
   `blocked`), and re-renders. The runner then re-pushes so the label/state update
   projects back.
@@ -299,7 +302,7 @@ All stdlib-only, reusing `github_functions.py` / `gitlab_functions.py` for trans
 The opt-in is split so the technical decisions happen EARLY and the heavy mirror
 creation happens LATE (once work exists):
 
-**Phase 1 — configure (early).** `references/configure.md` captures the technical
+**Phase 1 — configure (early).** `routes/configure.md` captures the technical
 prefs into `remote.json` (provider, repo, allowlist, `retry_delay_minutes`,
 `enabled`, `initialized:false`) — verifying the PAT, explaining the limitations — but
 does NOT touch the remote. Runs as a first-run preamble before bootstrap/adopt, or via
@@ -308,7 +311,7 @@ does NOT touch the remote. Runs as a first-run preamble before bootstrap/adopt, 
 **Phase 2 — init (late).** At the end of bootstrap (stage 13.5) / adopt (9.5), if
 `remote.json` is `enabled:true` and not yet `initialized`, the mirror is created with
 NO further questions:
-1. `python .specseed/scripts/remote_sync.py init` — creates the 4 dashboards, pins
+1. `python .specseed/scripts/remote/remote_sync.py init` — creates the 4 dashboards, pins
    the 3, seeds labels, pushes the current work.
 2. Write the `<repo>_agents_runner.py` shim at repo root.
 3. Add the "Remote mirror" block to `CLAUDE.md` (runtime contract — see

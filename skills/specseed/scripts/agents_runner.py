@@ -1,20 +1,25 @@
 """
 agents_runner.py — the always-on orchestrator loop (see references/remote.md).
 
-ONE laptop, single writer. Each iteration: reconcile the remote mirror, process
-CONTROL commands, and (unless paused) claim + run the next ready issue via the LOCAL
-`claude` CLI. No Anthropic API key — it shells out to the already-authenticated
-Claude Code CLI on this machine (prompt piped on stdin).
+ONE laptop, single writer. Each iteration: (unless paused) claim + run the next ready
+issue via the LOCAL `claude` CLI. No Anthropic API key — it shells out to the
+already-authenticated Claude Code CLI on this machine (prompt piped on stdin).
+
+Works in BOTH backends, keyed off `.specseed/memory/remote.json`:
+  - **local-only** (no remote.json, or `enabled:false`): just the work loop +
+    file-based control. No mirror reconcile, no CONTROL issue, no comments.
+  - **mirror** (`enabled:true`): additionally reconcile the github/gitlab mirror each
+    pass, process CONTROL-issue commands, and comment status transitions back.
 
 Start (the skill writes a `<repo>_agents_runner.py` shim at the repo root):
     python <repo>_agents_runner.py &
 
-Control (no launchd / daemon):
+Control (no launchd / daemon) — works in both backends:
     echo pause > .specseed/memory/runner.ctl   # finish current, then idle
     echo run   > .specseed/memory/runner.ctl   # resume
     echo stop  > .specseed/memory/runner.ctl   # graceful exit after current step
     Ctrl-C / kill <pid>                         # same graceful stop (signal handler)
-Or, from a phone, comment the verbs on the pinned CONTROL issue.
+In mirror mode you can also comment the verbs on the pinned CONTROL issue (e.g. phone).
 """
 
 import argparse
@@ -25,6 +30,8 @@ import sys
 import time
 from pathlib import Path
 
+# The remote-mirror cluster lives in the sibling `remote/` package dir.
+sys.path.insert(0, str(Path(__file__).resolve().parent / "remote"))
 import remote_config as rc
 import remote_control
 import remote_sync
@@ -35,7 +42,7 @@ CLAUDE_CMD = ["claude", "-p", "--model", "opus", "--effort", "high",
               "--max-turns", "400"]
 
 WORK_PROMPT = ("Per ./CLAUDE.md, claim and fully implement the next ready issue "
-               "(run .specseed/scripts/claim_issue.py, then execute it to its "
+               "(run .specseed/scripts/core/claim_issue.py, then execute it to its "
                "finish flow). If no issue is ready, do nothing and say so.")
 
 _STOP = False
@@ -154,6 +161,8 @@ def work_step(root, cfg, remote, log):
         if st == before.get(iid):
             continue
         changed = True
+        if remote is None:
+            continue                              # local-only: no mirror to notify
         n = remote_sync._num(cfg, iid)
         if not n:
             continue
@@ -203,36 +212,40 @@ def execute_actions(root, cfg, remote, actions, log):
 
 
 def one_pass(root, cfg, remote, log):
+    """One loop iteration. `remote is None` → local-only: the mirror reconcile +
+    CONTROL channel are skipped; only the work step (and file-based control) run."""
     state = remote_control.read_ctl(root)
     if state == "stop":
         return cfg, True
-    # 1. reconcile mirror (pull new work, drift/heal, push, dashboards)
-    try:
-        remote_sync.sync_pull(root, cfg, remote, log=log)
-        remote_sync.sync_push(root, cfg, remote, log=log)
-        remote_sync.push_dashboards(root, cfg, remote, log=log)
-    except Exception as e:
-        log(f"reconcile error: {e}")
-    # 2. CONTROL commands
-    try:
-        actions, cfg = remote_control.process(root, cfg, remote, log=log)
-        execute_actions(root, cfg, remote, actions, log)
-    except Exception as e:
-        log(f"control error: {e}")
-    # 3. work, unless paused; re-push promptly if a status changed
+    if remote is not None:
+        # 1. reconcile mirror (pull new work, drift/heal, push, dashboards)
+        try:
+            remote_sync.sync_pull(root, cfg, remote, log=log)
+            remote_sync.sync_push(root, cfg, remote, log=log)
+            remote_sync.push_dashboards(root, cfg, remote, log=log)
+        except Exception as e:
+            log(f"reconcile error: {e}")
+        # 2. CONTROL commands
+        try:
+            actions, cfg = remote_control.process(root, cfg, remote, log=log)
+            execute_actions(root, cfg, remote, actions, log)
+        except Exception as e:
+            log(f"control error: {e}")
+    # 3. work, unless paused; re-push promptly if a status changed (mirror only)
     if remote_control.read_ctl(root) == "run":
         try:
-            if work_step(root, cfg, remote, log):
+            if work_step(root, cfg, remote, log) and remote is not None:
                 remote_sync.sync_push(root, cfg, remote, log=log)
                 remote_sync.push_dashboards(root, cfg, remote, log=log)
         except Exception as e:
             log(f"work error: {e}")
-    rc.save_config(cfg, root)
+    if remote is not None:
+        rc.save_config(cfg, root)
     return cfg, False
 
 
 def main(argv):
-    ap = argparse.ArgumentParser(description="specseed remote orchestrator loop")
+    ap = argparse.ArgumentParser(description="specseed orchestrator loop (local-only or github/gitlab mirror)")
     ap.add_argument("--interval", type=int, default=45, help="seconds between passes")
     ap.add_argument("--once", action="store_true", help="single pass then exit")
     args = ap.parse_args(argv)
@@ -242,10 +255,12 @@ def main(argv):
 
     root = rc.find_root()
     cfg = rc.load_config(root)
-    if cfg is None or not cfg.get("enabled"):
-        print("mirror off — nothing to run", file=sys.stderr)
-        return 1
-    remote = rc.Remote(cfg)
+    mirror = bool(cfg and cfg.get("enabled"))
+    if mirror:
+        remote = rc.Remote(cfg)                  # needs cfg.provider / cfg.repo
+    else:
+        remote = None                            # local-only: work loop + file control
+        cfg = cfg or {}                          # so cfg.get(...) (retry_delay etc) is safe
     logp = rc.find_root(root) / ".specseed" / "memory" / "runner.log"
 
     def log(msg):
@@ -254,7 +269,7 @@ def main(argv):
         with open(logp, "a", encoding="utf-8") as f:
             f.write(line + "\n")
 
-    log("runner up")
+    log(f"runner up ({'mirror: ' + cfg.get('provider', '?') if mirror else 'local-only'})")
     while not _STOP:
         cfg, stop = one_pass(root, cfg, remote, log)
         if stop or args.once:
@@ -269,7 +284,8 @@ def main(argv):
 
 SHIM = '''\
 #!/usr/bin/env python3
-"""Auto-generated by specseed. Starts the remote orchestrator loop.
+"""Auto-generated by specseed. Starts the specseed orchestrator loop (local-only
+or github/gitlab mirror, per .specseed/memory/remote.json).
 Run: python {name} &   (see .specseed/scripts/agents_runner.py for control/env)"""
 import sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent / ".specseed" / "scripts"))

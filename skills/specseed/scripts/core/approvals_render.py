@@ -21,8 +21,8 @@ Source of truth is the per-issue approval.md files; this index is generated, lik
 ROADMAP/TIMELINE. Run it after parking or resolving an approval.
 
 Usage:
-  python .specseed/scripts/approvals_render.py
-  python .specseed/scripts/approvals_render.py --check   # exit 1 if index is stale
+  python .specseed/scripts/core/approvals_render.py
+  python .specseed/scripts/core/approvals_render.py --check   # exit 1 if index is stale
 
 Exit: 0 OK (or --check clean), 1 (--check drift), 2 missing pm dir.
 """

@@ -48,22 +48,22 @@ Use `references/work-breakdown.md`:
 - Create `tickets/` + `issues/` folders for the slice's roadmap titles. Back-link. `satisfies_reqs` → the reqs just settled.
 - Assemble bottom-up + validate:
   ```bash
-  python .specseed/scripts/issues_assemble.py
-  python .specseed/scripts/tickets_assemble.py
-  python .specseed/scripts/issues_validate.py
-  python .specseed/scripts/tickets_validate.py
+  python .specseed/scripts/core/issues_assemble.py
+  python .specseed/scripts/core/tickets_assemble.py
+  python .specseed/scripts/core/issues_validate.py
+  python .specseed/scripts/core/tickets_validate.py
   ```
 - **Critical path — now recomputed across ALL tickets** (prior increments + this slice):
   ```bash
-  python .specseed/scripts/tickets_analyze.py .specseed/project_management/tickets.json
+  python .specseed/scripts/core/tickets_analyze.py .specseed/project_management/tickets.json
   ```
   Show the user the updated project-level CP. This is the payoff of keeping CP at the ticket tier — each plan-next sharpens it as more of the roadmap materializes.
 - Sprint: pack the new tickets into the next sprint (`SPRINT_…_<N+1>`). Read `sprint_planning.md`, run `sprint_plan.py`, one refinement pass, write the sprint folder + `sprint:` into each new ticket. Mark it `in_progress` only if the prior sprint is done; else leave `planned` (no two `in_progress` sprints — `sprints_validate.py` + claim ordering assume one target). Capture durable prefs → `sprint_planning.md`.
   ```bash
-  python .specseed/scripts/sprints_assemble.py
-  python .specseed/scripts/sprints_validate.py    # also checks NO backward sprint deps
-  python .specseed/scripts/timeline_render.py
-  python .specseed/scripts/roadmap_render.py
+  python .specseed/scripts/core/sprints_assemble.py
+  python .specseed/scripts/core/sprints_validate.py    # also checks NO backward sprint deps
+  python .specseed/scripts/core/timeline_render.py
+  python .specseed/scripts/core/roadmap_render.py
   ```
   `sprints_validate.py` enforces no backward dependency — the new sprint may depend on earlier ones, never the reverse. If it flags one, a slice was mis-ordered; re-scope.
 

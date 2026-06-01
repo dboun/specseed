@@ -298,9 +298,9 @@ branches). Err toward inserting if branches span ≥2 components or ≥4 issues 
 After folders are written, assemble then analyze:
 
 ```bash
-python .specseed/scripts/issues_assemble.py
-python .specseed/scripts/tickets_assemble.py     # derives per-ticket effort from issues
-python .specseed/scripts/tickets_analyze.py .specseed/project_management/tickets.json
+python .specseed/scripts/core/issues_assemble.py
+python .specseed/scripts/core/tickets_assemble.py     # derives per-ticket effort from issues
+python .specseed/scripts/core/tickets_analyze.py .specseed/project_management/tickets.json
 ```
 
 `tickets_analyze.py` returns the critical path = longest dep chain (by summed
@@ -333,7 +333,7 @@ gates fire regardless, per the `CLAUDE.md` operating-policy block); it's early-w
 1. **Scan** each formed issue's scope (`artifacts.touches`, technical acceptance
    criteria, description) for actions in the 8 categories: `container`,
    `heavy_compute`, `network`, `deps`, `data_destructive`, `external_publish`,
-   `outside_repo`, `secrets` (taxonomy + descriptions in `scripts/policy.py`). Also flag
+   `outside_repo`, `secrets` (taxonomy + descriptions in `scripts/core/policy.py`). Also flag
    anything user-facing/irreversible the categories miss.
 2. **Tabulate.** One consolidated table: issue × detected category × the policy level
    for that category × suggested per-issue action (set `approval_required`, and/or
@@ -474,7 +474,7 @@ bin-packing tickets to the budget under a topological constraint.
      tickets in the same epic as the sprint being filled (cohesion — stops
      sprints becoming grab-bags), then priority.
    ```bash
-   python .specseed/scripts/sprint_plan.py            # JSON proposal to stdout
+   python .specseed/scripts/core/sprint_plan.py            # JSON proposal to stdout
    ```
 2. **Refine (the art).** One bounded pass — don't re-solve. Read the proposal +
    `.specseed/memory/sprint_planning.md` (durable prefs like "keep auth+session
@@ -529,12 +529,12 @@ After writing/editing folders, ALWAYS assemble then validate (issues → tickets
 sprints; each tier's derived fields read the tier below):
 
 ```bash
-python .specseed/scripts/issues_assemble.py
-python .specseed/scripts/tickets_assemble.py
-python .specseed/scripts/sprints_assemble.py   # only if sprints/ exists
-python .specseed/scripts/issues_validate.py
-python .specseed/scripts/tickets_validate.py
-python .specseed/scripts/sprints_validate.py    # only if sprints/ exists
+python .specseed/scripts/core/issues_assemble.py
+python .specseed/scripts/core/tickets_assemble.py
+python .specseed/scripts/core/sprints_assemble.py   # only if sprints/ exists
+python .specseed/scripts/core/issues_validate.py
+python .specseed/scripts/core/tickets_validate.py
+python .specseed/scripts/core/sprints_validate.py    # only if sprints/ exists
 ```
 
 `issues_validate.py`: schema, enums, positive `effort_hours`, `depends_on` refs +

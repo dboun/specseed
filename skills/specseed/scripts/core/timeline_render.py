@@ -15,8 +15,8 @@ Critical-path marks (★CP) come from tickets_analyze.analyze() if importable;
 otherwise they're omitted.
 
 Usage:
-    python .specseed/scripts/timeline_render.py
-    python .specseed/scripts/timeline_render.py --check   # exit 1 if drift, no write
+    python .specseed/scripts/core/timeline_render.py
+    python .specseed/scripts/core/timeline_render.py --check   # exit 1 if drift, no write
 
 Exit: 0 OK (or --check no drift), 1 (--check found drift), 2 missing input.
 """

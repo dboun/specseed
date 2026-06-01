@@ -2,7 +2,7 @@
 
 This file is **the content the specseed skill writes to the user's repo root as `CLAUDE.md`**. It tells the implementation agent (Claude Code, Codex, or any other) how to pick up and execute the next **issue** (issues are the technical, claimable unit; epics + tickets are the PM layer above them).
 
-The skill writes this template by default, with three customizations: (1) the bash one-liners in the "Claim" section if the user has a different command preference; (2) the **`## Project conventions`** section, which the skill fills with the project's folder structure, branching, versioning, release process, and release gates (the former `CONTRIBUTING.md` content, now folded in — the skill no longer writes a separate `CONTRIBUTING.md`); (3) the **`## ⚠️ Operating policy`** block, which the skill generates from `.specseed/memory/policy.json` by running `python .specseed/scripts/policy.py render-claude` and **pastes at the very top of the file** (right after the `# CLAUDE.md` heading, before "Agent entry point"). That block is the HITL action-gate + git-workflow contract; it's READ-FIRST and must never be reordered below other sections. Re-run the render and replace the block whenever `/specseed configure` changes the policy.
+The skill writes this template by default, with three customizations: (1) the bash one-liners in the "Claim" section if the user has a different command preference; (2) the **`## Project conventions`** section, which the skill fills with the project's folder structure, branching, versioning, release process, and release gates (the former `CONTRIBUTING.md` content, now folded in — the skill no longer writes a separate `CONTRIBUTING.md`); (3) the **`## ⚠️ Operating policy`** block, which the skill generates from `.specseed/memory/policy.json` by running `python .specseed/scripts/core/policy.py render-claude` and **pastes at the very top of the file** (right after the `# CLAUDE.md` heading, before "Agent entry point"). That block is the HITL action-gate + git-workflow contract; it's READ-FIRST and must never be reordered below other sections. Re-run the render and replace the block whenever `/specseed configure` changes the policy.
 
 When writing to the user's repo, write the content below (everything between the `---BEGIN TEMPLATE---` and `---END TEMPLATE---` markers) as the file `CLAUDE.md` at the repo root — and splice the rendered operating-policy block in at the marked spot.
 
@@ -12,7 +12,7 @@ When writing to the user's repo, write the content below (everything between the
 
 # CLAUDE.md
 
-<!-- ⚠️ SKILL: paste the output of `python .specseed/scripts/policy.py render-claude`
+<!-- ⚠️ SKILL: paste the output of `python .specseed/scripts/core/policy.py render-claude`
      here — the "## ⚠️ Operating policy — READ FIRST, ALWAYS" block (action gates +
      park-and-continue + git workflow), generated from .specseed/memory/policy.json.
      It MUST be the first section of the file. Omit only if no policy.json exists
@@ -40,7 +40,7 @@ Always read first:
 One atomic call picks the next ready issue AND claims it (no pick/claim race):
 
 ```bash
-python .specseed/scripts/claim_issue.py
+python .specseed/scripts/core/claim_issue.py
 # Optional:
 #   <issue_id>            # claim a specific issue instead of auto-picking
 #   --skip ID,ID          # exclude issues a parallel agent already took
@@ -63,13 +63,13 @@ Output is JSON:
 
 To see the ticket-level critical path / build order (priority context):
 ```bash
-python .specseed/scripts/tickets_analyze.py .specseed/project_management/tickets.json
+python .specseed/scripts/core/tickets_analyze.py .specseed/project_management/tickets.json
 ```
 
 ## Load only relevant context
 
 ```bash
-python .specseed/scripts/issue_info.py <issue_id>
+python .specseed/scripts/core/issue_info.py <issue_id>
 ```
 Returns your issue, its **parent ticket**, and the reqs the parent ticket satisfies (joined from `reqs.json`) — requirements live on the ticket, not the issue. Use this instead of loading whole JSON files.
 
@@ -177,13 +177,13 @@ When all plan steps `[x]`, tests pass, and any required gates are cleared (see a
    Recommended: mirror the same `status` into the issue's folder file `<issue_id>.md` frontmatter so the human-readable record stays current (`issues.json` is the operational truth; the folder is the authored record).
 3. Refresh the ticket index (recomputes completion counts + auto-marks the parent ticket `done` when its last issue lands), then bump the views:
    ```bash
-   python .specseed/scripts/tickets_assemble.py
-   python .specseed/scripts/roadmap_render.py
+   python .specseed/scripts/core/tickets_assemble.py
+   python .specseed/scripts/core/roadmap_render.py
    # If the project uses sprints, also refresh the sprint index + TIMELINE:
-   python .specseed/scripts/sprints_assemble.py   2>/dev/null && \
-     python .specseed/scripts/timeline_render.py
+   python .specseed/scripts/core/sprints_assemble.py   2>/dev/null && \
+     python .specseed/scripts/core/timeline_render.py
    ```
-4. Sanity-check: `python .specseed/scripts/issues_validate.py`
+4. Sanity-check: `python .specseed/scripts/core/issues_validate.py`
 5. Commit, branch, merge, and push per the **⚠️ Operating policy → Git workflow** block (auto-merge into the integration branch only on a clean close; push only if the policy says `auto`). Action gates (e.g. `external_publish` on a push) still apply.
 
 (Dependent issues unblock automatically — `claim_issue.py` derives ticket completion live from `issues.json` — so the next agent can proceed even before step 3. The re-assemble is for counts, ROADMAP, and the ticket-done rollup.)
@@ -200,7 +200,7 @@ You may NOT edit other issues, any ticket or epic, `tickets.json`, or the spec d
 
 For long-running projects, before claiming you may run:
 ```bash
-python .specseed/scripts/drift_check.py
+python .specseed/scripts/core/drift_check.py
 ```
 If it flags drift in areas your issue touches (missing test files, stale settled docs vs recent commits), surface to the user before proceeding (`/specseed adapt`). Optional; skip if not present or the project is small/recent.
 

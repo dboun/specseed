@@ -2,7 +2,7 @@
 
 The human-facing other half of HITL. The impl agent **parks** gated work — it writes
 an approval request to `.specseed/project_management/issues/<id>/approval.md`, sets the
-issue `awaiting_approval`, and moves on (see `references/CLAUDE_template.md` "Operating
+issue `awaiting_approval`, and moves on (see `templates/CLAUDE_template.md` "Operating
 policy"). This mode lets a human walk those pending requests and resolve them — locally
 (spin up an agent, say "next thing needing approval"), or driven from the mirror's
 CONTROL `approve`/`reject` verbs (which invoke this same logic headless).
@@ -21,7 +21,7 @@ surface each request faithfully and apply the human's decision.
 
 ## Stage 1: Gather pending
 
-1. Run `python .specseed/scripts/approvals_render.py` to refresh the index.
+1. Run `python .specseed/scripts/core/approvals_render.py` to refresh the index.
 2. Read `.specseed/project_management/APPROVALS.md` (human view) / `approvals.json`
    (records: `issue`, `n`, `summary`, `kind`, `why`, `options`).
 3. None pending → tell the user "no open approvals" and stop. (Also mention any issues
@@ -76,10 +76,10 @@ no-self-bypass rule working as intended):
 
 After each resolution (or once, at the end of a walk):
 ```bash
-python .specseed/scripts/approvals_render.py        # drop resolved entries from the index
-python .specseed/scripts/issues_assemble.py         # if a status changed
-python .specseed/scripts/tickets_assemble.py        # if a completion gate closed an issue
-python .specseed/scripts/roadmap_render.py
+python .specseed/scripts/core/approvals_render.py        # drop resolved entries from the index
+python .specseed/scripts/core/issues_assemble.py         # if a status changed
+python .specseed/scripts/core/tickets_assemble.py        # if a completion gate closed an issue
+python .specseed/scripts/core/roadmap_render.py
 ```
 If the mirror is on, the next runner reconcile pass re-projects status onto the github
 issue and the CONTROL/PR thread (see `references/remote.md`).

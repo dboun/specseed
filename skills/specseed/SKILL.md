@@ -16,15 +16,15 @@ Agent-agnostic — works in Claude Code, Codex, or any agent harness with filesy
 
 **Doc writing — two axes, both apply:**
 
-- **Density (caveman *spirit*)** — `references/caveman.md`. Lean, signal-dense, no filler, fragments OK where unambiguous, technical terms exact. Prefer lean clarity over maximum compression (agents + humans read these later without the skill loaded).
-- **Naturalness (humanizer)** — `references/humanizer.md`. Spec prose must not read as AI-generated. **Before finalizing any human-readable prose doc, run a humanizer pass**: cut significance/legacy inflation, promotional language, `-ing` padding, rule-of-three, vague attributions, copula avoidance (use *is/are/has*), elegant variation, false ranges, filler, hedging, signposting, generic upbeat conclusions, diff-anchored phrasing; drop the boldface/emoji/title-case/curly-quote tells; and **remove every em/en dash** (`—` / `–` — the strongest single tell), replacing each with a period, comma, colon, or parentheses. Use the lightweight scan (look for *clusters* of tells + the hard em-dash check), not humanizer's full standalone draft→audit→final deliverable.
+- **Density (caveman *spirit*)** — `references_ext/caveman.md`. Lean, signal-dense, no filler, fragments OK where unambiguous, technical terms exact. Prefer lean clarity over maximum compression (agents + humans read these later without the skill loaded).
+- **Naturalness (humanizer)** — `references_ext/humanizer.md`. Spec prose must not read as AI-generated. **Before finalizing any human-readable prose doc, run a humanizer pass**: cut significance/legacy inflation, promotional language, `-ing` padding, rule-of-three, vague attributions, copula avoidance (use *is/are/has*), elegant variation, false ranges, filler, hedging, signposting, generic upbeat conclusions, diff-anchored phrasing; drop the boldface/emoji/title-case/curly-quote tells; and **remove every em/en dash** (`—` / `–` — the strongest single tell), replacing each with a period, comma, colon, or parentheses. Use the lightweight scan (look for *clusters* of tells + the hard em-dash check), not humanizer's full standalone draft→audit→final deliverable.
 
 **Scope + precedence:**
 - Humanize the **human-readable prose**: `vision.md`, `README.md`, SAD/SDD prose sections, epic/ticket/issue prose (story, description, acceptance criteria), ADR justifications. Do NOT humanize machine artifacts (frontmatter, `*.json`, SRS requirement-table rows) or the agent-runtime `CLAUDE.md` — those follow fixed formats.
 - The two axes mostly agree (both kill puffery). Where they meet: density governs *structure*; humanizer governs *word choice* + the em-dash ban.
 - **Personality/voice OFF for specs.** Specs are reference text — per humanizer's own rule, neutral and plain *is* the correct human voice there. Do NOT inject opinions, first person, or manufactured voice. (README may carry a light natural voice but stays plain and brief.)
 
-**README.md** is normal English (not caveman density), brief, anti-fluff — see `references/bootstrap.md` stage 11 — and gets the full humanizer pass.
+**README.md** is normal English (not caveman density), brief, anti-fluff — see `routes/bootstrap.md` stage 11 — and gets the full humanizer pass.
 
 **User comm:** first message in normal English. At the end of the first message, propose a switch:
 
@@ -45,7 +45,7 @@ After the first message, default to caveman-spirit terse comm (no filler, fragme
 
 This probe is the safety net for misrouting — it is evidence, not a guess. When it and the user's words disagree, surface the conflict and ask; do not let intent words override disk state.
 
-**Configure preamble (first run only).** When the probe lands on **bootstrap** (case 4) or **adopt** (case 3) AND there is **no `.specseed/memory/policy.json`** yet, run **configure mode** first (technical setup — `references/configure.md`): ≤2 rounds, heavy defaults (local-only + default git/gates is one keystroke), then continue into bootstrap/adopt. This gets the plumbing + autonomy decisions out of the way up front. The `.specseed/memory/policy.json` (always) and `remote.json` (mirror choice) it leaves behind are **config only** — NOT a spec, and do NOT affect the routing above (mode still keys off `.specseed/spec/`). `/specseed configure` re-runs it anytime to change settings.
+**Configure preamble (first run only).** When the probe lands on **bootstrap** (case 4) or **adopt** (case 3) AND there is **no `.specseed/memory/policy.json`** yet, run **configure mode** first (technical setup — `routes/configure.md`): ≤2 rounds, heavy defaults (local-only + default git/gates is one keystroke), then continue into bootstrap/adopt. This gets the plumbing + autonomy decisions out of the way up front. The `.specseed/memory/policy.json` (always) and `remote.json` (mirror choice) it leaves behind are **config only** — NOT a spec, and do NOT affect the routing above (mode still keys off `.specseed/spec/`). `/specseed configure` re-runs it anytime to change settings.
 
 ## Mode detection
 
@@ -53,15 +53,15 @@ Read user message + conversation, **constrained by the reconnaissance above** (a
 
 | Mode | Trigger | Route |
 |------|---------|-------|
-| **configure** | TECHNICAL setup only — local vs github/gitlab mirror, credentials, runner opts (NOT spec content). `/specseed configure`, or the auto-preamble on a repo's first bootstrap/adopt. Editable anytime | `references/configure.md` |
-| **bootstrap** | New project, no prior spec, user wants full spec from scratch | `references/bootstrap.md` |
-| **adopt** | Existing CODE, no `.specseed/`. Recover the spec from the codebase (+ import any docs already present) into `.specseed/`. Reverse-bootstrap; specseed never edits code | `references/adopt.md` |
-| **plan-next** | Existing `incremental`-bootstrapped spec; user wants to spec + break down the NEXT roadmap slice (`/specseed plan-next`, "plan the next sprint/phase"). Roadmap has un-detailed ticket titles (no folders). Append-only forward — no settled-doc changes | `references/plan-next.md` |
-| **adapt** | Existing spec present, user wants to update/extend/revise non-trivially (incl. *changing* settled docs) | `references/adapt.md` |
-| **tweak** | Tiny single-doc edit ("add this one req to SRS", "change priority of REQ-X") | `references/tweak.md` (may auto-escalate to adapt) |
-| **approve** | Resolve pending human-approval gates (the impl agent parked gated work). `/specseed approve`, "next thing needing approval", "approve/reject/hold <ID>". Read-only on code; touches `approval.md` + issue status | `references/approve.md` |
+| **configure** | TECHNICAL setup only — local vs github/gitlab mirror, credentials, runner opts (NOT spec content). `/specseed configure`, or the auto-preamble on a repo's first bootstrap/adopt. Editable anytime | `routes/configure.md` |
+| **bootstrap** | New project, no prior spec, user wants full spec from scratch | `routes/bootstrap.md` |
+| **adopt** | Existing CODE, no `.specseed/`. Recover the spec from the codebase (+ import any docs already present) into `.specseed/`. Reverse-bootstrap; specseed never edits code | `routes/adopt.md` |
+| **plan-next** | Existing `incremental`-bootstrapped spec; user wants to spec + break down the NEXT roadmap slice (`/specseed plan-next`, "plan the next sprint/phase"). Roadmap has un-detailed ticket titles (no folders). Append-only forward — no settled-doc changes | `routes/plan-next.md` |
+| **adapt** | Existing spec present, user wants to update/extend/revise non-trivially (incl. *changing* settled docs) | `routes/adapt.md` |
+| **tweak** | Tiny single-doc edit ("add this one req to SRS", "change priority of REQ-X") | `routes/tweak.md` (may auto-escalate to adapt) |
+| **approve** | Resolve pending human-approval gates (the impl agent parked gated work). `/specseed approve`, "next thing needing approval", "approve/reject/hold <ID>". Read-only on code; touches `approval.md` + issue status | `routes/approve.md` |
 
-**plan-next vs adapt:** plan-next *extends forward* into un-specced roadmap titles (append-only, never reopens `settled` docs); adapt *changes* existing/settled specs. If unsure: does the work touch a settled doc? → adapt. Does it only add the next slice? → plan-next. See `references/plan-next.md` "Boundary".
+**plan-next vs adapt:** plan-next *extends forward* into un-specced roadmap titles (append-only, never reopens `settled` docs); adapt *changes* existing/settled specs. If unsure: does the work touch a settled doc? → adapt. Does it only add the next slice? → plan-next. See `routes/plan-next.md` "Boundary".
 
 Ambiguous → ask user once which mode. Don't guess.
 
@@ -88,15 +88,15 @@ Then route to mode file.
 
 ## Shared protocols (load when relevant)
 
-- `references/caveman.md` — doc-writing density style (lean, signal-dense); see Step 0
-- `references/humanizer.md` — anti-AI-tell finish-pass for human-readable prose docs (vision/README/SAD-SDD prose/ticket prose/ADR justifications); see Step 0 for scope + the em-dash ban
+- `references_ext/caveman.md` — doc-writing density style (lean, signal-dense); see Step 0
+- `references_ext/humanizer.md` — anti-AI-tell finish-pass for human-readable prose docs (vision/README/SAD-SDD prose/ticket prose/ADR justifications); see Step 0 for scope + the em-dash ban
 - `references/question-protocol.md` — question round format, action prompts, no-noise rule, anti-max-bias, memory cadence, auto-skip rule for obvious Qs
 - `references/component-questions.md` — per-component probing subroutine
 - `references/work-breakdown.md` — roadmap + epic/ticket/issue formation: INVEST, vertical slices, critical path (ticket tier), spike post-completion, sizing heuristics
-- `references/configure.md` — technical setup route (local vs github/gitlab mirror, credentials, runner opts). Runs as a first-run preamble before bootstrap/adopt, or on `/specseed configure`. Writes `.specseed/memory/remote.json` (config only)
+- `routes/configure.md` — technical setup route (local vs github/gitlab mirror, credentials, runner opts). Runs as a first-run preamble before bootstrap/adopt, or on `/specseed configure`. Writes `.specseed/memory/remote.json` (config only)
 - `references/remote.md` — OPTIONAL, opt-in github/gitlab mirror (single-dev phone-driven workflow). Local stays ground truth; the remote is a mirror + bug-inbox + CONTROL command channel driven by an always-on `agents_runner.py`. Offered once at onboarding (bootstrap stage 13.5 / adopt 9.5); entirely off unless the user opts in
-- `references/approve.md` — the `approve` route: walk + resolve pending HITL gates (`approval.md` requests the impl agent parked). Local human channel; also what the mirror's CONTROL `approve`/`reject` verbs invoke
-- **HITL policy** — the action-gate + git-workflow contract the impl agent obeys lives in `.specseed/memory/policy.json` (written by configure mode, ALWAYS — even local-only) and is rendered into the READ-FIRST block of `CLAUDE.md` by `scripts/policy.py`. Per-issue gating (which issues get an `approval_required` sign-off) is refined at work-breakdown time — see `references/work-breakdown.md` "Risk-detection & gating pass"
+- `routes/approve.md` — the `approve` route: walk + resolve pending HITL gates (`approval.md` requests the impl agent parked). Local human channel; also what the mirror's CONTROL `approve`/`reject` verbs invoke
+- **HITL policy** — the action-gate + git-workflow contract the impl agent obeys lives in `.specseed/memory/policy.json` (written by configure mode, ALWAYS — even local-only) and is rendered into the READ-FIRST block of `CLAUDE.md` by `scripts/core/policy.py`. Per-issue gating (which issues get an `approval_required` sign-off) is refined at work-breakdown time — see `references/work-breakdown.md` "Risk-detection & gating pass"
 
 ## Memory protocol
 
@@ -147,13 +147,14 @@ Everything the skill produces lives under `<repo_root>/.specseed/`, EXCEPT the a
 ```
 # ---- main repo (the ONLY files the skill writes outside .specseed/) ----
 README.md                       # user-facing, normal English, brief, anti-fluff. Merge protocol if exists
-CLAUDE.md                       # agent runtime entry — write from references/CLAUDE_template.md. Merge protocol if exists
+CLAUDE.md                       # agent runtime entry — write from templates/CLAUDE_template.md. Merge protocol if exists
 AGENTS.md                       # one line: "Read ./CLAUDE.md. In dirs you work on, read corresponding CLAUDE.md too." Merge protocol if exists
 <component>/CLAUDE.md           # OPTIONAL per-component agent notes (multi-component repos). Merge protocol if exists
-# NO docs/CONTRIBUTING.md — its content folds into CLAUDE.md (see references/CLAUDE_template.md)
+# NO docs/CONTRIBUTING.md — its content folds into CLAUDE.md (see templates/CLAUDE_template.md)
 
 # ---- .specseed/ (all spec artifacts + runtime) ----
 .specseed/
+├── README.md                   # HUMAN operator manual (run/kill the runner, approve, configure, github/gitlab). Written at first setup from templates/specseed-README_template.md
 ├── memory/                     # ALL skill memory lives here (dir, not a single file)
 │   ├── session_state.md        #   session scratch — deleted at end; preserved on /specseed stop
 │   ├── sprint_planning.md      #   reusable sprint-planning prefs (tiny, persists across sessions)
@@ -197,32 +198,33 @@ AGENTS.md                       # one line: "Read ./CLAUDE.md. In dirs you work 
     └── sprints.json            # GENERATED by sprints_assemble.py (folders are source of truth, NOT this)
 
 # ---- .specseed/scripts/ ----
-scripts/                        # may grow subfolders as more tooling is added
-├── requirements_generate_json.py   # parses SRS table rows → reqs.json
-├── requirements_analyze.py         # req cycle/orphan detection (shipped; editable analysis seam)
-├── issues_assemble.py              # issue folders → issues.json
-├── tickets_assemble.py             # ticket folders → tickets.json (derives effort + X/Y counts from issues)
-├── sprints_assemble.py             # sprint folders → sprints.json (derives effort + ticket counts from tickets)
-├── issues_validate.py              # issue-tier schema/refs/claim-invariant checks
-├── tickets_validate.py             # ticket-tier schema/refs/cycle checks (kept SEPARATE — see below)
-├── sprints_validate.py             # sprint-tier: refs, back-consistency, NO backward sprint deps, budget
-├── tickets_analyze.py              # ticket critical path + build order (shipped; editable analysis seam) — PROJECT-level, NOT per-sprint
-├── sprint_plan.py                  # ADVISORY sprint packing proposal (cohesion-aware, CP-first, budget); never writes
-├── issue_info.py                   # issue + parent ticket + reqs joined from parent ticket
-├── claim_issue.py                  # atomic issue claim; no-arg auto-picks next ready issue; sprint-scoped (--sprint-scope); --skip; stale recovery
-├── roadmap_render.py               # bump "(X/Y complete)" counts on ticket lines in ROADMAP.md from tickets.json
-├── timeline_render.py              # regenerate TIMELINE.md (sprint schedule) from sprints.json + tickets.json
-├── verification_map.py             # inverse map: req → ticket → issues → test files
-├── drift_check.py                  # mechanical spec-vs-reality drift surface
-├── policy.py                       # HITL action-gate + git-workflow policy: load/validate policy.json; render-claude → CLAUDE.md block
-├── approvals_render.py             # scan issues/*/approval.md → APPROVALS.md + approvals.json (pending HITL gates)
-# ---- OPTIONAL remote mirror (only used if the user opts in — see references/remote.md) ----
-├── github_functions.py             # stdlib GitHub REST wrapper (+ GraphQL pin)
-├── gitlab_functions.py             # stdlib GitLab REST wrapper (sibling shape)
-├── remote_config.py                # remote.json I/O + provider-agnostic adapter
-├── remote_sync.py                  # local→remote mirror engine (init/reconcile/push/dashboards)
-├── remote_control.py                   # CONTROL-issue command channel (poll/authorize/dispatch)
-└── agents_runner.py                # the always-on orchestrator loop (+ --write-shim)
+scripts/
+├── agents_runner.py            # the ONLY human-run entry — start/kill the always-on orchestrator loop (+ --write-shim). Top-level on purpose.
+├── core/                       # agent-invoked plumbing + analysis seams (humans don't run these directly)
+│   ├── requirements_generate_json.py   # parses SRS table rows → reqs.json
+│   ├── requirements_analyze.py         # req cycle/orphan detection (shipped; editable analysis seam)
+│   ├── issues_assemble.py              # issue folders → issues.json
+│   ├── tickets_assemble.py             # ticket folders → tickets.json (derives effort + X/Y counts from issues)
+│   ├── sprints_assemble.py             # sprint folders → sprints.json (derives effort + ticket counts from tickets)
+│   ├── issues_validate.py              # issue-tier schema/refs/claim-invariant checks
+│   ├── tickets_validate.py             # ticket-tier schema/refs/cycle checks (kept SEPARATE — see below)
+│   ├── sprints_validate.py             # sprint-tier: refs, back-consistency, NO backward sprint deps, budget
+│   ├── tickets_analyze.py              # ticket critical path + build order (shipped; editable analysis seam) — PROJECT-level, NOT per-sprint
+│   ├── sprint_plan.py                  # ADVISORY sprint packing proposal (cohesion-aware, CP-first, budget); never writes
+│   ├── issue_info.py                   # issue + parent ticket + reqs joined from parent ticket
+│   ├── claim_issue.py                  # atomic issue claim; no-arg auto-picks next ready issue; sprint-scoped (--sprint-scope); --skip; stale recovery
+│   ├── roadmap_render.py               # bump "(X/Y complete)" counts on ticket lines in ROADMAP.md from tickets.json
+│   ├── timeline_render.py              # regenerate TIMELINE.md (sprint schedule) from sprints.json + tickets.json
+│   ├── verification_map.py             # inverse map: req → ticket → issues → test files
+│   ├── drift_check.py                  # mechanical spec-vs-reality drift surface
+│   ├── policy.py                       # HITL action-gate + git-workflow policy: load/validate policy.json; render-claude → CLAUDE.md block
+│   └── approvals_render.py             # scan issues/*/approval.md → APPROVALS.md + approvals.json (pending HITL gates)
+└── remote/                     # OPTIONAL mirror cluster (only present/used if the user opts in — see references/remote.md)
+    ├── github_functions.py             # stdlib GitHub REST wrapper (+ GraphQL pin)
+    ├── gitlab_functions.py             # stdlib GitLab REST wrapper (sibling shape)
+    ├── remote_config.py                # remote.json I/O + provider-agnostic adapter
+    ├── remote_sync.py                  # local→remote mirror engine (init/reconcile/push/dashboards)
+    └── remote_control.py               # CONTROL-issue command channel (poll/authorize/dispatch)
 ```
 
 The remote-mirror scripts + `.specseed/memory/remote.json` exist ONLY when the user opts into the mirror. They are shipped plumbing (not analysis seams) and never run otherwise.
@@ -240,7 +242,7 @@ Notes:
 - `reqs.json` IS generated from SRS markdown tables (humans edit SRS, script extracts).
 - **Assemble before analyze/claim/validate.** After editing any ticket/issue/sprint folder: run `issues_assemble.py` → `tickets_assemble.py` → `sprints_assemble.py` (each tier's derived fields read the tier below: ticket effort sums from issues, sprint effort sums from tickets — so order matters), then the validators / `tickets_analyze.py` / `claim_issue.py` / `timeline_render.py`.
 - **`tickets_*` and `issues_*` scripts are deliberately separate** (separate assemble, separate validate). Tickets and issues may live in different stores once tool integrations land; each tier validates the refs it can resolve and degrades gracefully when the other tier is absent.
-- `spec_concern.md` is written by the **implementation agent** (not this skill) when it discovers a settled doc looks wrong during issue execution. Adapt mode picks these up as valid triggers — see `references/adapt.md` stage 2.
+- `spec_concern.md` is written by the **implementation agent** (not this skill) when it discovers a settled doc looks wrong during issue execution. Adapt mode picks these up as valid triggers — see `routes/adapt.md` stage 2.
 - `claim_issue.py` replaces any raw `jq` claim. Uses `fcntl.flock` for atomic read-verify-write on `issues.json`; auto-recovers stale claims (default >3h old); no-arg call auto-picks the next ready issue and claims it in the same locked op; `--skip <ids>` excludes issues (lightweight parallel-agent support). Pickable = `{todo, blocked}`; `in_review`/`awaiting_approval` issues keep their claim and are NOT auto-picked or stolen (handoff in flight). **Sprint-scoped:** when `sprints.json` exists, auto-pick prefers issues in the `in_progress` sprint and only spills to the next planned sprint when none are ready (`--sprint-scope current` forbids the spill; `all` ignores sprints). No `sprints.json` → unscoped, exactly as before. Lock releases on process exit.
 - `drift_check.py` is a mechanical drift detector — runs as part of adapt mode assessment, optionally before impl agents claim long-running issues.
 
@@ -278,7 +280,7 @@ The implementation agent does NOT edit the settled doc itself, ever. Adapt mode 
 
 ## Analysis-seam scripts (shipped, editable)
 
-`.specseed/scripts/requirements_analyze.py`, `tickets_analyze.py`, and `sprint_plan.py` are **shipped by the skill** (stdlib defaults) but are the intended **analysis/scheduling seam** — orgs with their own tooling (a PM system, custom critical-path or scheduling logic) may replace them, as long as the documented I/O contract holds. The mechanical plumbing (assemble/validate/claim/render) is NOT a seam — don't swap it. If a seam script is somehow missing at session start when a stage would call it, fall back to the shipped version (or describe the contract and proceed).
+`.specseed/scripts/core/requirements_analyze.py`, `tickets_analyze.py`, and `sprint_plan.py` are **shipped by the skill** (stdlib defaults) but are the intended **analysis/scheduling seam** — orgs with their own tooling (a PM system, custom critical-path or scheduling logic) may replace them, as long as the documented I/O contract holds. The mechanical plumbing (assemble/validate/claim/render) is NOT a seam — don't swap it. If a seam script is somehow missing at session start when a stage would call it, fall back to the shipped version (or describe the contract and proceed).
 
 ## Carry-forward (post-rewrite)
 
@@ -286,4 +288,4 @@ The implementation agent does NOT edit the settled doc itself, ever. Adapt mode 
 - ROADMAP `(X/Y complete)` counts: `roadmap_render.py` bumps them in-place from `tickets.json` (`issues_done`/`issues_total`). Runs in the issue finish flow (after `tickets_assemble.py`) and the adapt/tweak cascades; `--check` reports drift without writing. Counts are display-only — `claim_issue.py` derives unblocking from `issues.json`, not ROADMAP.
 - [ ] Templates folder for vision/sad/srs/sdd skeletons (deferred)
 - [ ] Evals / test cases for the skill itself (deferred)
-- [ ] `spec_concern.md` template — for now, format is documented in `references/CLAUDE_template.md`
+- [ ] `spec_concern.md` template — for now, format is documented in `templates/CLAUDE_template.md`

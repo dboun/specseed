@@ -22,7 +22,7 @@ Load `references/question-protocol.md` before any user-facing round.
 9. `reqs.json` generation + cycle resolution (run `requirements_generate_json.py`, then `requirements_analyze.py`; resolve cycles if any)
 10. **ROADMAP draft + discussion gate** — phases → epics → ticket TITLES, discussed with user BEFORE detailed formation (use `work-breakdown.md`). Whole roadmap in ALL tiers — it's the cheap map.
 11. Work breakdown: flesh tickets + form issues + assemble + validate + critical path + **sprint planning** (use `work-breakdown.md`; run the assemble scripts, `tickets_validate.py` + `issues_validate.py` + `tickets_analyze.py`, then `sprint_plan.py` → write sprints → `sprints_validate.py` + `timeline_render.py`). **`incremental`: detail first increment only.**
-12. Write main-repo entry files (merge protocol if any already exist): `README.md` + `CLAUDE.md` (from `references/CLAUDE_template.md`, with `CONTRIBUTING` content folded into its `## Project conventions` section) + `AGENTS.md` + per-component `CLAUDE.md` (if N>1). No separate `CONTRIBUTING.md`. **`incremental`: write `CLAUDE.md`+`AGENTS.md` EARLY (after stage 8) so the runtime contract is locked before breakdown.**
+12. Write main-repo entry files (merge protocol if any already exist): `README.md` + `CLAUDE.md` (from `templates/CLAUDE_template.md`, with `CONTRIBUTING` content folded into its `## Project conventions` section) + `AGENTS.md` + per-component `CLAUDE.md` (if N>1). No separate `CONTRIBUTING.md`. **`incremental`: write `CLAUDE.md`+`AGENTS.md` EARLY (after stage 8) so the runtime contract is locked before breakdown.**
 13. Optional artifacts (`deployment.md`) if triggered
 14. Session end (clean `session_state.md`; `incremental` hands off to `plan-next`)
 
@@ -285,7 +285,7 @@ For the cross-cutting component (if present), SDD covers how cross-cutting reqs 
 
 ### Generate
 
-Run `.specseed/scripts/requirements_generate_json.py` to extract from SRS table rows.
+Run `.specseed/scripts/core/requirements_generate_json.py` to extract from SRS table rows.
 
 Output schema:
 ```json
@@ -302,11 +302,11 @@ Output schema:
 (No `verified_by` field — see stage 4b note.)
 
 **Repo mode:** agent runs script directly.
-**Chat mode:** skill reminds user with command: `python .specseed/scripts/requirements_generate_json.py` and delivers the script if user doesn't have it yet.
+**Chat mode:** skill reminds user with command: `python .specseed/scripts/core/requirements_generate_json.py` and delivers the script if user doesn't have it yet.
 
 ### Analyze + resolve
 
-Then run `.specseed/scripts/requirements_analyze.py` (shipped; editable analysis seam) — surfaces cycles, orphans, dangling refs.
+Then run `.specseed/scripts/core/requirements_analyze.py` (shipped; editable analysis seam) — surfaces cycles, orphans, dangling refs.
 
 #### Cycle resolution moves
 
@@ -361,16 +361,16 @@ Folders are source of truth. Decompose each ticket into INVEST issues (vertical 
 
 Run in this order (ticket effort + counts are summed from issues, so issues first):
 ```bash
-python .specseed/scripts/issues_assemble.py
-python .specseed/scripts/tickets_assemble.py
-python .specseed/scripts/issues_validate.py
-python .specseed/scripts/tickets_validate.py
+python .specseed/scripts/core/issues_assemble.py
+python .specseed/scripts/core/tickets_assemble.py
+python .specseed/scripts/core/issues_validate.py
+python .specseed/scripts/core/tickets_validate.py
 ```
 Fix any reported errors before proceeding.
 
 ### Critical path
 
-Run `.specseed/scripts/tickets_analyze.py .specseed/project_management/tickets.json` (shipped; editable analysis seam) — returns ticket critical path + build order. Show critical path to user. Rebalance ticket grouping if unreasonably long (often overly narrow tickets or artificial deps). Critical path is PROJECT-level, not per-sprint.
+Run `.specseed/scripts/core/tickets_analyze.py .specseed/project_management/tickets.json` (shipped; editable analysis seam) — returns ticket critical path + build order. Show critical path to user. Rebalance ticket grouping if unreasonably long (often overly narrow tickets or artificial deps). Critical path is PROJECT-level, not per-sprint.
 
 ### Risk-detection & gating pass (HITL)
 
@@ -381,20 +381,20 @@ Run the **risk-detection & gating pass** from `work-breakdown.md` — scan the f
 After the critical path is settled, batch tickets into sprints (see `work-breakdown.md` "Sprints"). Optional but recommended for anything beyond a handful of tickets.
 
 1. Read `.specseed/memory/sprint_planning.md` for any durable prefs.
-2. `python .specseed/scripts/sprint_plan.py` → advisory proposal (cohesion-aware, CP-first, ~168h budget).
+2. `python .specseed/scripts/core/sprint_plan.py` → advisory proposal (cohesion-aware, CP-first, ~168h budget).
 3. One bounded refinement pass (business dates, coherence, slack); present to user; capture any durable prefs back to `sprint_planning.md`.
 4. On approval: write `sprint:` into each ticket folder + create `sprints/<SPRINT_ID>/` folders with `tickets:` lists; mark the first sprint `in_progress` (the sprint claiming targets).
 5. Assemble + validate + render:
    ```bash
-   python .specseed/scripts/sprints_assemble.py
-   python .specseed/scripts/sprints_validate.py
-   python .specseed/scripts/timeline_render.py
+   python .specseed/scripts/core/sprints_assemble.py
+   python .specseed/scripts/core/sprints_validate.py
+   python .specseed/scripts/core/timeline_render.py
    ```
 
 ### Refresh ROADMAP counts
 
 ```bash
-python .specseed/scripts/roadmap_render.py
+python .specseed/scripts/core/roadmap_render.py
 ```
 Bumps each ticket title's `(X/Y complete)` annotation in `ROADMAP.md` from `tickets.json` (`issues_done`/`issues_total`).
 
@@ -425,7 +425,7 @@ Sections:
 
 ### CLAUDE.md (root)
 
-Write the contents of `references/CLAUDE_template.md` to the repo root as `CLAUDE.md`. Customize:
+Write the contents of `templates/CLAUDE_template.md` to the repo root as `CLAUDE.md`. Customize:
 - the bash one-liners if user has a different command preference;
 - the `## Project conventions` section — fill it with the project's folder structure, branching, versioning, release process, artifact storage, and release gates (this is the former `CONTRIBUTING.md` content, now folded in — **no separate `CONTRIBUTING.md` is written**). If the user has nothing specific on release gates, leave that line as a placeholder for them to fill later.
 
@@ -458,16 +458,27 @@ Read ./CLAUDE.md. In dirs you work on, read corresponding CLAUDE.md files in the
 
 ---
 
-## Stage 13.5: Remote mirror init (only if configured)
+## Stage 13.5: Runner shim + (optional) remote mirror init
 
-The mirror choice was already made in **configure mode** (the first-run preamble or `/specseed configure`) — do NOT re-ask here. Read `.specseed/memory/remote.json`:
+**Always — write the runner shim (both backends).** Now that the work layer exists,
+write the runner entry so the user can start the loop:
+- `python .specseed/scripts/agents_runner.py --write-shim <repo_name>` — writes
+  `<repo_name>_agents_runner.py` at the repo root. The runner works **local-only** too
+  (claims + runs the next ready issue in a loop); the mirror just adds reconcile + the
+  CONTROL channel. Tell the user the start command (`python <repo_name>_agents_runner.py &`)
+  and the file-based control (`echo pause|run|stop > .specseed/memory/runner.ctl`, or
+  Ctrl-C). The full how-to is in `.specseed/README.md` (written at configure time).
 
-- **absent, or `enabled: false`** → skip entirely (local-only). Write nothing remote.
-- **`enabled: true` and not yet `initialized`** → now that the work layer exists, create the mirror programmatically (prefer scripts — don't hand-create issues):
-  1. `python .specseed/scripts/remote_sync.py init` — 4 dashboards (pin ROADMAP/TIMELINE/CONTROL), seed labels, push current work.
-  2. `python .specseed/scripts/agents_runner.py --write-shim <repo_name>` — writes `<repo_name>_agents_runner.py` at the repo root.
-  3. Add the optional **Remote mirror** block to `CLAUDE.md` (see `references/CLAUDE_template.md`).
-  4. Set `initialized: true` in `remote.json`; tell the user the start command (`python <repo_name>_agents_runner.py &`) + the pause/stop story.
+**Then — mirror init only if configured.** The mirror choice was already made in
+**configure mode** (the first-run preamble or `/specseed configure`) — do NOT re-ask
+here. Read `.specseed/memory/remote.json`:
+
+- **absent, or `enabled: false`** → local-only. Shim above is enough; write nothing remote.
+- **`enabled: true` and not yet `initialized`** → create the mirror programmatically
+  (prefer scripts — don't hand-create issues):
+  1. `python .specseed/scripts/remote/remote_sync.py init` — 4 dashboards (pin ROADMAP/TIMELINE/CONTROL), seed labels, push current work.
+  2. Add the optional **Remote mirror** block to `CLAUDE.md` (see `templates/CLAUDE_template.md`).
+  3. Set `initialized: true` in `remote.json`; point the user at the CONTROL-issue verbs (also in `.specseed/README.md`).
 - **`enabled: true` and already `initialized`** (re-run) → just `remote_sync.py reconcile` to push the latest work.
 
 If the user never configured but now wants the mirror → point them to `/specseed configure`. See `references/remote.md` for the full model.

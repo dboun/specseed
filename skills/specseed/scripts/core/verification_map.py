@@ -12,10 +12,10 @@ Reads .specseed/spec/reqs.json + .specseed/project_management/tickets.json +
 .specseed/project_management/issues.json.
 
 Usage:
-    python .specseed/scripts/verification_map.py
-    python .specseed/scripts/verification_map.py --check
-    python .specseed/scripts/verification_map.py --req SRS-API-001
-    python .specseed/scripts/verification_map.py --format markdown
+    python .specseed/scripts/core/verification_map.py
+    python .specseed/scripts/core/verification_map.py --check
+    python .specseed/scripts/core/verification_map.py --req SRS-API-001
+    python .specseed/scripts/core/verification_map.py --format markdown
 """
 
 import argparse
