@@ -25,7 +25,8 @@ skills/specseed/
     remote.md         #   OPTIONAL opt-in github/gitlab mirror + CONTROL channel + HITL gate lifecycle
     component-questions.md, question-protocol.md   # questioning subroutines
     CLAUDE_template.md# the CLAUDE.md specseed writes into TARGET repos (impl-agent runtime; READ-FIRST operating-policy block)
-    caveman.md        # doc-writing style (terse, signal-dense)
+    caveman.md        # doc-writing DENSITY style (terse, signal-dense)
+    humanizer.md      # doc-writing NATURALNESS pass (strip AI tells from human-read prose; em-dash ban). See SKILL.md Step 0
   scripts/            # stdlib-only python3 tooling (NO third-party deps)
 install.sh            # copies skills/specseed → ~/.claude/skills and ~/.agents/skills
 README.md
@@ -54,3 +55,4 @@ Three tiers: **epic → ticket → issue**, plus **sprints** as an orthogonal gr
 - Scripts: python3, **stdlib only**. Keep it that way (no PyYAML etc).
 - Test a script by building a tiny `.specseed/` fixture under `/tmp` and running the chain (issues_assemble → tickets_assemble → sprints_assemble → validators → sprint_plan → claim_issue → timeline_render → verification_map). Clean up after.
 - Skill doc-writing style: caveman-spirit — lean, fragments OK, no filler (see `references/caveman.md`). User-facing comms start normal then go terse.
+- Produced spec PROSE (vision/README/SAD-SDD prose/ticket prose/ADR justifications) also gets a **humanizer** anti-AI-tell pass (`references/humanizer.md`, scope + em-dash ban in `SKILL.md` Step 0). Two axes: caveman = density, humanizer = naturalness. Machine artifacts (frontmatter/JSON/SRS tables) + the runtime `CLAUDE.md` are exempt. This applies to skill OUTPUT, not the skill's own internal docs.

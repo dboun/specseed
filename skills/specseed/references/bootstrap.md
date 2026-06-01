@@ -69,7 +69,9 @@ Write `.specseed/spec/vision.md`. **No IDs.** Sections:
 - Scope (in / out)
 - Success criteria (observable, not just aspirational)
 
-Short. Caveman spirit, lean clarity. Vision stays brief and general — do NOT enumerate every feature; that's SRS's job. Scope section lists themes/areas, not individual reqs.
+Short. Caveman spirit, lean clarity. Vision stays brief and general; do NOT enumerate every feature (that's SRS's job). Scope section lists themes/areas, not individual reqs.
+
+**Humanizer pass before showing** (Step 0): vision is prose a human reads first, so scrub the AI tells (no "marks a pivotal moment", no rule-of-three, no em dashes). Keep it neutral — no injected voice.
 
 Show user. At most one refinement pass.
 
@@ -409,6 +411,8 @@ These are the ONLY files written outside `.specseed/`. Before writing any of the
 ### README.md
 
 User-facing (not agent-facing). **Normal English** (not caveman) — newcomers need plain language for install/quickstart. **Brief and anti-fluff** — no marketing voice, no "in today's fast-paced world", no over-explanation. Target ~30–50 lines unless the project genuinely needs more.
+
+**Full humanizer pass** (Step 0) — README is the most-read prose and the most likely to look AI-generated. Scrub promo language, rule-of-three, generic upbeat conclusions, boldface/emoji tells, and all em/en dashes. A light natural voice is fine; manufactured enthusiasm is not.
 
 Sections:
 - What this project is (1 paragraph, plain language)

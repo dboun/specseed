@@ -14,9 +14,17 @@ Agent-agnostic — works in Claude Code, Codex, or any agent harness with filesy
 
 ## Step 0: Communication style
 
-**Doc writing:** always concise and signal-dense — caveman *spirit*. Read `references/caveman.md` for the style. Apply to all spec docs (vision, SRS, SAD, SDD, ADRs, tickets descriptions, etc): lean prose, fragments OK where unambiguous, no filler, technical terms exact. Agents and humans may read these later without this skill loaded, so prefer lean clarity over maximum compression.
+**Doc writing — two axes, both apply:**
 
-**README.md exception:** normal English, brief, anti-fluff — see `references/bootstrap.md` stage 11.
+- **Density (caveman *spirit*)** — `references/caveman.md`. Lean, signal-dense, no filler, fragments OK where unambiguous, technical terms exact. Prefer lean clarity over maximum compression (agents + humans read these later without the skill loaded).
+- **Naturalness (humanizer)** — `references/humanizer.md`. Spec prose must not read as AI-generated. **Before finalizing any human-readable prose doc, run a humanizer pass**: cut significance/legacy inflation, promotional language, `-ing` padding, rule-of-three, vague attributions, copula avoidance (use *is/are/has*), elegant variation, false ranges, filler, hedging, signposting, generic upbeat conclusions, diff-anchored phrasing; drop the boldface/emoji/title-case/curly-quote tells; and **remove every em/en dash** (`—` / `–` — the strongest single tell), replacing each with a period, comma, colon, or parentheses. Use the lightweight scan (look for *clusters* of tells + the hard em-dash check), not humanizer's full standalone draft→audit→final deliverable.
+
+**Scope + precedence:**
+- Humanize the **human-readable prose**: `vision.md`, `README.md`, SAD/SDD prose sections, epic/ticket/issue prose (story, description, acceptance criteria), ADR justifications. Do NOT humanize machine artifacts (frontmatter, `*.json`, SRS requirement-table rows) or the agent-runtime `CLAUDE.md` — those follow fixed formats.
+- The two axes mostly agree (both kill puffery). Where they meet: density governs *structure*; humanizer governs *word choice* + the em-dash ban.
+- **Personality/voice OFF for specs.** Specs are reference text — per humanizer's own rule, neutral and plain *is* the correct human voice there. Do NOT inject opinions, first person, or manufactured voice. (README may carry a light natural voice but stays plain and brief.)
+
+**README.md** is normal English (not caveman density), brief, anti-fluff — see `references/bootstrap.md` stage 11 — and gets the full humanizer pass.
 
 **User comm:** first message in normal English. At the end of the first message, propose a switch:
 
@@ -80,6 +88,8 @@ Then route to mode file.
 
 ## Shared protocols (load when relevant)
 
+- `references/caveman.md` — doc-writing density style (lean, signal-dense); see Step 0
+- `references/humanizer.md` — anti-AI-tell finish-pass for human-readable prose docs (vision/README/SAD-SDD prose/ticket prose/ADR justifications); see Step 0 for scope + the em-dash ban
 - `references/question-protocol.md` — question round format, action prompts, no-noise rule, anti-max-bias, memory cadence, auto-skip rule for obvious Qs
 - `references/component-questions.md` — per-component probing subroutine
 - `references/work-breakdown.md` — roadmap + epic/ticket/issue formation: INVEST, vertical slices, critical path (ticket tier), spike post-completion, sizing heuristics

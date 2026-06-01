@@ -291,6 +291,8 @@ branches). Err toward inserting if branches span ≥2 components or ≥4 issues 
 7. **1–8 reqs per ticket.** More → split the ticket.
 8. **Run the risk-detection & gating pass** (see below) — flag gated issues, set per-issue sign-off gates, propose isolate-gated-execution splits. Do this before sprint planning.
 
+**Prose gets a humanizer pass** (Step 0): epic goals, ticket stories/descriptions, and acceptance criteria are human-read prose — keep them neutral and concrete, no significance inflation, no rule-of-three, no em dashes. Frontmatter and JSON are machine artifacts and are exempt.
+
 ## Critical path (TICKET tier, PROJECT-level)
 
 After folders are written, assemble then analyze:

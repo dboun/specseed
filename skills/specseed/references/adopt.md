@@ -108,6 +108,8 @@ Run `references/component-questions.md` but ONLY for what the code can't tell yo
 - **SDD** — the implementation *as built* (real APIs, schemas, libs, versions read from manifests).
 - `incremental`: deep-spec only the first forward slice's scope; skeleton/placeholder the rest (bootstrap tier-scope rules apply).
 
+**Humanizer pass on prose you DRAFT** (Step 0) — vision/SAD/SDD prose recovered from the code. Prose **imported** from the user's existing docs is already human-written: leave its voice alone, only reformat into the `.specseed/` structure. Don't "humanize" what a human already wrote.
+
 ---
 
 ## Stage 6: Reconcile conflicts
