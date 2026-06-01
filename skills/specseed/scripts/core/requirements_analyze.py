@@ -1,4 +1,6 @@
 """Validate requirement DAG: cycles, dangling deps, orphans, topo order."""
+from __future__ import annotations
+
 import json
 import sys
 from graphlib import TopologicalSorter, CycleError

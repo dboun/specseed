@@ -20,9 +20,9 @@ def test_split_row_trims_outer_pipes_cells_and_trailing_separator():
     assert RG.split_row(" a | b | c ") == ["a", "b", "c"]
 
 
-@pytest.mark.xfail(reason="split_row currently treats escaped pipes as delimiters", strict=False)
-def test_split_row_preserves_escaped_pipes():
-    assert RG.split_row(r"| a \| b | c |") == [r"a \| b", "c"]
+def test_split_row_honors_escaped_pipes():
+    # '\|' is a literal pipe inside a cell, not a delimiter; it is unescaped.
+    assert RG.split_row(r"| a \| b | c |") == ["a | b", "c"]
 
 
 def test_parse_depends_on_empty_markers_and_lists():
@@ -34,8 +34,8 @@ def test_parse_depends_on_empty_markers_and_lists():
         "SRS-NFR-002",
     ]
     assert RG.parse_depends_on("[SRS-FUNC-001, SRS-NFR-002]") == [
-        "[SRS-FUNC-001",
-        "SRS-NFR-002]",
+        "SRS-FUNC-001",
+        "SRS-NFR-002",
     ]
 
 

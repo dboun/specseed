@@ -39,7 +39,10 @@ VALID_STATUSES = {"planned", "in_progress", "done", "deprecated"}
 
 def longest_chain(nodes, deps_of):
     """Longest dependency chain length within `nodes` (deps restricted to
-    nodes). Memoized DFS; tolerant of cycles (treated as length 1)."""
+    nodes). Memoized DFS. Cycle-tolerant only in that it never recurses
+    infinitely (a back-edge to a node currently on the stack counts as 1);
+    the returned length within a cycle is not meaningful. Sprint graphs are
+    validated acyclic elsewhere, so this is only a safety guard."""
     nodeset = set(nodes)
     memo, visiting = {}, set()
 

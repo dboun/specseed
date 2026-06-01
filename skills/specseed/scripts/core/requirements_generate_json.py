@@ -29,15 +29,21 @@ REQUIRED_COLS = {"id", "requirement", "type", "priority", "depends on"}
 
 SEPARATOR_RE = re.compile(r"^\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?$")
 
+# A column delimiter is a pipe NOT preceded by a backslash; '\|' is a literal.
+CELL_SPLIT_RE = re.compile(r"(?<!\\)\|")
+
 
 def split_row(line):
-    """Split a markdown table row '| a | b | c |' into ['a', 'b', 'c']."""
+    """Split a markdown table row '| a | b | c |' into ['a', 'b', 'c'].
+
+    A pipe escaped as '\\|' is a literal character inside a cell, not a column
+    delimiter, and is unescaped to '|' in the returned value."""
     s = line.strip()
     if s.startswith("|"):
         s = s[1:]
-    if s.endswith("|"):
+    if s.endswith("|") and not s.endswith("\\|"):
         s = s[:-1]
-    return [c.strip() for c in s.split("|")]
+    return [c.strip().replace("\\|", "|") for c in CELL_SPLIT_RE.split(s)]
 
 
 def find_tables(file_text):
@@ -78,6 +84,9 @@ def parse_depends_on(cell):
     s = cell.strip()
     if s.lower() in EMPTY_MARKERS:
         return []
+    # Tolerate a JSON-ish bracketed list, e.g. "[SRS-A, SRS-B]".
+    if s.startswith("[") and s.endswith("]"):
+        s = s[1:-1]
     parts = [p.strip() for p in s.split(",")]
     return [p for p in parts if p]
 

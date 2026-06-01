@@ -79,7 +79,8 @@ def test_plan_skips_abandoned_tickets_and_detects_cycles():
     }, budget=5)
 
     assert [ids for ids, _, _ in sprints] == [["A"]]
-    assert cp == {"A", "B"}
+    # Abandoned ticket B is excluded from the critical path, matching scheduling.
+    assert cp == {"A"}
 
     try:
         SP.plan({"A": _ticket(1, ["B"]), "B": _ticket(1, ["A"])}, budget=5)

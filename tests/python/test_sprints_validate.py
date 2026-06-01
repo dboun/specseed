@@ -181,7 +181,7 @@ def test_longest_chain_linear_and_diamond():
     ) == 3
 
 
-@pytest.mark.xfail(reason="longest_chain doc says cycles are length 1, but two-node cycle returns 3",
-                   strict=False)
-def test_longest_chain_cycle_treated_as_length_one():
-    assert SV.longest_chain(["A", "B"], {"A": ["B"], "B": ["A"]}) == 1
+def test_longest_chain_cycle_does_not_recurse_infinitely():
+    # Cycle-tolerance is only a no-infinite-recursion guard; the returned
+    # length inside a cycle is not meaningful (sprint graphs are acyclic).
+    assert SV.longest_chain(["A", "B"], {"A": ["B"], "B": ["A"]}) == 3

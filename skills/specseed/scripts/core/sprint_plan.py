@@ -36,14 +36,18 @@ PRIORITY_RANK = {"high": 0, "medium": 1, "low": 2}
 
 def critical_path_set(tickets):
     """Return set of ticket ids on the critical path, or empty set if the
-    analyzer isn't importable / fails."""
+    analyzer isn't importable / fails. Abandoned tickets (deprecated / wont_do)
+    are excluded so the critical path matches the tickets actually scheduled."""
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         import tickets_analyze
+        active = {tid: t for tid, t in tickets.items()
+                  if t.get("status", "todo") not in ("deprecated", "wont_do")}
         slim = {tid: {"effort_hours": t.get("effort_hours", 0) or 0,
-                      "depends_on": t.get("depends_on", []) or [],
+                      "depends_on": [d for d in (t.get("depends_on", []) or [])
+                                     if d in active],
                       "status": t.get("status", "todo")}
-                for tid, t in tickets.items()}
+                for tid, t in active.items()}
         return set(tickets_analyze.analyze(slim).get("critical_path", []))
     except Exception:
         return set()

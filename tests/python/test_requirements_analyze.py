@@ -2,18 +2,10 @@ import json
 import sys
 from pathlib import Path
 
-import pytest
-
 from conftest import CORE
 
 
-try:
-    import requirements_analyze as RA
-except TypeError as exc:
-    RA = None
-    IMPORT_ERROR = exc
-else:
-    IMPORT_ERROR = None
+import requirements_analyze as RA
 
 
 def _req(depends_on=None):
@@ -26,17 +18,10 @@ def _req(depends_on=None):
 
 
 def _analyzer():
-    if RA is None:
-        pytest.skip(f"requirements_analyze import fails on this interpreter: {IMPORT_ERROR}")
     return RA
 
 
-@pytest.mark.xfail(
-    RA is None,
-    reason="requirements_analyze.py uses PEP 604 annotation syntax unsupported by Python 3.9",
-    strict=False,
-)
-def test_import_is_available_or_quarantined():
+def test_import_is_available():
     assert RA is not None
 
 
@@ -92,14 +77,7 @@ def test_unsatisfied_requirement_is_warning_not_error():
     assert result["warnings"] == ["SRS-B not satisfied by any ticket"]
 
 
-@pytest.mark.xfail(
-    RA is None,
-    reason="CLI cannot start when module import fails on Python 3.9",
-    strict=False,
-)
-def test_cli_outputs_analysis_json_when_importable(tmp_path):
-    if RA is None:
-        raise TypeError(str(IMPORT_ERROR))
+def test_cli_outputs_analysis_json(tmp_path):
     reqs_path = tmp_path / "reqs.json"
     reqs_path.write_text(json.dumps({"SRS-A": _req()}), encoding="utf-8")
 
