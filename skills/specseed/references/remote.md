@@ -177,6 +177,9 @@ dispatches, and replies with the result as a comment. Fixed verb set — unknown
 | `claim-next` | claim + run the next ready issue now |
 | `adapt <text>` | run `claude` headless with `/specseed adapt <text>` |
 | `plan-next` | run `claude` headless with `/specseed plan-next` |
+| `approvals` | reply: list of pending HITL gates (from `approvals.json`) |
+| `approve <ID> [opt]` | resolve a parked HITL gate — run `claude` headless with `/specseed approve <ID> <opt>` |
+| `reject <ID> <note>` | reject a parked HITL gate — run `claude` headless with `/specseed reject <ID> <note>` |
 
 The CONTROL issue **top post** (written at init) is a short cheatsheet of exactly these
 verbs + the pause/stop story. Authorization: comment author ∈ allowlist. Sudo /
@@ -234,12 +237,43 @@ The runner is **shipped plumbing** (not an analysis seam). It logs to
 
 ## Progress comments (back to the phone)
 
-Per the locked decision: comment on the mapped github issue **only on `done` and
-`blocked`** (low noise, the moments that matter):
+Per the locked decision: comment on the mapped github issue **only on the
+moments that matter** (low noise):
 - **done** → `✓ Done. <1-line summary>. PR: <url if any>.`
 - **blocked** → `⛔ Blocked: <reason>. <next step / what's needed>.`
+- **awaiting_approval** → `🔔 Needs your approval — <ID> A<N>: <summary>` + why +
+  options + the `approve <ID>` / `reject <ID> <note>` reply hint. This is the HITL
+  surface step — see "HITL gate lifecycle" below.
 
 Claim and in-review transitions update the **label** only (no comment).
+
+---
+
+## HITL gate lifecycle (surface · resolve)
+
+Lets a human clear approval gates from a phone, mirroring the local `approve` route.
+Local `.specseed/` stays ground truth — the mirror is just the channel.
+
+- **Surface (announce).** When the impl agent parks a gated action it sets the issue
+  `awaiting_approval` and writes the request to `approval.md` + runs
+  `approvals_render.py`. The runner's `work_step` sees the status transition and posts
+  the `🔔 Needs your approval` comment on the mapped github issue (transition-based, so
+  it posts once — no dedup logic needed). The `awaiting_approval` label also flips. Use
+  the `approvals` CONTROL verb anytime for the full pending list.
+- **Resolve (consume reply).** The human comments `approve <ID> <opt>` or
+  `reject <ID> <note>` on the **CONTROL** issue. `remote_control` dispatches it as a
+  work verb; the runner runs `/specseed approve <ID> …` headless (the same `approve`
+  route a local human uses — `references/approve.md`). The route appends a
+  `## Resolved` marker to `approval.md`, flips the issue (`todo` to resume / `wont_do` /
+  `blocked`), and re-renders. The runner then re-pushes so the label/state update
+  projects back.
+- **Global-gate safety.** A reply authorizes answering *that gated question* only. When
+  the resumed issue is later worked and hits another `block`-level action, it parks
+  again per the operating-policy contract. The reply is not blanket autonomy.
+
+Idempotency: surfacing is transition-based (one comment per entry into
+`awaiting_approval`); resolving keys off the CONTROL comment cursor (`cli_cursor`), so a
+handled reply isn't reprocessed.
 
 ---
 
@@ -249,8 +283,12 @@ Claim and in-review transitions update the **label** only (no comment).
   `github_functions` or `gitlab_functions`); label/body rendering helpers.
 - `remote_sync.py` — `init` / `reconcile` (pull → drift → heal → push) / dashboard
   rendering. `--dry-run` prints intended calls without mutating.
-- `remote_control.py` — poll + authorize + dispatch CONTROL verbs.
+- `remote_control.py` — poll + authorize + dispatch CONTROL verbs (incl. `approvals`
+  inline, `approve`/`reject` as work verbs).
 - `agents_runner.py` — the loop; `<repo>_agents_runner.py` shim calls its `main()`.
+  Posts the `awaiting_approval` surface comment and runs the `approve`/`reject` route.
+- `approvals_render.py` (core, not remote-only) — keeps `approvals.json` current; the
+  surface step + `approvals` verb read it.
 
 All stdlib-only, reusing `github_functions.py` / `gitlab_functions.py` for transport.
 

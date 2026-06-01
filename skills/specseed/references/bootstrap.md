@@ -370,6 +370,10 @@ Fix any reported errors before proceeding.
 
 Run `.specseed/scripts/tickets_analyze.py .specseed/project_management/tickets.json` (shipped; editable analysis seam) — returns ticket critical path + build order. Show critical path to user. Rebalance ticket grouping if unreasonably long (often overly narrow tickets or artificial deps). Critical path is PROJECT-level, not per-sprint.
 
+### Risk-detection & gating pass (HITL)
+
+Run the **risk-detection & gating pass** from `work-breakdown.md` — scan the formed issues for gated actions (the 8 categories), present a consolidated coverage table, get the user's **explicit approval**, set per-issue `approval_required` where wanted, and propose isolate-gated-execution splits. Do this before sprint planning so gated issues are known when batching. (`incremental`: run it over the first-increment issues only.)
+
 ### Sprint planning
 
 After the critical path is settled, batch tickets into sprints (see `work-breakdown.md` "Sprints"). Optional but recommended for anything beyond a handful of tickets.

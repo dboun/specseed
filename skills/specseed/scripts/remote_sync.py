@@ -341,6 +341,12 @@ Comment one of these verbs (allowlisted users only). The agent replies here.
 | `claim-next` | claim + run the next ready issue |
 | `adapt <text>` | run `/specseed adapt <text>` |
 | `plan-next` | run `/specseed plan-next` |
+| `approvals` | list pending HITL approval gates |
+| `approve <ID> [opt]` | approve a parked gate (e.g. `approve FEAT-0101 A`) |
+| `reject <ID> <note>` | reject a parked gate with a reason |
+
+When an issue needs your OK, the agent posts a `🔔 Needs your approval` comment on that
+issue and waits — reply here with `approve`/`reject`.
 
 Local control (no phone): `echo pause > .specseed/memory/runner.ctl` (or `run` /
 `stop`). Stop = graceful (finishes current, then exits). This issue is permanent —

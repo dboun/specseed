@@ -17,10 +17,11 @@ from pathlib import Path
 
 import remote_config as rc
 
-CONTROL_VERBS = {"status", "pause", "resume", "kill"}
-WORK_VERBS = {"sync", "claim-next", "adapt", "plan-next"}
+CONTROL_VERBS = {"status", "pause", "resume", "kill", "approvals"}
+WORK_VERBS = {"sync", "claim-next", "adapt", "plan-next", "approve", "reject"}
 CHEATSHEET = ("verbs: status · sync · pause · resume · kill · claim-next · "
-              "adapt <text> · plan-next")
+              "adapt <text> · plan-next · approvals · approve <ID> [opt] · "
+              "reject <ID> <note>")
 
 
 def _mem(root):
@@ -85,6 +86,20 @@ def _status_reply(root, cfg):
             f"- ready issues: {len(ready)}{cooldown}")
 
 
+def _approvals_reply(root):
+    pm = rc.find_root(root) / ".specseed" / "project_management"
+    p = pm / "approvals.json"
+    recs = json.loads(p.read_text()) if p.exists() else []
+    if not recs:
+        return "**approvals**\n- none pending ✅"
+    lines = ["**approvals** — pending HITL gates:"]
+    for r in recs:
+        lines.append(f"- `{r['issue']}` A{r['n']}: {r.get('summary','')} "
+                     f"({r.get('kind','')}). Resolve: `approve {r['issue']}` / "
+                     f"`reject {r['issue']} <note>`")
+    return "\n".join(lines)
+
+
 def process(root, cfg, remote, log=print):
     """Process new CONTROL comments. Returns (work_actions, cfg). Control verbs
     replied inline; work verbs returned as [{'verb','text','reply_to'}...]."""
@@ -100,7 +115,8 @@ def process(root, cfg, remote, log=print):
         if since and c.get("created_at") and c["created_at"] <= since:
             continue
         author, body = c.get("author"), c.get("body") or ""
-        if body.startswith(("**status**", "✓", "⛔", "⚠️", "Ingested")):
+        if body.startswith(("**status**", "✓", "⛔", "⚠️", "✅", "▶️", "⏸️", "🛑",
+                            "🔄", "⏳", "🔔", "**approvals**", "Ingested")):
             continue                                  # our own bot replies
         if not _allowed(cfg, remote, author):
             remote.comment(control_no, f"@{author}: not authorized.")
@@ -120,6 +136,8 @@ def process(root, cfg, remote, log=print):
 def _do_control(root, cfg, remote, control_no, verb, log):
     if verb == "status":
         remote.comment(control_no, _status_reply(root, cfg))
+    elif verb == "approvals":
+        remote.comment(control_no, _approvals_reply(root))
     elif verb == "pause":
         write_ctl(root, "pause")
         remote.comment(control_no, "⏸️ Pausing after the current issue finishes.")

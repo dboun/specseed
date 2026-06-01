@@ -131,6 +131,17 @@ def _statuses(root):
     return {k: v.get("status") for k, v in json.loads(p.read_text()).items()} if p.exists() else {}
 
 
+def _open_approval(root, iid):
+    """The open approval record for issue `iid` from approvals.json, or None."""
+    p = rc.find_root(root) / ".specseed" / "project_management" / "approvals.json"
+    if not p.exists():
+        return None
+    for r in json.loads(p.read_text()):
+        if r.get("issue") == iid:
+            return r
+    return None
+
+
 def work_step(root, cfg, remote, log):
     """Claim + run the next issue; comment on done/blocked transitions. Returns
     True if any issue status changed (so the caller re-pushes the mirror)."""
@@ -150,6 +161,17 @@ def work_step(root, cfg, remote, log):
             remote.comment(n, f"✓ Done — `{iid}`.")
         elif st == "blocked":
             remote.comment(n, f"⛔ Blocked — `{iid}`. See the issue's notes / spec_concern.")
+        elif st == "awaiting_approval":
+            ap = _open_approval(root, iid)
+            if ap:
+                remote.comment(n, (
+                    f"🔔 Needs your approval — `{iid}` A{ap['n']}: {ap.get('summary','')}\n"
+                    f"- why: {ap.get('why') or ap.get('kind','')}\n"
+                    f"- options: {ap.get('options','—')}\n"
+                    f"- detail: `.specseed/project_management/issues/{iid}/approval.md`\n"
+                    f"Reply on the CONTROL issue: `approve {iid} <opt>` / `reject {iid} <note>`."))
+            else:
+                remote.comment(n, f"🔔 `{iid}` awaiting approval (no request detail found).")
     return changed
 
 
@@ -163,11 +185,16 @@ def execute_actions(root, cfg, remote, actions, log):
                 remote_sync.sync_push(root, cfg, remote, log=log)
                 remote_sync.push_dashboards(root, cfg, remote, log=log)
             remote.comment(n, "▶️ Ran the next ready issue.")
-        elif verb in ("adapt", "plan-next"):
+        elif verb in ("adapt", "plan-next", "approve", "reject"):
+            # approve/reject route to approve mode (its triggers include the bare
+            # verbs) and flip issue status, so re-push the mirror after a good run.
             slash = f"/specseed {verb}" + (f" {a['text']}" if a.get("text") else "")
             res = attempt_claude(root, cfg, slash, log)
             if res == 0:
                 remote.comment(n, f"✅ Ran `{slash}`.")
+                if verb in ("approve", "reject"):
+                    remote_sync.sync_push(root, cfg, remote, log=log)
+                    remote_sync.push_dashboards(root, cfg, remote, log=log)
             elif res == "cooldown":
                 remote.comment(n, "⏳ In retry cooldown (a prior run hit a limit). "
                                   "Retry later, or `resume` after it clears.")

@@ -2,15 +2,22 @@
 
 This file is **the content the specseed skill writes to the user's repo root as `CLAUDE.md`**. It tells the implementation agent (Claude Code, Codex, or any other) how to pick up and execute the next **issue** (issues are the technical, claimable unit; epics + tickets are the PM layer above them).
 
-The skill writes this template by default, with two customizations: (1) the bash one-liners in the "Claim" section if the user has a different command preference; (2) the **`## Project conventions`** section, which the skill fills with the project's folder structure, branching, versioning, release process, and release gates (the former `CONTRIBUTING.md` content, now folded in — the skill no longer writes a separate `CONTRIBUTING.md`).
+The skill writes this template by default, with three customizations: (1) the bash one-liners in the "Claim" section if the user has a different command preference; (2) the **`## Project conventions`** section, which the skill fills with the project's folder structure, branching, versioning, release process, and release gates (the former `CONTRIBUTING.md` content, now folded in — the skill no longer writes a separate `CONTRIBUTING.md`); (3) the **`## ⚠️ Operating policy`** block, which the skill generates from `.specseed/memory/policy.json` by running `python .specseed/scripts/policy.py render-claude` and **pastes at the very top of the file** (right after the `# CLAUDE.md` heading, before "Agent entry point"). That block is the HITL action-gate + git-workflow contract; it's READ-FIRST and must never be reordered below other sections. Re-run the render and replace the block whenever `/specseed configure` changes the policy.
 
-When writing to the user's repo, write the content below (everything between the `---BEGIN TEMPLATE---` and `---END TEMPLATE---` markers) as the file `CLAUDE.md` at the repo root.
+When writing to the user's repo, write the content below (everything between the `---BEGIN TEMPLATE---` and `---END TEMPLATE---` markers) as the file `CLAUDE.md` at the repo root — and splice the rendered operating-policy block in at the marked spot.
 
 **If a `CLAUDE.md` already exists at the target path**, do NOT overwrite blindly — follow the merge protocol in `SKILL.md` ("Main-repo files & merge protocol").
 
 ---BEGIN TEMPLATE---
 
 # CLAUDE.md
+
+<!-- ⚠️ SKILL: paste the output of `python .specseed/scripts/policy.py render-claude`
+     here — the "## ⚠️ Operating policy — READ FIRST, ALWAYS" block (action gates +
+     park-and-continue + git workflow), generated from .specseed/memory/policy.json.
+     It MUST be the first section of the file. Omit only if no policy.json exists
+     (older repos); then the action-gate/git contract is undefined and the agent
+     should ask the user before any push / docker / network / destructive action. -->
 
 Agent entry point. If no other instructions given, your default task is to **handle the next issue in the build order**.
 
@@ -152,6 +159,12 @@ Your issue (and its ticket) may carry mandatory gates:
 
 These states keep your claim and are NOT auto-pickable, so nobody steals the issue mid-handoff. To reclaim work that bounced back, reset it to `in_progress`.
 
+**Two kinds of gate, same `awaiting_approval` landing state — don't confuse them:**
+- **Completion gate** (this section): `approval_required` / `review_required` ask *"is this finished unit accepted?"* — fired when the issue is otherwise done.
+- **Action gate** (the **⚠️ Operating policy** block at the top): a *class of action* (push/docker/network/destructive…) is hit *mid-work*, regardless of which issue is active. You **park-and-continue**: write an `approval.md` request, set `awaiting_approval`, run `approvals_render.py`, and move to the next ready non-gated issue.
+
+Both surface to the human through `.specseed/project_management/issues/<id>/approval.md` + the generated `APPROVALS.md` index. A human resolves either by running **`/specseed approve`** (interactive, or via an agent: "next thing needing approval" / "approve <ID> <note>"), or — mirror on — by commenting `approve`/`reject <ID>` on the CONTROL issue. Resolution writes a `## Resolved A<N>` marker and flips the issue back (`todo` to resume, `wont_do`/`blocked` if rejected/held). Re-run `approvals_render.py` after any change.
+
 ## Finish
 
 When all plan steps `[x]`, tests pass, and any required gates are cleared (see above — do NOT skip a mandatory gate):
@@ -171,14 +184,14 @@ When all plan steps `[x]`, tests pass, and any required gates are cleared (see a
      python .specseed/scripts/timeline_render.py
    ```
 4. Sanity-check: `python .specseed/scripts/issues_validate.py`
-5. Commit per `## Project conventions`.
+5. Commit, branch, merge, and push per the **⚠️ Operating policy → Git workflow** block (auto-merge into the integration branch only on a clean close; push only if the policy says `auto`). Action gates (e.g. `external_publish` on a push) still apply.
 
 (Dependent issues unblock automatically — `claim_issue.py` derives ticket completion live from `issues.json` — so the next agent can proceed even before step 3. The re-assemble is for counts, ROADMAP, and the ticket-done rollup.)
 
 ## What you CAN edit
 
 - `issues.json` — your OWN issue's `status` (`todo`→`in_progress`→ optional `in_review`/`awaiting_approval` gates →`done`; or `blocked`; `wont_do`/`deprecated` are set by the skill/human, not you), claim fields (set by `claim_issue.py`, cleared by you on done), `notes`, `artifacts.tests`/`artifacts.migrations` as work progresses
-- Your issue's folder: `<issue_id>.md` frontmatter (mirror status; update artifacts/notes), `plan.md`, `spec_concern.md`, `step_reports/*`
+- Your issue's folder: `<issue_id>.md` frontmatter (mirror status; update artifacts/notes), `plan.md`, `spec_concern.md`, `approval.md` (append action-gate / run-action requests — never write your own `## Resolved` marker; only a human/approve-route does that), `step_reports/*`
 - All source code, test files, build configs in your issue's scope
 
 You may NOT edit other issues, any ticket or epic, `tickets.json`, or the spec docs — even if you think something is wrong. Surface to the user instead.
@@ -212,7 +225,7 @@ do your normal issue work; finishing an issue (status `done`/`blocked` in
 > The skill fills this section with the project's actual conventions. The former `CONTRIBUTING.md`, folded in. Keep it short and concrete.
 
 - **Folder structure:** where source, tests, configs live. Spec/PM artifacts live under `.specseed/` (never edit those except as allowed above; only `/specseed` does).
-- **Branching:** branch naming + how work maps to branches/PRs.
+- **Branching:** governed by the **⚠️ Operating policy → Git workflow** block at the top of this file (rendered from `policy.json`). Don't restate or contradict it here; add only project-specific notes the policy doesn't cover.
 - **Versioning:** scheme (semver, calver, none) and where the version is set.
 - **Release:** how a release is cut, where artifacts are stored.
 - **Release gates:** coverage thresholds, smoke checks, manual sign-off — define if relevant; else leave a placeholder.
@@ -223,6 +236,8 @@ do your normal issue work; finishing an issue (status `done`/`blocked` in
 ## Skill-side notes (not written to user's CLAUDE.md)
 
 The template is INTENTIONALLY medium-length. It includes:
+- The **⚠️ Operating policy** block spliced in at the top (rendered by `policy.py render-claude` from `policy.json`): HITL action gates (block/surface/auto across the 8 categories), the park-and-continue protocol + `approval.md` template, and the git-workflow contract. READ-FIRST; re-rendered when `/specseed configure` changes the policy.
+- The two-kinds-of-gate distinction (completion gate = is-this-unit-accepted; action gate = is-this-action-allowed-now) both landing in `awaiting_approval`, surfaced via `approval.md` + `APPROVALS.md`, resolved via the `/specseed approve` route or the CONTROL `approve`/`reject` verbs
 - Issue pickup + atomic claim via `claim_issue.py` (no-arg auto-pick = pick-and-claim under one lock; `--skip` for light parallel work; sprint-scoped when `sprints.json` exists — in_progress sprint first, spill to next)
 - The three-tier work model (epic/ticket/issue) and the folders-vs-JSON source-of-truth split (folders = authored content, JSON = live runtime state)
 - `issue_info.py` for the issue + parent ticket + reqs join (reqs live on the ticket)

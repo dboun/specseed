@@ -37,7 +37,7 @@ After the first message, default to caveman-spirit terse comm (no filler, fragme
 
 This probe is the safety net for misrouting — it is evidence, not a guess. When it and the user's words disagree, surface the conflict and ask; do not let intent words override disk state.
 
-**Configure preamble (first run only).** When the probe lands on **bootstrap** (case 4) or **adopt** (case 3) AND there is **no `.specseed/memory/remote.json`** yet, run **configure mode** first (technical setup — `references/configure.md`): ≤2 rounds, heavy defaults (local-only is one keystroke), then continue into bootstrap/adopt. This gets the plumbing decisions out of the way up front. A bare `.specseed/memory/remote.json` it leaves behind is **config only** — it is NOT a spec and does NOT affect the routing above (mode still keys off `.specseed/spec/`). `/specseed configure` re-runs it anytime to change settings.
+**Configure preamble (first run only).** When the probe lands on **bootstrap** (case 4) or **adopt** (case 3) AND there is **no `.specseed/memory/policy.json`** yet, run **configure mode** first (technical setup — `references/configure.md`): ≤2 rounds, heavy defaults (local-only + default git/gates is one keystroke), then continue into bootstrap/adopt. This gets the plumbing + autonomy decisions out of the way up front. The `.specseed/memory/policy.json` (always) and `remote.json` (mirror choice) it leaves behind are **config only** — NOT a spec, and do NOT affect the routing above (mode still keys off `.specseed/spec/`). `/specseed configure` re-runs it anytime to change settings.
 
 ## Mode detection
 
@@ -51,6 +51,7 @@ Read user message + conversation, **constrained by the reconnaissance above** (a
 | **plan-next** | Existing `incremental`-bootstrapped spec; user wants to spec + break down the NEXT roadmap slice (`/specseed plan-next`, "plan the next sprint/phase"). Roadmap has un-detailed ticket titles (no folders). Append-only forward — no settled-doc changes | `references/plan-next.md` |
 | **adapt** | Existing spec present, user wants to update/extend/revise non-trivially (incl. *changing* settled docs) | `references/adapt.md` |
 | **tweak** | Tiny single-doc edit ("add this one req to SRS", "change priority of REQ-X") | `references/tweak.md` (may auto-escalate to adapt) |
+| **approve** | Resolve pending human-approval gates (the impl agent parked gated work). `/specseed approve`, "next thing needing approval", "approve/reject/hold <ID>". Read-only on code; touches `approval.md` + issue status | `references/approve.md` |
 
 **plan-next vs adapt:** plan-next *extends forward* into un-specced roadmap titles (append-only, never reopens `settled` docs); adapt *changes* existing/settled specs. If unsure: does the work touch a settled doc? → adapt. Does it only add the next slice? → plan-next. See `references/plan-next.md` "Boundary".
 
@@ -84,12 +85,16 @@ Then route to mode file.
 - `references/work-breakdown.md` — roadmap + epic/ticket/issue formation: INVEST, vertical slices, critical path (ticket tier), spike post-completion, sizing heuristics
 - `references/configure.md` — technical setup route (local vs github/gitlab mirror, credentials, runner opts). Runs as a first-run preamble before bootstrap/adopt, or on `/specseed configure`. Writes `.specseed/memory/remote.json` (config only)
 - `references/remote.md` — OPTIONAL, opt-in github/gitlab mirror (single-dev phone-driven workflow). Local stays ground truth; the remote is a mirror + bug-inbox + CONTROL command channel driven by an always-on `agents_runner.py`. Offered once at onboarding (bootstrap stage 13.5 / adopt 9.5); entirely off unless the user opts in
+- `references/approve.md` — the `approve` route: walk + resolve pending HITL gates (`approval.md` requests the impl agent parked). Local human channel; also what the mirror's CONTROL `approve`/`reject` verbs invoke
+- **HITL policy** — the action-gate + git-workflow contract the impl agent obeys lives in `.specseed/memory/policy.json` (written by configure mode, ALWAYS — even local-only) and is rendered into the READ-FIRST block of `CLAUDE.md` by `scripts/policy.py`. Per-issue gating (which issues get an `approval_required` sign-off) is refined at work-breakdown time — see `references/work-breakdown.md` "Risk-detection & gating pass"
 
 ## Memory protocol
 
-**Rule: ALL skill memory lives under `.specseed/memory/`** (a directory, never a bare file at `.specseed/` root). Two files today:
+**Rule: ALL skill memory lives under `.specseed/memory/`** (a directory, never a bare file at `.specseed/` root). Session/planning memory:
 - `session_state.md` — **session scratch**, the resume/compression-survival file (was `.specseed/memory.md`). Deleted at session end; preserved on `/specseed stop`.
 - `sprint_planning.md` — **reusable** sprint-planning preferences that PERSIST across sessions (e.g. "keep auth + session tickets in one sprint", "leave ~15% slack"). Write ONLY durable, generalizable prefs the user states during planning — keep it tiny, not session chatter, not one-off placements. Never deleted at session end.
+
+Also co-located here but **config, not memory** (written by configure mode, never deleted at session end): `policy.json` (HITL action-gate + git-workflow contract) and `remote.json` (mirror backend choice).
 
 `session_state.md` (repo) or chat artifact (no-repo) holds:
 - Current workflow stage + sub-step
@@ -141,7 +146,9 @@ AGENTS.md                       # one line: "Read ./CLAUDE.md. In dirs you work 
 .specseed/
 ├── memory/                     # ALL skill memory lives here (dir, not a single file)
 │   ├── session_state.md        #   session scratch — deleted at end; preserved on /specseed stop
-│   └── sprint_planning.md      #   reusable sprint-planning prefs (tiny, persists across sessions)
+│   ├── sprint_planning.md      #   reusable sprint-planning prefs (tiny, persists across sessions)
+│   ├── policy.json             #   CONFIG: HITL action-gate + git-workflow contract (configure mode; ALWAYS present)
+│   └── remote.json             #   CONFIG: mirror backend choice (only if mirror; see remote.md)
 ├── spec/                       # the WHAT/WHY/HOW layer (requirements & design)
 │   ├── vision.md
 │   ├── sad.md
@@ -154,6 +161,8 @@ AGENTS.md                       # one line: "Read ./CLAUDE.md. In dirs you work 
 └── project_management/         # the WORK layer: epics → tickets → issues (3 tiers, always present)
     ├── ROADMAP.md              # STRATEGIC map: phases → subsections → epics → ticket titles w/ "(X/Y complete)". Sprints NEVER appear here.
     ├── TIMELINE.md             # TACTICAL schedule: sprints in execution order (GENERATED by timeline_render.py)
+    ├── APPROVALS.md            # pending HITL gates, human view (GENERATED by approvals_render.py)
+    ├── approvals.json          # pending HITL gates, machine index (GENERATED by approvals_render.py)
     ├── epics/
     │   └── <EPIC-NNNN>/
     │       └── <EPIC-NNNN>.md  # frontmatter + NON-TECHNICAL prose (goal / outcome / why)
@@ -167,6 +176,7 @@ AGENTS.md                       # one line: "Read ./CLAUDE.md. In dirs you work 
     │       │                   # + prose (TECHNICAL acceptance criteria, notes)
     │       ├── plan.md
     │       ├── spec_concern.md # OPTIONAL — written by impl agent if a settled doc looks wrong mid-issue
+    │       ├── approval.md     # OPTIONAL — HITL gate requests (action-gate / run-action / completion). Resolved via approve route
     │       └── step_reports/
     │           └── <X>_<step>_<desc>.md
     ├── sprints/
@@ -194,6 +204,8 @@ scripts/                        # may grow subfolders as more tooling is added
 ├── timeline_render.py              # regenerate TIMELINE.md (sprint schedule) from sprints.json + tickets.json
 ├── verification_map.py             # inverse map: req → ticket → issues → test files
 ├── drift_check.py                  # mechanical spec-vs-reality drift surface
+├── policy.py                       # HITL action-gate + git-workflow policy: load/validate policy.json; render-claude → CLAUDE.md block
+├── approvals_render.py             # scan issues/*/approval.md → APPROVALS.md + approvals.json (pending HITL gates)
 # ---- OPTIONAL remote mirror (only used if the user opts in — see references/remote.md) ----
 ├── github_functions.py             # stdlib GitHub REST wrapper (+ GraphQL pin)
 ├── gitlab_functions.py             # stdlib GitLab REST wrapper (sibling shape)

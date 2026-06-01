@@ -149,6 +149,8 @@ The gap reqs (stage 5c) are the real work. Break them down exactly as bootstrap 
 
 Forward tickets' `satisfies_reqs` reference gap reqs; their `depends_on` DAG covers only forward work (built work is already done). If a forward ticket genuinely needs a built capability the user wanted in the graph, that's the opt-in done-ticket case above.
 
+**Risk-detection & gating pass.** After the forward issues are formed (before sprint planning), run the risk-detection & gating pass from `work-breakdown.md` over them — flag gated actions, get explicit coverage approval, set per-issue `approval_required`, propose isolate-gated-execution splits. Adopt repos often touch real infra (deploy, containers, data) — expect gates here.
+
 ---
 
 ## Stage 9: Entry files + propagate-back

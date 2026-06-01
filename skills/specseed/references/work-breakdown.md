@@ -289,6 +289,7 @@ branches). Err toward inserting if branches span ≥2 components or ≥4 issues 
 5. **Insert integration issues** at parallel merge points.
 6. **Back-link**: each ticket's `issues:` list ⟷ each issue's `ticket:` parent.
 7. **1–8 reqs per ticket.** More → split the ticket.
+8. **Run the risk-detection & gating pass** (see below) — flag gated issues, set per-issue sign-off gates, propose isolate-gated-execution splits. Do this before sprint planning.
 
 ## Critical path (TICKET tier, PROJECT-level)
 
@@ -316,6 +317,59 @@ assignment (front-load CP tickets into early sprints) — see "Sprints".
 
 Surface critical path to user. If unreasonably long, it often signals overly
 narrow tickets or artificial dependencies — rebalance.
+
+## Risk-detection & gating pass (HITL)
+
+Runs **once after issues are formed**, before sprint planning (bootstrap stage 11 /
+adopt stage 8 / adapt stage 7). The project-wide gate *levels* are already set in
+`.specseed/memory/policy.json` (configure mode) — this pass decides which **specific
+issues** need a per-issue human sign-off, flags issues that will trip action gates at
+runtime, and proposes structural splits. It does NOT enforce anything (runtime action
+gates fire regardless, per the `CLAUDE.md` operating-policy block); it's early-warning
++ per-issue sign-off + cleanup.
+
+1. **Scan** each formed issue's scope (`artifacts.touches`, technical acceptance
+   criteria, description) for actions in the 8 categories: `container`,
+   `heavy_compute`, `network`, `deps`, `data_destructive`, `external_publish`,
+   `outside_repo`, `secrets` (taxonomy + descriptions in `scripts/policy.py`). Also flag
+   anything user-facing/irreversible the categories miss.
+2. **Tabulate.** One consolidated table: issue × detected category × the policy level
+   for that category × suggested per-issue action (set `approval_required`, and/or
+   isolate-gated-execution split — below).
+3. **Get explicit approval.** Present the table; **nothing proceeds until the user
+   approves coverage** ("make sure everything is covered and explicitly approved before
+   proceeding"). The user can raise/lower any row.
+4. **Apply.** Set `approval_required: true` on issues (and/or `review_required`) the user
+   wants a completion sign-off on. Record the detected gate categories in the issue's
+   `## Notes` prose (informational — no new frontmatter field, so no validator/parser
+   change). Perform any agreed splits.
+
+Surface the count of gated issues to the user — a baseline for how often the runner
+will park during execution.
+
+### Isolate gated execution (the split heuristic)
+
+When an issue mixes **pure-code authoring** (scripts, wiring, mocked tests — agent
+territory, no gate) with a **gated resource-consuming execution** (real training, docker
+build, deploy, paid-API run, destructive migration against real data — human/gated
+territory), SUGGEST splitting it so each issue completes in a clean, gate-free state:
+
+- **prep** issue — the code. `approval_required:false`. Finishes clean.
+- **run** issue — the gated execution. The agent writes comprehensive self-run
+  instructions into `approval.md` and **parks** (run-action); the human runs it; the
+  agent transcribes results into a step report. **No source edits during a run issue.**
+- **consume** issue (optional) — non-trivial analysis of the run's outputs. Agent
+  territory again; unit-testable with mocks.
+
+Dependency rewiring: dependents needing **code/interface** point at *prep*; dependents
+needing **real outputs** (built images, trained weights, measured numbers) point at
+*run*. Naming is a **soft convention** (clear titles, optional `-prep`/`-run` style
+suffix) — **not** validator-enforced.
+
+**Suggest, don't force.** Skip the split when the gated action is incidental or
+inseparable (e.g. a measurement-only spike, or a deploy that has no separable code).
+The point is to keep most issues completable without tripping park-and-continue
+mid-work — the *run* issue is the one designed to park.
 
 ## Migrations
 
