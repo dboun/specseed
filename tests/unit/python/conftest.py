@@ -15,8 +15,8 @@ from pathlib import Path
 
 import pytest
 
-# repo_root/tests/python/conftest.py → repo_root
-REPO_ROOT = Path(__file__).resolve().parents[2]
+# repo_root/tests/unit/python/conftest.py → repo_root
+REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPTS = REPO_ROOT / "skills" / "specseed" / "scripts"
 CORE = SCRIPTS / "core"
 
