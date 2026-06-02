@@ -12,6 +12,7 @@ Read the user's request, identify the doc(s) to touch — typically one, but the
 
 Common tweak patterns:
 - "Add this req to SRS" → which `<component>-srs.md` (or `srs.md`)
+- "Remember this repo instruction" / "custom instruction for this repo" → `.specseed/memory/repo/index.md` (or a sibling scenario doc linked from it, if the detail is conditional)
 - "Add this req to SRS and a ticket for it" → SRS file + a new ticket folder under `project_management/tickets/` (still tweak — see escalation note)
 - "Change priority of SRS-API-007 to should" → find file containing that ID
 - "Mark FEAT-0042 as blocked, reason: waiting on FEAT-0041" → that issue's folder frontmatter `project_management/issues/FEAT-0042/FEAT-0042.md` (FEAT-* is an issue)
@@ -64,6 +65,7 @@ After apply:
 - If a sprint folder changed OR a ticket's `sprint:` changed → also `sprints_assemble.py` → `sprints_validate.py` → `timeline_render.py` (regenerates TIMELINE.md).
 - If both SRS and a ticket/issue changed (SRS+ticket combo) → run the req scripts then the assemble/validate cascade
 - If vision/sad/adr changed → no script triggers, just the edit
+- If `.specseed/memory/repo/` changed → no script triggers. Keep `index.md` short; put bulky scenario detail in sibling docs linked from the index.
 
 **Repo mode:** agent runs scripts directly and reports output.
 **Chat mode:** print copy-paste-ready commands for the user to run locally.

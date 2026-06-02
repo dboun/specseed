@@ -38,7 +38,8 @@ to stop them, what you control. Backend: **{{BACKEND}}**.
   spec/                WHAT/WHY/HOW: vision, srs, sad, sdd, reqs.json. The contract.
   project_management/  the work: ROADMAP.md, TIMELINE.md, epics/ tickets/ issues/ sprints/
                        APPROVALS.md  -> things waiting on your sign-off
-  memory/              config + runtime state (config.json [portable], remote.json [per-repo, mirror], runner.ctl, runner.log)
+  memory/              session state, sprint prefs, repo instructions, config, runner state
+    repo/index.md      repo-specific standing instructions. Agents read it when present.
   scripts/             tooling. agents_runner.py (run the loop) + add_work.py (add a manual item) are yours to run; core/ + remote/ are agent-run.
 ```
 

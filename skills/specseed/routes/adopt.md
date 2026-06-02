@@ -8,7 +8,7 @@ Load `references/question-protocol.md`, `references/component-questions.md`, `re
 
 ## When fires
 
-Session-start reconnaissance (`SKILL.md`) case 3: **source files present, no `.specseed/`**. Or resume of an interrupted adopt (case 1: `session_state.md` exists, mode `adopt`).
+Session-start reconnaissance (`SKILL.md`) case 5: **source files present, no `.specseed/`**. Or resume of an interrupted adopt (case 3: `session_state.md` exists, mode `adopt`).
 
 ## Hard invariants (non-negotiable)
 
@@ -74,7 +74,11 @@ If stage 1 found `AGENTS.md` / `CLAUDE.md` / `.cursorrules` / `CONTRIBUTING.md` 
 2. **Confirm with the user** — "found these rules: <summary>. Keep them?"
 3. **State the diffs from the specseed way** so nothing surprises them: settled-doc soft-freeze contract, the issue-claim workflow, the per-tier status model, `spec_concern.md` escalation path (see `templates/CLAUDE_template.md`). Where their rules conflict with specseed's runtime contract, surface it and let them choose.
 
-These conventions feed the `## Project conventions` section of the `CLAUDE.md` specseed writes at stage 9 (merge protocol — never silently clobber their existing one).
+These conventions feed two places:
+- `## Project conventions` in the `CLAUDE.md` specseed writes at stage 9: build/test commands, folder conventions, branching, release process, release gates.
+- `.specseed/memory/repo/index.md`: durable repo-specific instructions that specseed and implementation agents must read every time. If a rule has bulky scenario detail, write a sibling file beside `index.md` and link it from the index with when-to-read guidance.
+
+Example split: "Maintain Software Verification and Validation Plan in `spec/...`" belongs in `repo/index.md`. Detailed SVVP update procedure belongs in `repo/verification.md`, linked from the index.
 
 If no agent-rules found → skip; specseed's `CLAUDE_template.md` supplies defaults.
 

@@ -434,7 +434,31 @@ Write the contents of `templates/CLAUDE_template.md` to the repo root as `CLAUDE
 - the bash one-liners if user has a different command preference;
 - the `## Project conventions` section — fill it with the project's folder structure, branching, versioning, release process, artifact storage, and release gates (this is the former `CONTRIBUTING.md` content, now folded in — **no separate `CONTRIBUTING.md` is written**). If the user has nothing specific on release gates, leave that line as a placeholder for them to fill later.
 
+For durable repo-specific custom instructions, use `.specseed/memory/repo/`, not `CLAUDE.md` bloat:
+- Always-needed rules → `.specseed/memory/repo/index.md`.
+- Scenario-specific details → sibling markdown files next to `index.md`, linked from the index with when-to-read notes.
+- Keep `CLAUDE.md` pointing agents to repo memory via the template's Initial reads section.
+
 (Merge protocol applies if `CLAUDE.md` already exists.)
+
+### Repo memory
+
+If the user gave durable custom instructions during bootstrap (for example "we also maintain a Software Verification and Validation Plan in `spec/...`; when X happens, do Y"), write them under `.specseed/memory/repo/`:
+- `.specseed/memory/repo/index.md` — always-read rules, short and structured.
+- `.specseed/memory/repo/<scenario>.md` — optional sidecar docs for conditional detail.
+
+Index format:
+```markdown
+# Repo Memory
+
+## Always read
+- <standing rule>
+
+## Scenario docs
+- [Verification](verification.md) — read when planning or changing verification work.
+```
+
+If no durable custom instructions exist, skip the file. Do not invent placeholder memory.
 
 ### Per-component CLAUDE.md (multi-component projects only)
 

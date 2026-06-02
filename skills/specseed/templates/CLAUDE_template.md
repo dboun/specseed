@@ -34,6 +34,7 @@ Folders are the authored source of truth; `tickets.json` / `issues.json` are the
 Always read first:
 1. `.specseed/spec/vision.md` — why this project exists
 2. The `## Project conventions` section below
+3. `.specseed/memory/repo/index.md` if it exists — repo-specific standing instructions. Read linked sibling files only when the index says they apply to the current issue.
 
 ## Pick + claim the next issue
 
