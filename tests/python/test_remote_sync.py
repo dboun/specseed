@@ -148,3 +148,183 @@ def test_write_md_and_read_text_round_trip(tmp_path):
     assert "ok: true" in text
     assert text.endswith("Body\n")
     assert rs._read_text(tmp_path / "missing.md") == "_not generated yet_"
+
+
+# --------------------------------------------------------------------------- #
+# change-request (CR) intake + relay — pure helpers + on-disk state, no network
+# --------------------------------------------------------------------------- #
+import change_requests as crmod  # noqa: E402
+
+
+class FakeRemote:
+    """Minimal stand-in for remote_config.Remote — records mutations, no network."""
+
+    def __init__(self, comments=None, issues=None, user=None):
+        self._comments = comments or []
+        self._issues = {i["number"]: i for i in (issues or [])}
+        self.user = user or {"login": "owner"}
+        self.posted = []          # (number, body)
+        self.labels = {}          # number -> labels
+        self.closed = []          # (number, planned)
+        self.reopened = []        # number
+
+    def comments_since(self, since):
+        return list(self._comments)
+
+    def comment(self, n, body):
+        self.posted.append((n, body))
+
+    def whoami(self):
+        return self.user
+
+    def list_open_issues(self):
+        return list(self._issues.values())
+
+    def get_issue(self, n):
+        return self._issues.get(n)
+
+    def set_labels(self, n, labels):
+        self.labels[n] = labels
+
+    def close_issue(self, n, planned=True):
+        self.closed.append((n, planned))
+
+    def reopen_issue(self, n):
+        self.reopened.append(n)
+
+
+def _cr_root(tmp_path):
+    (tmp_path / ".specseed").mkdir(parents=True)
+    return tmp_path
+
+
+def test_is_cr_issue_label_routing():
+    assert rs.is_cr_issue({"labels": ["change-request", "bug"]}) is True
+    assert rs.is_cr_issue({"labels": ["bug"]}) is False
+    assert rs.is_cr_issue({"labels": []}) is False
+    assert rs.is_cr_issue({}) is False
+
+
+def test_cr_status_label_mapping():
+    assert rs.cr_status_label("open") == "cr:open"
+    assert rs.cr_status_label("respec_complete") == "cr:open"
+    assert rs.cr_status_label("done") == "cr:done"
+    assert rs.cr_status_label("rejected") == "cr:rejected"
+    assert rs.cr_status_label("weird") == "cr:open"
+
+
+def test_bot_comment_marker_round_trip():
+    tagged = rs._bot("hello world")
+    assert rs.is_bot_comment(tagged) is True
+    assert "hello world" in tagged
+    assert rs.is_bot_comment("a normal human comment") is False
+
+
+def test_pick_cr_comments_filters_cursor_author_and_bot():
+    cursor = "2026-06-02T10:00:00Z"
+    comments = [
+        {"author": "alice", "body": "old", "created_at": "2026-06-02T09:00:00Z"},
+        {"author": "alice", "body": "please change X", "created_at": "2026-06-02T11:00:00Z"},
+        {"author": "owner", "body": rs._bot("agent reply"), "created_at": "2026-06-02T11:30:00Z"},
+        {"author": "bob", "body": "not allowed", "created_at": "2026-06-02T11:45:00Z"},
+    ]
+    texts, newest = rs.pick_cr_comments(comments, cursor, ["alice"])
+    assert texts == ["please change X"]            # cursor + author + bot all filtered
+    assert newest == "2026-06-02T11:45:00Z"        # high-water mark over ALL comments
+
+
+def test_pick_cr_comments_empty_allowlist_accepts_any_author():
+    texts, _ = rs.pick_cr_comments(
+        [{"author": "whoever", "body": "hi", "created_at": "2026-06-02T11:00:00Z"}],
+        None, [])
+    assert texts == ["hi"]
+
+
+def test_ingest_cr_issue_creates_local_cr_and_maps_it(tmp_path):
+    root = _cr_root(tmp_path)
+    cfg = {"map": {}, "permanent": {}, "pull_cursor": None}
+    remote = FakeRemote(issues=[{
+        "number": 7, "title": "[bug] please add export", "labels": ["change-request"],
+        "body": "we need CSV export", "state": "open", "raw": {"created_at": "2026-06-02T08:00:00Z"},
+    }])
+
+    ingested = rs.sync_pull(root, cfg, remote, log=lambda m: None)
+
+    assert ingested == [(7, "CR-0001")]
+    cr = crmod.load_cr(root, "CR-0001")
+    assert cr["status"] == "open" and cr["turn"] == "agent"
+    assert cr["remote_issue"] == 7
+    assert "CSV export" in cr["request"]
+    assert cfg["map"]["CR-0001"]["n"] == 7        # mapped → never re-ingested
+    assert remote.posted and remote.posted[0][0] == 7
+    assert rs.is_bot_comment(remote.posted[0][1])  # filing note is bot-tagged
+
+
+def test_sync_cr_comments_stashes_comment_and_flips_turn(tmp_path):
+    root = _cr_root(tmp_path)
+    cr_id = crmod.create_cr(root, "Title", "the request", remote_issue=42)
+    crmod.advance_cursor(root, cr_id, "2026-06-02T10:00:00Z")
+    crmod.set_turn(root, cr_id, "human")          # waiting; a comment should re-arm it
+
+    remote = FakeRemote(comments=[
+        {"issue_number": 42, "author": "alice", "body": "make it blue",
+         "created_at": "2026-06-02T11:00:00Z"},
+        {"issue_number": 42, "author": "owner", "body": rs._bot("prev reply"),
+         "created_at": "2026-06-02T11:30:00Z"},
+        {"issue_number": 99, "author": "alice", "body": "other thread",
+         "created_at": "2026-06-02T12:00:00Z"},
+    ])
+    touched = rs.sync_cr_comments(root, {"allowlist": ["alice"]}, remote, log=lambda m: None)
+
+    assert touched == [cr_id]
+    assert crmod.read_pending_comment(root, cr_id) == "make it blue"
+    cr = crmod.load_cr(root, cr_id)
+    assert cr["turn"] == "agent"
+    assert cr["comment_cursor"] == "2026-06-02T11:30:00Z"   # past our own bot reply
+
+
+def test_sync_cr_comments_skips_terminal_and_local_only(tmp_path):
+    root = _cr_root(tmp_path)
+    done = crmod.create_cr(root, "Done one", "x", remote_issue=1)
+    crmod.set_status(root, done, "done", turn=None)
+    crmod.create_cr(root, "Local only", "y")       # no remote_issue
+    remote = FakeRemote(comments=[
+        {"issue_number": 1, "author": "alice", "body": "late comment",
+         "created_at": "2026-06-02T11:00:00Z"}])
+
+    touched = rs.sync_cr_comments(root, {"allowlist": ["alice"]}, remote, log=lambda m: None)
+    assert touched == []                            # terminal skipped, local-only skipped
+
+
+def test_reflect_cr_state_labels_closes_and_heals(tmp_path):
+    root = _cr_root(tmp_path)
+    done = crmod.create_cr(root, "D", "x", remote_issue=1)
+    crmod.set_status(root, done, "done", turn=None)
+    live = crmod.create_cr(root, "L", "y", remote_issue=2)   # open, but issue hand-closed
+
+    remote = FakeRemote(issues=[
+        {"number": 1, "labels": ["change-request", "cr:open"], "state": "open"},
+        {"number": 2, "labels": ["change-request", "cr:open"], "state": "closed"},
+    ])
+    rs.reflect_cr_state(root, {}, remote, log=lambda m: None)
+
+    assert remote.labels[1] == ["change-request", "cr:done"]
+    assert remote.closed == [(1, True)]             # done → closed (planned)
+    assert remote.reopened == [2]                   # live CR → reopened
+    assert any(rs.is_bot_comment(b) for n, b in remote.posted if n == 2)
+
+
+def test_post_cr_reply_tags_bot_and_targets_issue(tmp_path):
+    root = _cr_root(tmp_path)
+    cr_id = crmod.create_cr(root, "T", "x", remote_issue=55)
+    remote = FakeRemote()
+
+    assert rs.post_cr_reply(root, {}, remote, cr_id, "my drafted plan") is True
+    assert remote.posted[0][0] == 55
+    assert rs.is_bot_comment(remote.posted[0][1])
+    assert "my drafted plan" in remote.posted[0][1]
+
+    # empty reply or local-only CR → no post
+    assert rs.post_cr_reply(root, {}, remote, cr_id, "   ") is False
+    local = crmod.create_cr(root, "L", "y")
+    assert rs.post_cr_reply(root, {}, remote, local, "hi") is False

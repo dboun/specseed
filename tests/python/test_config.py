@@ -122,3 +122,91 @@ def test_render_claude_review_off():
     cfg["review"]["enabled"] = False
     out = config.render_claude(cfg)
     assert "Code review is OFF" in out
+
+
+# --------------------------------------------------------------------------- #
+# respec agent function (CR conductor)
+# --------------------------------------------------------------------------- #
+def test_respec_function_parses_and_validates():
+    cfg = config.default_config()
+    assert "respec" in cfg["runner"]["agents"]
+    assert config.validate(cfg) == []
+    # default respec chain = opus/high in BOTH buckets (no easy/hard split)
+    assert config.agent_main(cfg, "respec", "hard")["model"] == "opus"
+    assert config.agent_main(cfg, "respec", "hard")["effort"] == "high"
+    assert config.agent_main(cfg, "respec", "easy")["model"] == "opus"
+
+
+def test_respec_absent_loads_and_gets_default_chain():
+    """Back-compat: an agents matrix with no `respec` key still validates, and
+    agent_chain fills the default opus/high chain (runner reads the hard bucket)."""
+    old = config.default_config()
+    del old["runner"]["agents"]["respec"]
+    assert config.validate(old) == []
+    chain = config.agent_chain(old, "respec", "hard")
+    assert chain[0]["provider"] == "claude"
+    assert chain[0]["model"] == "opus"
+
+
+def test_respec_bad_spec_rejected():
+    bad = config.default_config()
+    bad["runner"]["agents"]["respec"]["hard"][0]["provider"] = "gpt"
+    errs = config.validate(bad)
+    assert any("['respec']['hard'][0].provider must be one of" in e for e in errs)
+
+
+def test_respec_unknown_function_still_rejected():
+    bad = config.default_config()
+    bad["runner"]["agents"]["bogus"] = {"easy": [], "hard": []}
+    errs = config.validate(bad)
+    assert any("unknown function 'bogus'" in e for e in errs)
+
+
+# --------------------------------------------------------------------------- #
+# cr block
+# --------------------------------------------------------------------------- #
+def test_cr_block_defaults_and_valid():
+    cfg = config.default_config()
+    assert cfg["cr"] == {"enabled": False, "label": "change-request",
+                         "branch_prefix": "cr/"}
+    assert config.validate(cfg) == []
+
+
+def test_cr_config_fills_defaults_when_absent():
+    """Back-compat: a config.json with no `cr` block loads + defaults apply."""
+    old = config.default_config()
+    del old["cr"]
+    assert config.validate(old) == []
+    cc = config.cr_config(old)
+    assert cc["enabled"] is False
+    assert cc["label"] == "change-request"
+    assert cc["branch_prefix"] == "cr/"
+
+
+def test_cr_config_merges_partial_override():
+    cc = config.cr_config({"cr": {"enabled": True, "label": "spec-change"}})
+    assert cc["enabled"] is True
+    assert cc["label"] == "spec-change"
+    assert cc["branch_prefix"] == "cr/"          # default preserved
+
+
+def test_validate_rejects_bad_cr_values():
+    bad = config.default_config()
+    bad["cr"]["enabled"] = "yes"                  # not a bool
+    bad["cr"]["label"] = ""                       # empty
+    bad["cr"]["branch_prefix"] = "cr"             # no trailing /
+    errs = config.validate(bad)
+    assert any("cr.enabled must be a boolean" in e for e in errs)
+    assert any("cr.label must be a non-empty string" in e for e in errs)
+    assert any("cr.branch_prefix must be a non-empty string ending with '/'" in e
+               for e in errs)
+
+
+def test_render_claude_cr_line_only_when_enabled():
+    off = config.render_claude(config.default_config())
+    assert "Spec-change requests" not in off
+    cfg = config.default_config()
+    cfg["cr"]["enabled"] = True
+    on = config.render_claude(cfg)
+    assert "Spec-change requests" in on
+    assert "CR-NNNN" in on

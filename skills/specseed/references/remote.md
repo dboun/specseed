@@ -177,11 +177,15 @@ dispatches, and replies with the result as a comment. Fixed verb set — unknown
 | `resume` | leave idle, resume claiming work |
 | `kill` | stop the current `claude` run immediately (SIGTERM the child) |
 | `claim-next` | claim + run the next ready issue now |
-| `adapt <text>` | run `claude` headless with `/specseed adapt <text>` |
-| `plan-next` | run `claude` headless with `/specseed plan-next` |
+| `adapt <text>` | run `claude` headless in adapt mode (natural-language prompt, not a slash) |
+| `plan-next` | run `claude` headless in plan-next mode |
 | `approvals` | reply: list of pending HITL gates (from `approvals.json`) |
-| `approve <ID> [opt]` | resolve a parked HITL gate — run `claude` headless with `/specseed approve <ID> <opt>` |
-| `reject <ID> <note>` | reject a parked HITL gate — run `claude` headless with `/specseed reject <ID> <note>` |
+| `approve <ID> [opt]` | resolve a parked HITL gate — run `claude` headless in approve mode |
+| `reject <ID> <note>` | reject a parked HITL gate — run `claude` headless in approve mode |
+
+(Headless `claude -p` does NOT expose user-invoked slash commands, so the runner phrases
+these as a natural-language task that auto-triggers the specseed skill — see
+`agents_runner.control_prompt`. CRs use the same approach via `relay_prompt`.)
 
 The CONTROL issue **top post** (written at init) is a short cheatsheet of exactly these
 verbs + the pause/stop story. Authorization: comment author ∈ allowlist. Sudo /
@@ -274,8 +278,8 @@ Local `.specseed/` stays ground truth — the mirror is just the channel.
   the `approvals` CONTROL verb anytime for the full pending list.
 - **Resolve (consume reply).** The human comments `approve <ID> <opt>` or
   `reject <ID> <note>` on the **CONTROL** issue. `remote_control` dispatches it as a
-  work verb; the runner runs `/specseed approve <ID> …` headless (the same `approve`
-  route a local human uses — `routes/approve.md`). The route appends a
+  work verb; the runner runs the `approve` route headless (natural-language prompt, the
+  same `approve` route a local human uses — `routes/approve.md`). The route appends a
   `## Resolved` marker to `approval.md`, flips the issue (`todo` to resume / `wont_do` /
   `blocked`), and re-renders. The runner then re-pushes so the label/state update
   projects back.

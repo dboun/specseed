@@ -78,6 +78,42 @@ def test_status_reply_reads_local_json(tmp_path):
     assert "ready issues: 2" in out
 
 
+def test_cr_rollup_summarizes_live_crs():
+    assert ctl._cr_rollup([]) is None
+    assert ctl._cr_rollup([{"id": "CR-1", "status": "done"}]) is None   # terminal only
+    line = ctl._cr_rollup([
+        {"id": "CR-1", "status": "open", "turn": "human"},
+        {"id": "CR-2", "status": "open", "turn": "agent"},
+        {"id": "CR-3", "status": "respec_complete", "turn": None},
+        {"id": "CR-4", "status": "rejected"},          # excluded (terminal)
+    ])
+    assert line.startswith("CRs: 3 open (")
+    assert "CR-1 awaiting you" in line
+    assert "CR-2 in progress" in line
+    assert "CR-3 regenerating" in line
+    assert "CR-4" not in line
+
+
+def test_crs_reply_and_status_rollup_read_disk(tmp_path):
+    import change_requests as crmod
+    root = _root(tmp_path)
+    cr_id = crmod.create_cr(root, "Add export", "need CSV", remote_issue=12)
+    crmod.set_turn(root, cr_id, "human")
+
+    crs_out = ctl._crs_reply(root)
+    assert "**crs**" in crs_out
+    assert "`CR-0001` Add export — open" in crs_out
+    assert "turn: human" in crs_out
+    assert "(#12)" in crs_out
+
+    # the status reply now carries a CR roll-up line
+    status_out = ctl._status_reply(root, {})
+    assert "CRs: 1 open (CR-0001 awaiting you)" in status_out
+
+    # no CRs → graceful
+    assert "none" in ctl._crs_reply(tmp_path / "nope")
+
+
 def test_approvals_reply_reads_pending_records(tmp_path):
     root = _root(tmp_path)
     pm = root / ".specseed" / "project_management"

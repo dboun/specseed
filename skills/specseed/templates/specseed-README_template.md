@@ -12,6 +12,8 @@ PRUNE the marked blocks:
   <!-- MIRROR-ONLY --> ... <!-- /MIRROR-ONLY -->   keep ONLY if a github/gitlab mirror is configured.
                                                    For local-only, DELETE every MIRROR-ONLY block
                                                    (what remains is the correct local-only manual).
+  <!-- CR-ONLY --> ... <!-- /CR-ONLY -->           keep ONLY if spec-change requests are on
+                                                   (config.json cr.enabled = true). Else DELETE the block.
 Delete THIS comment block after filling.
 
 Doc style: plain English, brief, no em-dashes (humanizer). This is a human-read manual, not a spec.
@@ -167,6 +169,45 @@ them by hand desyncs the traceability the agents rely on).
 If an agent thinks a settled spec doc is wrong mid-build, it stops, writes a
 `spec_concern.md` next to its issue, and tells you to run `/specseed adapt`. It does not
 edit the spec itself.
+
+<!-- CR-ONLY -->
+## Spec-change requests (CRs)
+
+Sometimes the thing you want changed is the **spec**, not the work. A spec-change request
+(CR) is how you ask for that. It is not a normal ticket: a CR does not satisfy a
+requirement, it rewrites them and then regenerates the work below.
+
+**File one:**
+<!-- MIRROR-ONLY -->
+- Remote: open an issue labeled `change-request`. Title it with what you want changed; put
+  the request in the body. The runner picks it up.
+<!-- /MIRROR-ONLY -->
+- Local: `python .specseed/scripts/add_change_request.py` (prompts for a title and the
+  request text).
+
+**What happens next.** An urgent CR **pauses sprint work** until it is resolved. The runner
+stops claiming new issues (it finishes whatever is mid-flight first) and switches to handling
+the CR on its own isolated branch.
+
+<!-- MIRROR-ONLY -->
+The conversation happens **on that CR's own issue**. The system asks clarifying questions and
+posts a drafted plan there, as comments. **Nothing changes until you reply approving it.**
+Just comment back like you would to a person.
+
+- **Approve:** comment your approval on the CR issue (for example "approved"). Only then does
+  the system regenerate the spec and the work, merge the change, and resume sprint work. The
+  new urgent work jumps to the top of the queue.
+- **Reject:** comment a rejection. The CR's branch is discarded and nothing in the spec
+  changes.
+
+**Where to see status:** the CR's own issue (you get notified on new comments), plus the
+CONTROL issue: `status` rolls up open CRs ("CRs: 1 open, CR-0001 awaiting you") and `crs`
+lists them all with their state.
+<!-- /MIRROR-ONLY -->
+
+The system never proceeds through a spec change on its own. If anything is unclear, or the
+change would invalidate work already done, it stops and asks rather than guessing.
+<!-- /CR-ONLY -->
 
 **Reusing your setup across repos.** `.specseed/memory/config.json` holds only "how you
 work" (gates, git workflow, backend choice, runner knobs) — no project-specific data — so

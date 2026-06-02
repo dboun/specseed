@@ -58,13 +58,24 @@ PROVIDERS = (None, "github", "gitlab")
 
 # --------------------------------------------------------------------------- #
 # multi-agent runner taxonomy.
-#   FUNCTIONS   — the three independently-configurable runner jobs.
+#   FUNCTIONS        — the REQUIRED runner jobs (every config must define these).
+#   OPTIONAL_FUNCTIONS — extra jobs that may be absent (back-compat); validated
+#     only when present, filled from default_agents() otherwise. `respec` (the CR
+#     conductor) lives here so an old config with no `respec` key still loads.
+#   ALL_FUNCTIONS    — the full set of known function keys (required + optional).
 #   DIFFICULTIES — each function splits by issue difficulty (easy/hard).
 #   AGENT_PROVIDERS — the coding-agent CLIs the runner can drive.
 # A "spec" = {provider, config_dir, model, effort}; a list of specs is an ordered
 # fallback chain (first = main, rest tried on failure).
+#
+# `respec` (CR conductor) has NO real easy/hard split — a spec-change request is
+# not difficulty-graded. To reuse the same matrix machinery (and the same
+# `agent_chain` accessor + validator), both buckets hold the SAME single chain;
+# the runner always reads the `hard` bucket (`agent_chain(cfg, "respec", "hard")`).
 # --------------------------------------------------------------------------- #
 FUNCTIONS = ("implement", "review", "qa")
+OPTIONAL_FUNCTIONS = ("respec",)
+ALL_FUNCTIONS = FUNCTIONS + OPTIONAL_FUNCTIONS
 DIFFICULTIES = ("easy", "hard")
 AGENT_PROVIDERS = ("claude", "codex")
 CLAUDE_MODEL_ALIASES = ("opus", "sonnet", "haiku")
@@ -113,10 +124,13 @@ def default_agents():
         return {"provider": "claude", "config_dir": None, "model": model, "effort": effort}
     hard = lambda m="opus": [spec(m, "high")]
     easy = lambda m="sonnet": [spec(m, "medium")]
+    # respec: no easy/hard split — both buckets hold the SAME opus/high chain.
+    respec = lambda: [spec("opus", "high")]
     return {
         "implement": {"easy": easy(), "hard": hard()},
         "review":    {"easy": easy(), "hard": hard()},
         "qa":        {"easy": easy(), "hard": [spec("sonnet", "high")]},
+        "respec":    {"easy": respec(), "hard": respec()},
     }
 
 
@@ -151,6 +165,16 @@ DEFAULT_QA = {
 }
 QA_MODES = ("suggest", "all", "off")
 
+# spec-change requests (CR-NNNN). OFF by default — the whole feature (runner respec
+# mode + remote `change-request` intake) is inert unless `enabled:true`. `label` is the
+# remote issue label that marks a CR; `branch_prefix` names the isolated respec branch
+# (`cr/CR-0001`). See routes/change-request.md + references/work-breakdown.md.
+DEFAULT_CR = {
+    "enabled": False,
+    "label": "change-request",
+    "branch_prefix": "cr/",
+}
+
 
 def default_runner():
     """Fresh runner block (no shared nested mutables)."""
@@ -172,6 +196,7 @@ def default_config():
         "runner": default_runner(),
         "review": _deep_copy_review(),
         "qa": dict(DEFAULT_QA),
+        "cr": dict(DEFAULT_CR),
     }
 
 
@@ -198,6 +223,14 @@ def review_config(cfg):
 def qa_config(cfg):
     base = dict(DEFAULT_QA)
     base.update((cfg or {}).get("qa") or {})
+    return base
+
+
+def cr_config(cfg):
+    """The `cr` block, with defaults filled for any missing key (back-compat: an
+    old config.json with no `cr` block loads + gets `enabled:false`)."""
+    base = dict(DEFAULT_CR)
+    base.update((cfg or {}).get("cr") or {})
     return base
 
 
@@ -311,9 +344,15 @@ def _validate_agents(agents):
     errs = []
     if not isinstance(agents, dict):
         return ["runner.agents missing or not an object"]
+    # Required functions must be present; optional ones (e.g. `respec`) are validated
+    # only when present (absent → filled from default_agents() by agent_chain).
     for fn in FUNCTIONS:
         if fn not in agents:
             errs.append(f"runner.agents missing function '{fn}'")
+    for fn in agents:
+        if fn not in ALL_FUNCTIONS:
+            errs.append(f"runner.agents has unknown function '{fn}' "
+                        f"(expected {' | '.join(ALL_FUNCTIONS)})")
             continue
         buckets = agents.get(fn)
         if not isinstance(buckets, dict):
@@ -337,10 +376,6 @@ def _validate_agents(agents):
                 cd = spec.get("config_dir", None)
                 if cd is not None and not isinstance(cd, str):
                     errs.append(f"{where}.config_dir must be null or a string")
-    for fn in agents:
-        if fn not in FUNCTIONS:
-            errs.append(f"runner.agents has unknown function '{fn}' "
-                        f"(expected {' | '.join(FUNCTIONS)})")
     return errs
 
 
@@ -439,6 +474,22 @@ def validate(cfg):
             th = qa.get("effort_threshold_hours", 0)
             if not isinstance(th, (int, float)) or isinstance(th, bool) or th < 0:
                 errs.append("qa.effort_threshold_hours must be a non-negative number")
+
+    # cr is an OPTIONAL block — absent = use defaults (back-compat with configs
+    # written before spec-change requests existed). Validate only when present.
+    cr = cfg.get("cr")
+    if cr is not None:
+        if not isinstance(cr, dict):
+            errs.append("cr block must be an object")
+        else:
+            if not isinstance(cr.get("enabled", False), bool):
+                errs.append("cr.enabled must be a boolean")
+            label = cr.get("label", DEFAULT_CR["label"])
+            if not isinstance(label, str) or not label:
+                errs.append("cr.label must be a non-empty string")
+            prefix = cr.get("branch_prefix", DEFAULT_CR["branch_prefix"])
+            if not isinstance(prefix, str) or not prefix or not prefix.endswith("/"):
+                errs.append("cr.branch_prefix must be a non-empty string ending with '/'")
     return errs
 
 
@@ -516,6 +567,14 @@ def render_claude(cfg):
              "edits while waiting on a run-action.")
     L.append("")
     L.append(_render_completion_gates(cfg))
+    if cr_config(cfg).get("enabled"):
+        L.append("### Spec-change requests")
+        L.append("")
+        L.append("Spec-change requests (`CR-NNNN`) are handled by the runner via the "
+                 "change-request route. Do NOT action one yourself: if you spot a request to "
+                 "change the spec, surface it (`/specseed adapt`) rather than editing settled "
+                 "docs or filing work.")
+        L.append("")
     L.append(_render_git(git))
     return "\n".join(L) + "\n"
 

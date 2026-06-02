@@ -143,3 +143,186 @@ def test_path_helpers_and_status_snapshot(tmp_path):
     assert agents_runner._pm(root) == root / ".specseed" / "project_management"
     assert agents_runner._retry_path(root) == root / ".specseed" / "memory" / "runner.retry"
     assert agents_runner._statuses(root) == {"I-1": "todo", "I-2": "in_review"}
+
+
+# --------------------------------------------------------------------------- #
+# CR respec mode — pure decision helpers (no git, no claude shell-out).
+# --------------------------------------------------------------------------- #
+def _cr(**over):
+    base = {"id": "CR-0001", "status": "open", "turn": "agent", "branch": None,
+            "session_id": None, "created_at": "2026-06-02T10:00:00Z"}
+    base.update(over)
+    return base
+
+
+def test_cr_next_action_state_table():
+    f = agents_runner.cr_next_action
+    # open + no branch yet → enter respec mode (create branch)
+    assert f(_cr(status="open", branch=None)) == "branch"
+    # open + branch + a queued human comment / first turn → relay
+    assert f(_cr(status="open", branch="cr/CR-0001", turn="agent")) == "relay"
+    # open + branch + waiting on the user (human or null) → wait
+    assert f(_cr(status="open", branch="cr/CR-0001", turn="human")) == "wait"
+    assert f(_cr(status="open", branch="cr/CR-0001", turn=None)) == "wait"
+    # conductor finished regenerating → merge
+    assert f(_cr(status="respec_complete", branch="cr/CR-0001")) == "merge"
+    # rejected with a branch still present → drop it; without → nothing left
+    assert f(_cr(status="rejected", branch="cr/CR-0001")) == "drop"
+    assert f(_cr(status="rejected", branch=None)) == "none"
+    # terminal / unknown → none
+    assert f(_cr(status="done", branch=None)) == "none"
+
+
+def test_select_active_cr_is_fifo_and_serial():
+    # list_crs yields FIFO order; pick the FIRST needing action.
+    crs = [
+        _cr(id="CR-0001", status="done", branch=None),            # terminal → skip
+        _cr(id="CR-0002", status="open", branch=None),            # first live one
+        _cr(id="CR-0003", status="open", branch=None),            # later → not touched yet
+    ]
+    assert agents_runner.select_active_cr(crs)["id"] == "CR-0002"
+
+    # a rejected CR whose branch still needs deleting IS active.
+    crs2 = [_cr(id="CR-0001", status="rejected", branch="cr/CR-0001")]
+    assert agents_runner.select_active_cr(crs2)["id"] == "CR-0001"
+
+    # nothing live → None
+    assert agents_runner.select_active_cr(
+        [_cr(status="done", branch=None), _cr(status="rejected", branch=None)]) is None
+    assert agents_runner.select_active_cr([]) is None
+
+
+def test_relay_prompt_embeds_cr_id_and_comment():
+    p0 = agents_runner.relay_prompt("CR-0007")
+    assert "CR-0007" in p0
+    assert ".specseed/change_requests/CR-0007/cr.md" in p0
+    assert "/specseed" not in p0                # natural language, not a slash command
+    p1 = agents_runner.relay_prompt("CR-0007", comment="please also bump the timeout")
+    assert "CR-0007" in p1
+    assert "please also bump the timeout" in p1
+    assert "New message from the user" in p1
+
+
+def test_control_prompt_is_natural_language_not_slash():
+    # CONTROL work-verbs must NOT use a `/specseed …` slash form (unavailable in
+    # `claude -p` headless mode); they describe the task so the skill auto-triggers.
+    for verb in ("adapt", "plan-next", "approve", "reject"):
+        p = agents_runner.control_prompt(verb)
+        assert "/specseed" not in p
+        assert "specseed skill" in p
+    # mode routing + argument carry-through
+    assert "adapt mode" in agents_runner.control_prompt("adapt", "add OAuth")
+    assert "add OAuth" in agents_runner.control_prompt("adapt", "add OAuth")
+    assert "plan-next mode" in agents_runner.control_prompt("plan-next")
+    # approve/reject both route to approve mode and carry the ID
+    ap = agents_runner.control_prompt("approve", "I-12")
+    assert "approve mode" in ap and "I-12" in ap and "Approve" in ap
+    rj = agents_runner.control_prompt("reject", "I-12 not safe")
+    assert "approve mode" in rj and "I-12 not safe" in rj and "Reject" in rj
+
+
+def test_build_relay_cmd_claude_resume_and_capture():
+    runner = {"allowed_tools": ["Read", "Edit"], "max_turns": 50}
+    spec = {"provider": "claude", "config_dir": "/tmp/cc", "model": "opus", "effort": "high"}
+
+    # first turn: no session id → capture only, no --resume
+    argv, env = agents_runner.build_relay_cmd(spec, runner, session_id=None)
+    assert argv[:2] == ["claude", "-p"]
+    assert argv[argv.index("--output-format") + 1] == "json"
+    assert "--resume" not in argv
+    assert "--bare" not in argv
+    assert env == {"CLAUDE_CONFIG_DIR": "/tmp/cc"}
+
+    # later turn: session id present → --resume <id>
+    argv2, _ = agents_runner.build_relay_cmd(spec, runner, session_id="abc-123")
+    assert argv2[argv2.index("--resume") + 1] == "abc-123"
+    assert argv2[argv2.index("--output-format") + 1] == "json"
+
+
+def test_build_relay_cmd_codex_resume_subcommand():
+    runner = {"allowed_tools": ["Read"], "max_turns": 9}
+    spec = {"provider": "codex", "config_dir": None, "model": "gpt-5.5", "effort": "high"}
+
+    argv, env = agents_runner.build_relay_cmd(spec, runner, session_id=None)
+    assert argv[:2] == ["codex", "exec"]
+    assert "resume" not in argv
+    assert "--json" in argv
+    assert argv[-1] == "-"                       # prompt piped on stdin
+    assert env == {}
+
+    argv2, _ = agents_runner.build_relay_cmd(spec, runner, session_id="thr-9")
+    assert argv2[:4] == ["codex", "exec", "resume", "thr-9"]
+    assert "--json" in argv2
+    assert argv2[-1] == "-"
+
+
+def test_parse_session_id_claude_and_codex():
+    # claude: a result JSON object with .session_id (scan from the last line)
+    claude_out = '{"type":"result","session_id":"uuid-1","result":"ok"}'
+    assert agents_runner.parse_session_id(claude_out, "claude") == "uuid-1"
+    # extra log noise before the JSON line is tolerated
+    noisy = "starting...\n" + claude_out
+    assert agents_runner.parse_session_id(noisy, "claude") == "uuid-1"
+    # codex: first thread.started event in the JSONL stream
+    codex_out = ('{"type":"thread.started","thread_id":"thr-7"}\n'
+                 '{"type":"item.completed"}\n')
+    assert agents_runner.parse_session_id(codex_out, "codex") == "thr-7"
+    # nothing parseable → None
+    assert agents_runner.parse_session_id("no json here", "claude") is None
+    assert agents_runner.parse_session_id("", "codex") is None
+
+
+def test_parse_reply_claude_and_codex():
+    # claude: the .result field of the result object (last JSON line)
+    claude_out = '{"type":"result","session_id":"uuid-1","result":"Here is my answer."}'
+    assert agents_runner.parse_reply(claude_out, "claude") == "Here is my answer."
+    noisy = "warming up...\n" + claude_out
+    assert agents_runner.parse_reply(noisy, "claude") == "Here is my answer."
+    # codex: the LAST agent_message text event in the stream
+    codex_out = ('{"type":"thread.started","thread_id":"thr-7"}\n'
+                 '{"type":"item.completed","item":{"type":"agent_message","text":"first"}}\n'
+                 '{"type":"item.completed","item":{"type":"agent_message","text":"final"}}\n')
+    assert agents_runner.parse_reply(codex_out, "codex") == "final"
+    # nothing usable → None
+    assert agents_runner.parse_reply("no json", "claude") is None
+    assert agents_runner.parse_reply("", "codex") is None
+
+
+def test_respec_chain_falls_back_when_config_absent():
+    # no config.cr / no runner.agents.respec → built-in opus/high default
+    chain = agents_runner.respec_chain({})
+    assert chain == agents_runner.DEFAULT_RESPEC_CHAIN
+    assert chain[0]["provider"] == "claude"
+
+    # explicit respec function in the matrix is honored
+    pcfg = {"runner": {"agents": {"respec": {
+        "easy": [{"provider": "codex", "config_dir": None, "model": "x", "effort": "low"}],
+        "hard": [{"provider": "claude", "config_dir": None, "model": "opus", "effort": "high"}],
+    }}}}
+    assert agents_runner.respec_chain(pcfg)[0]["provider"] == "claude"
+
+
+def test_cr_enabled_and_branch_helpers():
+    assert agents_runner.cr_enabled({}) is False
+    assert agents_runner.cr_enabled({"cr": {"enabled": False}}) is False
+    assert agents_runner.cr_enabled({"cr": {"enabled": True}}) is True
+    assert agents_runner.cr_branch_prefix({}) == "cr/"
+    assert agents_runner.cr_branch_prefix({"cr": {"branch_prefix": "spec/"}}) == "spec/"
+    assert agents_runner.cr_branch_name("CR-0003") == "cr/CR-0003"
+    assert agents_runner.cr_branch_name("CR-0003", "spec/") == "spec/CR-0003"
+    assert agents_runner.cr_integration_branch({}) == "dev"
+    assert agents_runner.cr_integration_branch(
+        {"git": {"integration_branch": "develop"}}) == "develop"
+
+
+def test_cr_step_off_by_default(monkeypatch, tmp_path):
+    root = _specseed_root(tmp_path)
+    # no config at all → CR step inert (returns False, claiming proceeds)
+    monkeypatch.setattr(agents_runner.cfgmod, "load_config", lambda r: None)
+    assert agents_runner.cr_step(root, {}, None, lambda m: None) is False
+
+    # enabled but no CRs on disk → still False
+    monkeypatch.setattr(agents_runner.cfgmod, "load_config",
+                        lambda r: {"cr": {"enabled": True}})
+    monkeypatch.setattr(agents_runner.change_requests, "list_crs", lambda r: [])
+    assert agents_runner.cr_step(root, {}, None, lambda m: None) is False

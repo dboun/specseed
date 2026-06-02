@@ -26,8 +26,21 @@ from pathlib import Path
 
 import remote_config as rc
 
+# the CR entity lives in core/; reuse its pure I/O (folders = truth)
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "core"))
+import change_requests as crmod  # noqa: E402
+
 PM = lambda root: rc.find_root(root) / ".specseed" / "project_management"
 SPEC = lambda root: rc.find_root(root) / ".specseed" / "spec"
+
+# --------------------------------------------------------------------------- #
+# change-request (CR) intake + relay constants
+# --------------------------------------------------------------------------- #
+CR_LABEL = "change-request"           # the intake label a CR issue carries
+# Bot comments on a CR issue are tagged with this (invisible) marker so the
+# comment-ingest never feeds the agent's own replies back as a user turn — the PAT
+# owner is usually allowlisted, so an author check alone would not catch them.
+CR_BOT_MARKER = "<!-- specseed:cr -->"
 
 
 # --------------------------------------------------------------------------- #
@@ -264,6 +277,13 @@ def _next_id(root, prefix):
     return f"{prefix}-{mx + 1:04d}"
 
 
+def is_cr_issue(iss):
+    """A brand-new issue is a CHANGE REQUEST (not a bug) iff it carries the
+    `change-request` intake label (decision #3). Pure — `iss` is a normalized issue
+    dict (labels already a list of strings)."""
+    return CR_LABEL in (iss.get("labels") or [])
+
+
 def sync_pull(root, cfg, remote, dry=False, log=print):
     known = _known_numbers(cfg)
     cursor = cfg.get("pull_cursor")
@@ -281,6 +301,11 @@ def sync_pull(root, cfg, remote, dry=False, log=print):
         created = (iss.get("raw") or {}).get("created_at", "")
         if cursor and created and created <= cursor:
             continue
+        if is_cr_issue(iss):                          # CR, NOT a bug — feed adapt, not work
+            cr_id = _ingest_cr_issue(root, cfg, remote, iss, dry, log)
+            if cr_id:
+                ingested.append((n, cr_id))
+            continue
         ticket_id, issue_id = _next_id(root, "PROJ"), _next_id(root, "BUG")
         log(f"ingest #{n} -> {ticket_id} / {issue_id} (draft)")
         if dry:
@@ -294,6 +319,25 @@ def sync_pull(root, cfg, remote, dry=False, log=print):
     if ingested and not dry:
         cfg["pull_cursor"] = rc.now_iso()
     return ingested
+
+
+def _ingest_cr_issue(root, cfg, remote, iss, dry, log):
+    """A new `change-request`-labeled issue → a local CR-NNNN (ground truth) mapped to
+    this issue. NO ticket/issue is created — an approved CR drives `adapt`. Returns the
+    new CR id (None on dry-run)."""
+    n = iss["number"]
+    title = re.sub(r"^\[[^\]]+\]\s*", "", iss["title"] or "Untitled")
+    body = (iss.get("body") or "").strip()
+    log(f"ingest #{n} -> change request (label `{CR_LABEL}`)")
+    if dry:
+        return None
+    cr_id = crmod.create_cr(root, title, body, remote_issue=n)
+    crmod.advance_cursor(root, cr_id, rc.now_iso())   # ignore comments predating intake
+    _set_map(cfg, cr_id, n, None)                      # so reconcile never re-ingests it
+    remote.comment(n, _bot(
+        f"Filed as **{cr_id}**. Sprint work pauses while we work this. Reply here with "
+        f"answers; comment **I approve** to regenerate the spec, or **reject** to drop it."))
+    return cr_id
 
 
 def _write_md(path, fm, body):
@@ -324,6 +368,163 @@ def _write_bug(root, ticket_id, issue_id, iss):
 
 
 # --------------------------------------------------------------------------- #
+# change requests: comment relay (input) + reply (output) + state reflection
+# --------------------------------------------------------------------------- #
+def _bot(body):
+    """Tag a comment as bot-authored so comment-ingest skips it."""
+    return f"{CR_BOT_MARKER}\n\n{body}"
+
+
+def is_bot_comment(body):
+    return (body or "").lstrip().startswith(CR_BOT_MARKER)
+
+
+def cr_status_label(status):
+    """CR status → the issue label that lets a phone filter the inbox. respec_complete
+    is still 'in progress' to a human, so it shares cr:open."""
+    return {"open": "cr:open", "respec_complete": "cr:open",
+            "done": "cr:done", "rejected": "cr:rejected"}.get(status, "cr:open")
+
+
+def pick_cr_comments(comments, cursor, allowlist):
+    """Pure: from one CR issue's comments (normalized {author, body, created_at}),
+    return (new_texts, new_cursor):
+      - chronological, strictly after `cursor`
+      - authored by an allowlisted user (empty allowlist = accept any author here; the
+        caller resolves owner-only)
+      - skipping our own bot comments
+    `new_cursor` is the high-water mark over ALL comments seen (so the cursor advances
+    past bot/own comments too, never re-reading them)."""
+    picked, newest = [], cursor
+    for c in sorted(comments, key=lambda x: x.get("created_at") or ""):
+        ts = c.get("created_at") or ""
+        newest = max(newest or "", ts)
+        if cursor and ts and ts <= cursor:
+            continue
+        if is_bot_comment(c.get("body") or ""):
+            continue
+        if allowlist and c.get("author") not in allowlist:
+            continue
+        body = (c.get("body") or "").strip()
+        if body:
+            picked.append(body)
+    return picked, newest
+
+
+def _resolve_allowlist(cfg, remote):
+    """The CONTROL allowlist, or [owner] when empty (owner-only). [] only if owner
+    lookup fails — then pick_cr_comments accepts any author (degraded, logged upstream)."""
+    allow = cfg.get("allowlist") or []
+    if allow:
+        return allow
+    try:
+        who = remote.whoami()
+        owner = who.get("login") or who.get("username")
+        return [owner] if owner else []
+    except Exception:
+        return []
+
+
+def sync_cr_comments(root, cfg, remote, dry=False, log=print):
+    """INPUT side of the relay: for each live CR, pull new allowlisted comments on its
+    issue, stash them for the runner's relay turn, flip `turn: agent`, advance the
+    per-CR `comment_cursor`. Network read; the decision is in pick_cr_comments (tested).
+    Returns the list of CR ids that got a new comment this pass."""
+    allow = _resolve_allowlist(cfg, remote)
+    touched = []
+    for slim in crmod.list_crs(root):
+        if slim.get("status") in ("done", "rejected"):
+            continue
+        n = slim.get("remote_issue")
+        if not n:
+            continue
+        cursor = slim.get("comment_cursor")
+        try:
+            comments = [c for c in remote.comments_since(cursor)
+                        if c.get("issue_number") == n]
+        except Exception as e:
+            log(f"CR {slim['id']}: comment poll failed: {e}")
+            continue
+        texts, newest = pick_cr_comments(comments, cursor, allow)
+        if newest and newest != cursor and not dry:
+            crmod.advance_cursor(root, slim["id"], newest)
+        if not texts:
+            continue
+        log(f"CR {slim['id']}: {len(texts)} new comment(s) on #{n}")
+        if dry:
+            continue
+        crmod.append_pending_comment(root, slim["id"], "\n\n".join(texts))
+        crmod.set_turn(root, slim["id"], "agent")
+        touched.append(slim["id"])
+    return touched
+
+
+def post_cr_reply(root, cfg, remote, cr_id, body, log=print):
+    """OUTPUT side: post the conductor's reply as a (bot-tagged) comment on the CR's
+    own issue. No-op when the CR has no remote issue (local-only CR)."""
+    try:
+        cr = crmod.load_cr(root, cr_id)
+    except Exception as e:
+        log(f"CR {cr_id}: reply skipped, load failed: {e}")
+        return False
+    n = cr.get("remote_issue")
+    if not n or not (body or "").strip():
+        return False
+    try:
+        remote.comment(n, _bot(body.strip()))
+        return True
+    except Exception as e:
+        log(f"CR {cr_id}: reply post failed: {e}")
+        return False
+
+
+def reflect_cr_state(root, cfg, remote, dry=False, log=print):
+    """Mirror each CR's status onto its issue (label + open/closed), and heal an issue a
+    human closed while the CR is still live. Cheap, best-effort — never blocks the loop."""
+    for slim in crmod.list_crs(root):
+        n = slim.get("remote_issue")
+        if not n:
+            continue
+        status = slim.get("status")
+        want_closed = status in ("done", "rejected")
+        if dry:
+            log(f"[dry] CR {slim['id']} -> {cr_status_label(status)}"
+                f"{' (close)' if want_closed else ''}")
+            continue
+        cur = remote.get_issue(n)
+        if cur is None:
+            continue
+        want_labels = sorted({CR_LABEL, cr_status_label(status)})
+        if sorted(cur.get("labels") or []) != want_labels:
+            try:
+                remote.set_labels(n, want_labels)
+            except Exception as e:
+                log(f"CR {slim['id']}: label set failed: {e}")
+        state = cur.get("state")
+        if want_closed and state == "open":
+            try:
+                remote.close_issue(n, planned=(status == "done"))
+            except Exception as e:
+                log(f"CR {slim['id']}: close failed: {e}")
+        elif not want_closed and state == "closed":      # heal a hand-closed live CR
+            try:
+                remote.reopen_issue(n)
+                remote.comment(n, _bot("This CR is still in progress. Reply here to "
+                                       "continue, or comment **reject** to drop it."))
+                log(f"CR {slim['id']}: reopened (#{n}) — still live")
+            except Exception as e:
+                log(f"CR {slim['id']}: reopen failed: {e}")
+
+
+def reconcile_crs(root, cfg, remote, dry=False, log=print):
+    """One CR reconcile pass: ingest new comments (input) then reflect status (output).
+    Called from the runner's reconcile block BEFORE cr_step, so a freshly-ingested
+    comment flips `turn: agent` in time for this pass's relay."""
+    sync_cr_comments(root, cfg, remote, dry=dry, log=log)
+    reflect_cr_state(root, cfg, remote, dry=dry, log=log)
+
+
+# --------------------------------------------------------------------------- #
 # dashboards
 # --------------------------------------------------------------------------- #
 CONTROL_TOPPOST = """\
@@ -339,11 +540,16 @@ Comment one of these verbs (allowlisted users only). The agent replies here.
 | `resume` | resume picking up work |
 | `kill` | stop the running agent immediately |
 | `claim-next` | claim + run the next ready issue |
-| `adapt <text>` | run `/specseed adapt <text>` |
-| `plan-next` | run `/specseed plan-next` |
+| `adapt <text>` | update the spec per `<text>` (runs adapt mode) |
+| `plan-next` | spec + break down the next roadmap slice |
 | `approvals` | list pending HITL approval gates |
 | `approve <ID> [opt]` | approve a parked gate (e.g. `approve FEAT-0101 A`) |
 | `reject <ID> <note>` | reject a parked gate with a reason |
+| `crs` | list open spec-change requests + their state |
+
+**Spec changes:** open a NEW issue labeled `change-request` to file one. The agent files
+it as `CR-NNNN`, pauses sprint work, and converses on THAT issue's thread — answer there,
+comment **I approve** to regenerate the spec, or **reject** to drop it.
 
 When an issue needs your OK, the agent posts a `🔔 Needs your approval` comment on that
 issue and waits — reply here with `approve`/`reject`.
@@ -465,6 +671,7 @@ def main(argv):
         push_dashboards(root, cfg, remote, dry=args.dry_run, log=log)
     elif args.command == "reconcile":
         sync_pull(root, cfg, remote, dry=args.dry_run, log=log)
+        reconcile_crs(root, cfg, remote, dry=args.dry_run, log=log)
         sync_push(root, cfg, remote, dry=args.dry_run, log=log)
         push_dashboards(root, cfg, remote, dry=args.dry_run, log=log)
 

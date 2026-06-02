@@ -51,6 +51,9 @@ LABEL_COLORS = {
     "status:awaiting_approval": "d93f0b", "status:done": "0e8a16",
     "status:wont_do": "555555", "status:deprecated": "555555",
     "tier:epic": "5319e7", "tier:ticket": "0052cc", "tier:issue": "006b75",
+    # change-request intake + status labels (CRs are not work entities)
+    "change-request": "8250df", "cr:open": "1d76db",
+    "cr:done": "0e8a16", "cr:rejected": "555555",
 }
 
 

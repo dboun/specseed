@@ -54,18 +54,23 @@ the hitl+git half into the READ-FIRST block of `CLAUDE.md`. Shape:
                "review":    {"easy": [{"provider":"claude","config_dir":null,"model":"sonnet","effort":"medium"}],
                              "hard": [{"provider":"claude","config_dir":null,"model":"opus","effort":"high"}]},
                "qa":        {"easy": [{"provider":"claude","config_dir":null,"model":"sonnet","effort":"medium"}],
-                             "hard": [{"provider":"claude","config_dir":null,"model":"sonnet","effort":"high"}]}}},
+                             "hard": [{"provider":"claude","config_dir":null,"model":"sonnet","effort":"high"}]},
+               "respec":    {"easy": [{"provider":"claude","config_dir":null,"model":"opus","effort":"high"}],
+                             "hard": [{"provider":"claude","config_dir":null,"model":"opus","effort":"high"}]}}},
   "review": {"enabled": true, "scope": "hard",
              "auto_approve": {"min_confidence": 90, "difficulty": ["easy"]}},
-  "qa": {"enabled": true, "mode": "suggest", "effort_threshold_hours": 4.0}
+  "qa": {"enabled": true, "mode": "suggest", "effort_threshold_hours": 4.0},
+  "cr": {"enabled": false, "label": "change-request", "branch_prefix": "cr/"}
 }
 ```
 
-`runner.agents` is the agent matrix: each FUNCTION (`implement` / `review` / `qa`) →
-each DIFFICULTY (`easy` / `hard`) → an **ordered fallback chain** of specs
-`{provider, config_dir, model, effort}` (first = main, rest tried on failure). See
-**2e** for how it's set. `max_turns` / `allowed_tools` are Claude-only (ignored for codex
-specs). `review` + `qa` are OPTIONAL blocks (absent = the defaults shown).
+`runner.agents` is the agent matrix: each FUNCTION (`implement` / `review` / `qa`, plus
+optional `respec` for the CR conductor) → each DIFFICULTY (`easy` / `hard`) → an **ordered
+fallback chain** of specs `{provider, config_dir, model, effort}` (first = main, rest tried
+on failure). See **2e** for how it's set. `respec` has no real easy/hard split — both
+buckets hold the same chain; the runner reads `hard`. `max_turns` / `allowed_tools` are
+Claude-only (ignored for codex specs). `review` + `qa` + `cr` are OPTIONAL blocks (absent =
+the defaults shown; an old config that predates them still loads).
 
 **2. `remote.json` — per-repo mirror STATE, written ONLY for a mirror.** Project-specific,
 never copied between repos. Holds `repo`, `allowlist` (per-repo, like the toolset), the
@@ -219,11 +224,28 @@ ride the coding (implement) agent.
 
 **2. Failure retry.** On a failed runner step (e.g. a usage/session limit), retry after N minutes. Default **30**. → `config.json` `runner.retry_delay_minutes` (portable; applies even local-only).
 
+### 2f. Spec-change requests → `config.json` `cr{}`
+
+ONE line, heavy default = **off**. Don't interview — this is an opt-in toggle.
+
+> Spec-change requests (CRs): file a request to **change the spec** (not just add work);
+> the runner pauses sprint work, asks clarifying questions, drafts a plan, and only
+> regenerates after you approve. Default **off**.
+
+- `defaults`/`OK` → `cr.enabled:false` (feature inert; runner + remote ignore CRs).
+- Turn on → `cr.enabled:true` (keep `label:"change-request"`, `branch_prefix:"cr/"` unless
+  the user asks otherwise).
+
+If the backend is a **mirror**, an enabled CR is filed remotely by opening an issue labeled
+`change-request` (and converses on that issue's thread). If **local-only**, a CR is filed with
+`python .specseed/scripts/add_change_request.py` (no remote thread). Note: CRs imply the runner
+owns git branch/merge for the respec branch, so they assume `git.automation:true`.
+
 ## Persist
 
 Write the config files:
 1. `config.json` — from Round 1 (`backend`), 2a/2b (`git`/`hitl`), 2c (`review`/`qa`),
-   2e (`runner.agents`), and 2d-#2 (`runner.retry_delay_minutes`) answers (or
+   2e (`runner.agents`), 2d-#2 (`runner.retry_delay_minutes`), and 2f (`cr`) answers (or
    `default_config()` on `defaults`).
    Run `python .specseed/scripts/core/config.py validate` to confirm it's well-formed.
 2. `remote.json` — **mirror only**: `repo` (Round 1 #2) + `allowlist` (2d-#1) + the rest
@@ -257,9 +279,10 @@ same way (re-prune for the new backend). Don't clobber an existing README on a n
 re-run.
 
 **Re-run via `/specseed configure`:** rewrite whichever file changed. If `config.json`'s
-hitl/git/review/qa changed AND `CLAUDE.md` already exists in the repo, **re-render its
+hitl/git/review/qa/cr changed AND `CLAUDE.md` already exists in the repo, **re-render its
 operating-policy block** (`config.py render-claude` → replace the block at the top of
-`CLAUDE.md`; the block now also states the review-gate + QA-issue contract). If mirror structural fields (`backend.provider` / `remote.json` `repo`)
+`CLAUDE.md`; the block now also states the review-gate + QA-issue contract, and a CR line
+when `cr.enabled`). If mirror structural fields (`backend.provider` / `remote.json` `repo`)
 changed, re-run `remote_sync.py init` (idempotent / self-healing).
 
 ## End message (template — phrase naturally)

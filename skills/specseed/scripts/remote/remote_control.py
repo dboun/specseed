@@ -17,11 +17,15 @@ from pathlib import Path
 
 import remote_config as rc
 
-CONTROL_VERBS = {"status", "pause", "resume", "kill", "approvals"}
+# the CR entity lives in core/; reuse its pure read I/O for the roll-up + `crs` verb
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "core"))
+import change_requests as crmod  # noqa: E402
+
+CONTROL_VERBS = {"status", "pause", "resume", "kill", "approvals", "crs"}
 WORK_VERBS = {"sync", "claim-next", "adapt", "plan-next", "approve", "reject"}
 CHEATSHEET = ("verbs: status · sync · pause · resume · kill · claim-next · "
               "adapt <text> · plan-next · approvals · approve <ID> [opt] · "
-              "reject <ID> <note>")
+              "reject <ID> <note> · crs")
 
 
 def _mem(root):
@@ -80,10 +84,52 @@ def _status_reply(root, cfg):
                 cooldown = f"\n- ⏳ retry cooldown: ~{int(rem // 60)}m left"
         except Exception:
             pass
+    cr_line = _cr_rollup(list_crs_safe(root))
     return (f"**status**\n- runner: `{read_ctl(root)}`\n"
             f"- active sprint: {', '.join(active) or '—'}\n"
             f"- in-flight: {', '.join(in_flight) or '—'}\n"
-            f"- ready issues: {len(ready)}{cooldown}")
+            f"- ready issues: {len(ready)}{cooldown}"
+            + (f"\n- {cr_line}" if cr_line else ""))
+
+
+def list_crs_safe(root):
+    """change_requests.list_crs, tolerant of a tree with no change_requests/ dir."""
+    try:
+        return crmod.list_crs(root)
+    except Exception:
+        return []
+
+
+def _cr_rollup(crs):
+    """One-line CR summary for the `status` reply (None when no live CRs). 'live' = not
+    yet done/rejected; respec_complete reads as 'regenerating'."""
+    live = [c for c in crs if c.get("status") not in ("done", "rejected")]
+    if not live:
+        return None
+
+    def phrase(c):
+        if c.get("status") == "respec_complete":
+            return f"{c['id']} regenerating"
+        if c.get("turn") == "human":
+            return f"{c['id']} awaiting you"
+        return f"{c['id']} in progress"
+
+    return f"CRs: {len(live)} open (" + ", ".join(phrase(c) for c in live) + ")"
+
+
+def _crs_reply(root):
+    """Full `crs` verb reply: every CR with its status/turn + issue link."""
+    crs = list_crs_safe(root)
+    if not crs:
+        return "**crs**\n- none"
+    lines = ["**crs** — spec-change requests:"]
+    for c in crs:
+        ref = f" (#{c['remote_issue']})" if c.get("remote_issue") else ""
+        turn = c.get("turn")
+        turn_s = f", turn: {turn}" if turn else ""
+        lines.append(f"- `{c['id']}` {c.get('title', '')} — {c.get('status')}"
+                     f"{turn_s}{ref}")
+    return "\n".join(lines)
 
 
 def _approvals_reply(root):
@@ -116,7 +162,7 @@ def process(root, cfg, remote, log=print):
             continue
         author, body = c.get("author"), c.get("body") or ""
         if body.startswith(("**status**", "✓", "⛔", "⚠️", "✅", "▶️", "⏸️", "🛑",
-                            "🔄", "⏳", "🔔", "**approvals**", "Ingested")):
+                            "🔄", "⏳", "🔔", "**approvals**", "**crs**", "Ingested")):
             continue                                  # our own bot replies
         if not _allowed(cfg, remote, author):
             remote.comment(control_no, f"@{author}: not authorized.")
@@ -138,6 +184,8 @@ def _do_control(root, cfg, remote, control_no, verb, log):
         remote.comment(control_no, _status_reply(root, cfg))
     elif verb == "approvals":
         remote.comment(control_no, _approvals_reply(root))
+    elif verb == "crs":
+        remote.comment(control_no, _crs_reply(root))
     elif verb == "pause":
         write_ctl(root, "pause")
         remote.comment(control_no, "⏸️ Pausing after the current issue finishes.")

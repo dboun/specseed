@@ -47,6 +47,7 @@ from pathlib import Path
 # cluster (remote/).
 sys.path.insert(0, str(Path(__file__).resolve().parent / "remote"))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "core"))
+import change_requests
 import config as cfgmod
 import review_gate
 import remote_config as rc
@@ -109,6 +110,32 @@ REVIEW_PROMPT = (
     '"findings": [<short strings>], "model": "<your model>", "reviewed_at": "<ISO8601>"}}. '
     "Do NOT edit source, do NOT change the issue status, do NOT merge — only write "
     "review.json. The gate script decides what happens next.")
+
+def control_prompt(verb, text=""):
+    """Natural-language prompt that auto-triggers the specseed skill for a CONTROL
+    work-verb (adapt / plan-next / approve / reject). NOT a `/specseed …` slash
+    command — in `claude -p` (headless) mode user-invoked slash commands are not
+    available, so the verb must be described as a task instead (same reason the CR
+    relay uses RELAY_PROMPT)."""
+    text = (text or "").strip()
+    if verb == "adapt":
+        mode = "adapt"
+        instr = (f"Update the spec per this request: {text}" if text
+                 else "Update the spec per the latest request in this thread.")
+    elif verb == "plan-next":
+        mode = "plan-next"
+        instr = "Spec and break down the next roadmap slice."
+        if text:
+            instr += f" {text}"
+    elif verb in ("approve", "reject"):
+        mode = "approve"
+        act = "Approve" if verb == "approve" else "Reject"
+        instr = (f"{act} the pending approval gate {text}." if text
+                 else f"Resolve the next pending approval gate ({verb} it).")
+    else:
+        mode, instr = verb, text
+    return f"Use the specseed skill in {mode} mode. {instr}".strip()
+
 
 _STOP = False
 
@@ -374,10 +401,10 @@ def execute_actions(root, cfg, remote, actions, log):
         elif verb in ("adapt", "plan-next", "approve", "reject"):
             # approve/reject route to approve mode (its triggers include the bare
             # verbs) and flip issue status, so re-push the mirror after a good run.
-            slash = f"/specseed {verb}" + (f" {a['text']}" if a.get("text") else "")
-            res = run_agent_chain(root, cfg, ctl_chain, slash, log)
+            prompt = control_prompt(verb, a.get("text"))
+            res = run_agent_chain(root, cfg, ctl_chain, prompt, log)
             if res == 0:
-                remote.comment(n, f"✅ Ran `{slash}`.")
+                remote.comment(n, f"✅ Ran `{verb}`.")
                 if verb in ("approve", "reject"):
                     remote_sync.sync_push(root, cfg, remote, log=log)
                     remote_sync.push_dashboards(root, cfg, remote, log=log)
@@ -385,7 +412,433 @@ def execute_actions(root, cfg, remote, actions, log):
                 remote.comment(n, "⏳ In retry cooldown (a prior run hit a limit). "
                                   "Retry later, or `resume` after it clears.")
             else:
-                remote.comment(n, f"⚠️ `{slash}` failed; will retry automatically.")
+                remote.comment(n, f"⚠️ `{verb}` failed; will retry automatically.")
+
+
+# --------------------------------------------------------------------------- #
+# CR respec mode (spec-change requests) — see .agent_memory_tmp CR plan + Phase 3.
+#
+# A second, mutually-exclusive runner mode. When an urgent CR is active the runner
+# STOPS claiming work, isolates the respec on a `cr/<CR-ID>` branch off the
+# integration branch, relays the conversation through a RESUMABLE coding-agent
+# session (one session id per CR, stored on the CR), and on a terminal CR state
+# merges (approved) or deletes (rejected) the branch — then resumes claiming. One
+# process, one writer: the loop is synchronous, so any in-flight work_step has fully
+# returned before cr_step runs (the "finish in-flight at the loop boundary" is free).
+#
+# Pure decision helpers (select_active_cr / cr_next_action / build_relay_cmd /
+# relay_prompt / parse_session_id) are unit-tested; the `claude`/`codex` shell-out and
+# the `git` calls are NOT (same policy as the existing untested agent shell-out).
+# --------------------------------------------------------------------------- #
+
+# Phase-5 will define these config keys; until then the CR step is OFF by default
+# (safe) so an un-migrated config never enters respec mode. Coordinate names with
+# Phase 5: config.cr.enabled (bool), config.cr.branch_prefix (str),
+# config.runner.agents.respec (a function with easy/hard buckets; both = one chain).
+DEFAULT_RESPEC_CHAIN = [{"provider": "claude", "config_dir": None,
+                         "model": "opus", "effort": "high"}]
+
+RELAY_PROMPT = (
+    "Use the specseed skill to handle spec-change request {cr_id}. The CR record is at "
+    ".specseed/change_requests/{cr_id}/cr.md. {body}")
+
+
+def cr_enabled(pcfg):
+    """Whether the CR/respec mode is turned on (config.cr.enabled; default OFF)."""
+    return bool(((pcfg or {}).get("cr") or {}).get("enabled", False))
+
+
+def cr_branch_prefix(pcfg):
+    return ((pcfg or {}).get("cr") or {}).get("branch_prefix") or "cr/"
+
+
+def cr_branch_name(cr_id, prefix="cr/"):
+    return f"{prefix}{cr_id}"
+
+
+def cr_integration_branch(pcfg):
+    return ((pcfg or {}).get("git") or {}).get("integration_branch") or "dev"
+
+
+def respec_chain(pcfg):
+    """Ordered agent chain for the CR conductor (`respec` function). Phase 5 adds
+    `respec` to the config matrix; until then (or if absent) fall back to a built-in
+    opus/high default so the relay still runs. Uses the 'hard' bucket shape — a CR has
+    no easy/hard split."""
+    try:
+        chain = cfgmod.agent_chain(pcfg, "respec", "hard")
+        if chain:
+            return chain
+    except (KeyError, TypeError):
+        pass
+    return [dict(s) for s in DEFAULT_RESPEC_CHAIN]
+
+
+def cr_next_action(cr):
+    """Pure state→action map for one CR. Returns one of:
+      branch — open + no branch yet → enter respec mode (create cr/<id>)
+      relay  — open + branch + turn==agent → run a conversation turn
+      wait   — open + branch + turn human/null → waiting on the user, do nothing
+      merge  — respec_complete → merge the branch into the integration branch
+      drop   — rejected + branch still present → delete the branch (clean abort)
+      none   — done, or rejected with no branch left, or unknown → nothing to do
+    """
+    status = cr.get("status")
+    branch = cr.get("branch")
+    if status == "open":
+        if not branch:
+            return "branch"
+        return "relay" if cr.get("turn") == "agent" else "wait"
+    if status == "respec_complete":
+        return "merge"
+    if status == "rejected":
+        return "drop" if branch else "none"
+    return "none"
+
+
+def select_active_cr(crs):
+    """The one CR to handle this pass: the FIRST (FIFO — list_crs is already sorted by
+    created_at then id) whose state needs ANY action. Strictly serial: a later CR is
+    never touched while an earlier one is still live (decision #7 / phase-1 FIFO)."""
+    for cr in crs:
+        if cr_next_action(cr) != "none":
+            return cr
+    return None
+
+
+def build_relay_cmd(spec, runner, session_id=None):
+    """(argv, env) for one relay turn, dispatched on provider, with session
+    capture/resume flags appended to the base agent command.
+      claude — append `--output-format json` (capture/confirm the session id) and, when
+               a session id is known, `--resume <id>`. (Never `--bare` — the conductor
+               needs skill/CLAUDE.md auto-discovery.)
+      codex  — `codex exec resume <thread_id> …` when known, else `codex exec …`, always
+               with `--json` so thread.started can be read. Prompt is piped on stdin (the
+               trailing '-')."""
+    if spec.get("provider") == "codex":
+        argv = ["codex", "exec"]
+        if session_id:
+            argv += ["resume", str(session_id)]
+        argv += ["--model", str(spec["model"]),
+                 "-c", f'model_reasoning_effort="{spec["effort"]}"',
+                 "--sandbox", "workspace-write",
+                 "--ask-for-approval", "never",
+                 "--json", "-"]
+        env = {"CODEX_HOME": str(spec["config_dir"])} if spec.get("config_dir") else {}
+        return argv, env
+    argv, env = build_claude_cmd(spec, runner)
+    argv = list(argv) + ["--output-format", "json"]
+    if session_id:
+        argv += ["--resume", str(session_id)]
+    return argv, env
+
+
+def relay_prompt(cr_id, comment=None):
+    """Natural-language prompt that auto-triggers the specseed skill's CR conductor.
+    NOT a `/specseed …` slash command — in `claude -p` mode user-invoked slash commands
+    are unavailable, so the relay must describe the task instead."""
+    if comment:
+        body = f"New message from the user:\n{comment}"
+    else:
+        body = ("Read the request and respond: ask any clarifying questions or draft a "
+                "plan. Do NOT regenerate the spec until the user has explicitly approved.")
+    return RELAY_PROMPT.format(cr_id=cr_id, body=body)
+
+
+def parse_session_id(output, provider="claude"):
+    """Extract the session/thread id from an agent's JSON(L) output.
+      claude — a JSON result object with `.session_id` (scan from the last JSON line).
+      codex  — JSONL; the first `{"type":"thread.started","thread_id":…}` event.
+    Returns the id string, or None if not found."""
+    if not output:
+        return None
+    if provider == "codex":
+        for line in output.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                ev = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(ev, dict) and ev.get("type") == "thread.started" \
+                    and ev.get("thread_id"):
+                return str(ev["thread_id"])
+        return None
+    for line in reversed(output.splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(obj, dict) and obj.get("session_id"):
+            return str(obj["session_id"])
+    try:
+        obj = json.loads(output)
+        if isinstance(obj, dict) and obj.get("session_id"):
+            return str(obj["session_id"])
+    except Exception:
+        pass
+    return None
+
+
+def parse_reply(output, provider="claude"):
+    """Extract the agent's final assistant message from its JSON(L) output, to relay back
+    as the CR-issue comment.
+      claude — the `.result` field of the result object (scan from the last JSON line).
+      codex  — the last `agent_message`/`assistant` text event in the JSONL stream.
+    Returns the text, or None if nothing usable was emitted."""
+    if not output:
+        return None
+    if provider == "codex":
+        text = None
+        for line in output.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                ev = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(ev, dict):
+                continue
+            item = ev.get("item") if isinstance(ev.get("item"), dict) else ev
+            if item.get("type") in ("agent_message", "assistant") and item.get("text"):
+                text = str(item["text"])
+            elif ev.get("type") in ("agent_message", "assistant") and ev.get("text"):
+                text = str(ev["text"])
+        return text
+    for line in reversed(output.splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(obj, dict) and obj.get("result"):
+            return str(obj["result"])
+    try:
+        obj = json.loads(output)
+        if isinstance(obj, dict) and obj.get("result"):
+            return str(obj["result"])
+    except Exception:
+        pass
+    return None
+
+
+# --- git plumbing for respec isolation (UNTESTED shell-out, like the agent calls). ---
+# NOTE (drift vs the Phase-3 plan): the runner has NO pre-existing git helpers — today
+# branch-per-issue git is delegated to the impl agent via CLAUDE.md. Decision #7 / Phase-2
+# §"branch ownership" require the RUNNER to own the respec branch/merge/abort, so these
+# thin git wrappers live here. They assume git automation is on (respec needs isolation).
+def _git(root, *args, check=True):
+    return subprocess.run(["git", *args], cwd=str(rc.find_root(root)),
+                          capture_output=True, text=True, check=check)
+
+
+def git_create_cr_branch(root, branch, integ, log):
+    try:
+        _git(root, "checkout", integ)
+        _git(root, "checkout", "-B", branch)
+        return True
+    except Exception as e:
+        log(f"git: create {branch} off {integ} failed: {e}")
+        return False
+
+
+def git_merge_cr(root, branch, integ, push, log):
+    """Merge cr/<id> into the integration branch. Returns True on a clean merge, False
+    on conflict (left for a human — never auto-resolved). Pushes if push=='auto'."""
+    try:
+        _git(root, "checkout", integ)
+        _git(root, "merge", "--no-ff", branch)
+    except Exception as e:
+        log(f"git: merge {branch} -> {integ} conflict/failed: {e}")
+        _git(root, "merge", "--abort", check=False)
+        return False
+    _git(root, "branch", "-D", branch, check=False)
+    if push == "auto":
+        _git(root, "push", "origin", integ, check=False)
+    return True
+
+
+def git_drop_cr(root, branch, integ, log):
+    try:
+        _git(root, "checkout", integ)
+        _git(root, "branch", "-D", branch)
+    except Exception as e:
+        log(f"git: drop {branch} failed: {e}")
+
+
+def run_relay_agent(root, prompt, log, argv, env=None):
+    """Like run_agent but CAPTURES stdout (the agent's JSON result) so the caller can
+    parse the session/thread id. Honors the kill flag. Returns (returncode, stdout);
+    returncode is None if killed. UNTESTED (shells out to the coding agent)."""
+    kf = _kill_flag(root)
+    if kf.exists():
+        kf.unlink()
+    log(f"relay agent: {prompt[:60]}…")
+    run_env = None
+    if env:
+        run_env = dict(os.environ)
+        run_env.update(env)
+    proc = subprocess.Popen(argv, cwd=str(rc.find_root(root)),
+                            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True, env=run_env)
+    try:
+        proc.stdin.write(prompt)
+        proc.stdin.close()
+    except Exception:
+        pass
+    killed = False
+    while proc.poll() is None:
+        if kf.exists() or _STOP:
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            killed = True
+            if kf.exists():
+                kf.unlink()
+            log("relay agent terminated (kill/stop)")
+            break
+        time.sleep(1)
+    out = ""
+    try:
+        out = proc.stdout.read() or ""
+    except Exception:
+        pass
+    with open(rc.find_root(root) / ".specseed" / "memory" / "runner.log",
+              "a", encoding="utf-8") as f:
+        f.write(out)
+    return (None, out) if killed else (proc.returncode, out)
+
+
+def cr_enter_branch(root, pcfg, cr_id, log):
+    """Enter respec mode: create+checkout cr/<id> off the integration branch, record it."""
+    branch = cr_branch_name(cr_id, cr_branch_prefix(pcfg))
+    integ = cr_integration_branch(pcfg)
+    git_create_cr_branch(root, branch, integ, log)
+    change_requests.set_branch(root, cr_id, branch)
+    change_requests.append_log(root, cr_id,
+                               f"respec mode: branch {branch} off {integ}")
+    log(f"CR {cr_id}: entered respec mode on {branch}")
+
+
+def cr_relay(root, cfg, pcfg, cr, remote, log):
+    """Run ONE conversation turn through a resumable agent session. Feeds the latest
+    human comment (stashed by the remote comment-ingest), captures the session id on the
+    first turn and resumes it after, then posts the conductor's reply back onto the CR's
+    issue. The conductor (inside the agent) owns status/turn transitions; the runner only
+    captures the session id and, as a safety net, flips turn→human if the conductor left
+    it on `agent`. `remote` is None in local-only mode (no comment fetch / reply post)."""
+    cr_id = cr["id"]
+    session_id = cr.get("session_id")
+    rem = cooldown_remaining(root)
+    if rem > 0:
+        log(f"CR {cr_id}: relay in cooldown (~{int(rem // 60)}m); will retry")
+        return
+    pending = change_requests.read_pending_comment(root, cr_id)   # peek; clear on success
+    prompt = relay_prompt(cr_id, comment=pending)
+    for i, spec in enumerate(respec_chain(pcfg)):
+        argv, env = build_relay_cmd(spec, RUNNER, session_id)
+        if i:
+            log(f"CR {cr_id}: relay fallback #{i} -> {spec.get('provider')}/{spec.get('model')}")
+        code, out = run_relay_agent(root, prompt, log, argv, env)
+        if code is None:
+            return                                    # killed — not a failure
+        if code == 0:
+            p = _retry_path(root)
+            if p.exists():
+                p.unlink()
+            if pending:
+                change_requests.clear_pending_comment(root, cr_id)
+            sid = parse_session_id(out, spec.get("provider"))
+            if sid and sid != session_id:
+                change_requests.set_session(root, cr_id, sid)
+            if remote is not None:
+                reply = parse_reply(out, spec.get("provider"))
+                if reply:
+                    remote_sync.post_cr_reply(root, cfg, remote, cr_id, reply, log=log)
+            fresh = change_requests.load_cr(root, cr_id)   # conductor may have terminalized
+            if fresh.get("status") == "open" and fresh.get("turn") == "agent":
+                change_requests.set_turn(root, cr_id, "human")
+            change_requests.append_log(root, cr_id, "relay turn complete")
+            return
+        log(f"CR {cr_id}: relay exit {code}")
+    delay = int(cfg.get("retry_delay_minutes", 30)) * 60
+    _retry_path(root).write_text(str(time.time() + delay), encoding="utf-8")
+    log(f"CR {cr_id}: all relay spec(s) failed -> retry in {delay // 60}m")
+
+
+def cr_merge(root, cfg, pcfg, cr, log):
+    """Approved respec: merge cr/<id> into the integration branch → status done (exit
+    respec mode). A merge conflict is NOT auto-resolved — flip turn→human and stop."""
+    cr_id = cr["id"]
+    branch = cr.get("branch") or cr_branch_name(cr_id, cr_branch_prefix(pcfg))
+    integ = cr_integration_branch(pcfg)
+    push = (pcfg.get("git") or {}).get("push", "user")
+    if not git_merge_cr(root, branch, integ, push, log):
+        change_requests.set_turn(root, cr_id, "human")
+        change_requests.append_log(
+            root, cr_id, f"MERGE CONFLICT: {branch} -> {integ} needs a human; respec stuck")
+        log(f"CR {cr_id}: merge conflict — left for a human")
+        return
+    change_requests.set_status(root, cr_id, "done", turn=None)
+    change_requests.append_log(root, cr_id, f"merged {branch} -> {integ}; respec live")
+    log(f"CR {cr_id}: merged -> done; claiming resumes")
+
+
+def cr_drop(root, pcfg, cr, log):
+    """Rejected respec: delete cr/<id>, clear the branch field (status stays rejected,
+    now terminal — select_active_cr will skip it). The integration branch is untouched."""
+    cr_id = cr["id"]
+    branch = cr.get("branch") or cr_branch_name(cr_id, cr_branch_prefix(pcfg))
+    integ = cr_integration_branch(pcfg)
+    git_drop_cr(root, branch, integ, log)
+    change_requests.set_branch(root, cr_id, None)
+    change_requests.append_log(root, cr_id, f"rejected; deleted {branch}; {integ} untouched")
+    log(f"CR {cr_id}: rejected — branch deleted, claiming resumes")
+
+
+def handle_cr(root, cfg, pcfg, cr, remote, log):
+    """Perform the single action cr_next_action(cr) dictates for the active CR."""
+    action = cr_next_action(cr)
+    log(f"CR {cr['id']}: {cr.get('status')}/{cr.get('turn')} -> {action}")
+    if action == "branch":
+        cr_enter_branch(root, pcfg, cr["id"], log)
+    elif action == "relay":
+        cr_relay(root, cfg, pcfg, cr, remote, log)
+    elif action == "merge":
+        cr_merge(root, cfg, pcfg, cr, log)
+    elif action == "drop":
+        cr_drop(root, pcfg, cr, log)
+    # wait / none: nothing this pass
+
+
+def cr_step(root, cfg, remote, log):
+    """If CR/respec mode is enabled AND a CR is active, handle it and return True
+    (claiming is FROZEN this pass — respec is mutually exclusive with claiming). Returns
+    False when CRs are off or none is active (normal claiming proceeds)."""
+    pcfg = cfgmod.load_config(root) or {}
+    if not cr_enabled(pcfg):
+        return False
+    try:
+        active = select_active_cr(change_requests.list_crs(root))
+    except Exception as e:
+        log(f"CR list error: {e}")
+        return False
+    if active is None:
+        return False
+    try:
+        handle_cr(root, cfg, pcfg, active, remote, log)
+    except Exception as e:
+        log(f"CR {active.get('id')} error: {e}")
+    return True
 
 
 def one_pass(root, cfg, remote, log):
@@ -395,9 +848,12 @@ def one_pass(root, cfg, remote, log):
     if state == "stop":
         return cfg, True
     if remote is not None:
-        # 1. reconcile mirror (pull new work, drift/heal, push, dashboards)
+        # 1. reconcile mirror (pull new work + CR comments, drift/heal, push, dashboards).
+        #    CR comment-ingest runs BEFORE cr_step so a fresh comment flips turn:agent in
+        #    time for this pass's relay turn.
         try:
             remote_sync.sync_pull(root, cfg, remote, log=log)
+            remote_sync.reconcile_crs(root, cfg, remote, log=log)
             remote_sync.sync_push(root, cfg, remote, log=log)
             remote_sync.push_dashboards(root, cfg, remote, log=log)
         except Exception as e:
@@ -409,8 +865,19 @@ def one_pass(root, cfg, remote, log):
         except Exception as e:
             log(f"control error: {e}")
     # 3. work, unless paused; re-push promptly if a status changed (mirror only).
-    #    Then a review pass (reviews at most one in_review issue per loop).
+    #    Then a review pass (reviews at most one in_review issue per loop). But FIRST:
+    #    if a spec-change request is active, handle it in respec mode and FREEZE claiming
+    #    this pass (respec is mutually exclusive with claiming — decision #7).
     if remote_control.read_ctl(root) == "run":
+        respec = False
+        try:
+            respec = cr_step(root, cfg, remote, log)
+        except Exception as e:
+            log(f"CR error: {e}")
+        if respec:
+            if remote is not None:
+                rc.save_state(cfg, root)
+            return cfg, False
         try:
             if work_step(root, cfg, remote, log) and remote is not None:
                 remote_sync.sync_push(root, cfg, remote, log=log)
