@@ -13,7 +13,7 @@ ends it fast.
 ## When it fires
 
 - **`/specseed configure`** — anytime, to set up or CHANGE technical settings.
-- **Auto-preamble:** the first specseed run in a repo (no `.specseed/memory/remote.json`)
+- **Auto-preamble:** the first specseed run in a repo (no `.specseed/memory/config.json`)
   that is about to enter **bootstrap** or **adopt**. Run this quickly FIRST, persist,
   then continue into the chosen mode. Skippable → local-only.
 
