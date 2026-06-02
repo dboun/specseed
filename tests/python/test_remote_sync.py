@@ -129,6 +129,17 @@ def test_next_id_uses_existing_prefix_folders(tmp_path):
     assert rs._next_id(root, "PROJ") == "PROJ-0002"
 
 
+def test_iid_reverses_the_issue_map():
+    cfg = {"map": {"FEAT-0001": {"n": 42, "sig": "x"}, "PROJ-0001": 7,
+                   "BUG-0001": {"n": 9}}}
+    assert rs._iid(cfg, 42) == "FEAT-0001"
+    assert rs._iid(cfg, 7) == "PROJ-0001"      # bare-int map entry
+    assert rs._iid(cfg, 9) == "BUG-0001"
+    assert rs._iid(cfg, 999) is None           # unmapped
+    assert rs._iid(cfg, None) is None
+    assert rs._iid({}, 1) is None              # no map key
+
+
 def test_render_sprint_dashboard_mentions_active_sprint(tmp_path):
     root = _tiny_work_tree(tmp_path)
     out = rs.render_sprint_dashboard(root)

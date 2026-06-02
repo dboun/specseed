@@ -34,6 +34,7 @@ def test_default_state_round_trips_only_state_keys(tmp_path):
     }
     assert loaded["map"] == {}
     assert loaded["cli_cursor"] is None
+    assert loaded["cli_cursor_ids"] == []
     assert loaded["pull_cursor"] is None
     assert loaded["labels_seeded"] is False
     assert loaded["initialized"] is False

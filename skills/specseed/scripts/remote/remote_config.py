@@ -37,7 +37,8 @@ CORE_DIR = SCRIPT_DIR.parent / "core"
 # The only keys persisted to remote.json. Anything else on a runtime cfg (e.g. the
 # `provider` injected from config.json, or `retry_delay_minutes`) is dropped on save.
 STATE_KEYS = ("repo", "allowlist", "permanent", "map",
-              "cli_cursor", "pull_cursor", "labels_seeded", "initialized")
+              "cli_cursor", "cli_cursor_ids", "pull_cursor", "labels_seeded",
+              "initialized")
 
 STATUS_STATES = ["todo", "in_progress", "blocked", "in_review",
                  "awaiting_approval", "done", "wont_do", "deprecated"]
@@ -95,9 +96,9 @@ def save_state(cfg, root=None):
 def default_state(repo=None, allowlist=None):
     return {
         "repo": repo,
-        "allowlist": allowlist or [],   # github/gitlab usernames whose CONTROL comments run; [] = owner-only
+        "allowlist": allowlist or [],   # github/gitlab usernames whose command/inbox comments run; [] = owner-only
         "permanent": {"roadmap": None, "timeline": None, "control": None, "sprint": None},
-        "map": {}, "cli_cursor": None, "pull_cursor": None,
+        "map": {}, "cli_cursor": None, "cli_cursor_ids": [], "pull_cursor": None,
         "labels_seeded": False, "initialized": False,
     }
 
@@ -273,7 +274,7 @@ class Remote:
                             "body": note.get("body") or "", "id": note.get("id"),
                             "created_at": e.get("created_at")})
             if since_iso:  # tighten the date-only filter to the real timestamp
-                out = [c for c in out if (c["created_at"] or "") > since_iso]
+                out = [c for c in out if (c["created_at"] or "") >= since_iso]
         return out
 
     def whoami(self):

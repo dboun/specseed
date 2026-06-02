@@ -327,9 +327,11 @@ def test_relay_prompt_embeds_cr_id_and_comment():
 
 
 def test_control_prompt_is_natural_language_not_slash():
-    # CONTROL work-verbs must NOT use a `/specseed …` slash form (unavailable in
-    # `claude -p` headless mode); they describe the task so the skill auto-triggers.
-    for verb in ("adapt", "plan-next", "approve", "reject"):
+    # CONTROL work-verbs that need a model (adapt/plan-next) must NOT use a
+    # `/specseed …` slash form (unavailable in `claude -p` headless mode); they
+    # describe the task so the skill auto-triggers. approve/reject no longer come
+    # here — they resolve deterministically via approvals_resolve.py.
+    for verb in ("adapt", "plan-next"):
         p = agents_runner.control_prompt(verb)
         assert "/specseed" not in p
         assert "specseed skill" in p
@@ -339,11 +341,23 @@ def test_control_prompt_is_natural_language_not_slash():
     assert "claiming has been paused" in agents_runner.control_prompt("adapt", "add OAuth")
     assert "do not refuse" in agents_runner.control_prompt("adapt", "add OAuth")
     assert "plan-next mode" in agents_runner.control_prompt("plan-next")
-    # approve/reject both route to approve mode and carry the ID
-    ap = agents_runner.control_prompt("approve", "I-12")
-    assert "approve mode" in ap and "I-12" in ap and "Approve" in ap
-    rj = agents_runner.control_prompt("reject", "I-12 not safe")
-    assert "approve mode" in rj and "I-12 not safe" in rj and "Reject" in rj
+
+
+def test_parse_resolve_text():
+    # bare id → no extra args
+    assert agents_runner._parse_resolve_text("approve", "APR-0001") == ("APR-0001", [])
+    # approve + lone option letter → --option (uppercased)
+    assert agents_runner._parse_resolve_text("approve", "APR-0001 b") == \
+        ("APR-0001", ["--option", "B"])
+    # reject + note → --note (joined)
+    assert agents_runner._parse_resolve_text("reject", "APR-0002 too risky now") == \
+        ("APR-0002", ["--note", "too risky now"])
+    # approve + multi-word remainder is a note, not an option
+    assert agents_runner._parse_resolve_text("approve", "APR-3 looks fine") == \
+        ("APR-3", ["--note", "looks fine"])
+    # empty → no handle
+    assert agents_runner._parse_resolve_text("approve", "") == (None, [])
+    assert agents_runner._parse_resolve_text("reject", None) == (None, [])
 
 
 def test_execute_actions_pauses_before_remote_adapt(monkeypatch, tmp_path):
@@ -383,6 +397,104 @@ def test_execute_actions_pauses_before_remote_adapt(monkeypatch, tmp_path):
     assert remote.comments[-1] == (7, "✅ Ran `adapt`.")
     assert "add OAuth" in seen[0][1]
     assert "do not refuse" in seen[0][1]
+
+
+def test_execute_actions_cursor_stops_at_first_failed_resolve(monkeypatch, tmp_path):
+    """The advance-before-execute regression: cursor advances across a contiguous
+    prefix of successful resolves and STOPS at the first failure so it is retried."""
+    root = _specseed_root(tmp_path)
+    pcfg = config.default_config()
+    chain = [{"provider": "claude", "config_dir": None, "model": "opus", "effort": "high"}]
+    monkeypatch.setattr(agents_runner.cfgmod, "load_config", lambda r: pcfg)
+    monkeypatch.setattr(agents_runner.cfgmod, "agent_chain", lambda cfg, fn, diff: chain)
+    monkeypatch.setattr(agents_runner.remote_sync, "sync_push", lambda *a, **k: None)
+    monkeypatch.setattr(agents_runner.remote_sync, "push_dashboards", lambda *a, **k: None)
+
+    # APR-0001 resolves; APR-0002 fails -> cursor must stop at APR-0001's timestamp
+    def fake_resolve(root_arg, verb, text, log):
+        return ("APR-0001" in (text or ""), "msg")
+    monkeypatch.setattr(agents_runner, "resolve_gate", fake_resolve)
+
+    class Remote:
+        def __init__(self):
+            self.comments = []
+
+        def comment(self, n, body):
+            self.comments.append((n, body))
+
+    cfg = {"cli_cursor": "t0"}
+    actions = [
+        {"verb": "approve", "text": "APR-0002", "reply_to": 8, "created_at": "t3"},
+        {"verb": "approve", "text": "APR-0001", "reply_to": 7, "created_at": "t2"},
+    ]
+    agents_runner.execute_actions(root, cfg, Remote(), actions, lambda m: None)
+    # oldest-first: t2 (APR-0001) succeeds -> cursor advances to t2; t3 fails -> stop
+    assert cfg["cli_cursor"] == "t2"
+
+    # if the EARLIEST action fails, the cursor never leaves the incoming value
+    cfg2 = {"cli_cursor": "t0"}
+    agents_runner.execute_actions(
+        root, cfg2, Remote(),
+        [{"verb": "approve", "text": "APR-0002", "reply_to": 8, "created_at": "t2"}],
+        lambda m: None)
+    assert cfg2["cli_cursor"] == "t0"
+
+
+def test_execute_actions_cursor_tracks_same_second_comment_ids(monkeypatch, tmp_path):
+    root = _specseed_root(tmp_path)
+    pcfg = config.default_config()
+    chain = [{"provider": "claude", "config_dir": None, "model": "opus", "effort": "high"}]
+    monkeypatch.setattr(agents_runner.cfgmod, "load_config", lambda r: pcfg)
+    monkeypatch.setattr(agents_runner.cfgmod, "agent_chain", lambda cfg, fn, diff: chain)
+    monkeypatch.setattr(agents_runner.remote_sync, "sync_push", lambda *a, **k: None)
+    monkeypatch.setattr(agents_runner.remote_sync, "push_dashboards", lambda *a, **k: None)
+
+    def fake_resolve(root_arg, verb, text, log):
+        return (text == "APR-0001", "msg")
+    monkeypatch.setattr(agents_runner, "resolve_gate", fake_resolve)
+
+    class Remote:
+        def comment(self, n, body):
+            pass
+
+    cfg = {"cli_cursor": None, "cli_cursor_ids": []}
+    ts = "2026-01-01T00:00:00Z"
+    agents_runner.execute_actions(root, cfg, Remote(), [
+        {"verb": "approve", "text": "APR-0001", "reply_to": 7, "created_at": ts, "id": "10"},
+        {"verb": "approve", "text": "APR-0002", "reply_to": 8, "created_at": ts, "id": "11"},
+    ], lambda m: None)
+
+    assert cfg["cli_cursor"] == ts
+    assert cfg["cli_cursor_ids"] == ["10"]
+
+
+def test_resolve_gate_surfaces_side_effect_warnings(monkeypatch, tmp_path):
+    root = _specseed_root(tmp_path)
+
+    class _CP:
+        returncode = 0
+        stdout = json.dumps({
+            "apr": "APR-0001", "issue": "FEAT-0001", "flipped": True,
+            "to_status": "done", "warnings": ["tickets_assemble.py failed: boom"],
+        }) + "\n"
+        stderr = ""
+
+    monkeypatch.setattr(agents_runner.subprocess, "run", lambda *a, **k: _CP())
+    ok, msg = agents_runner.resolve_gate(root, "approve", "APR-0001", lambda m: None)
+
+    assert ok is True
+    assert "Warnings: tickets_assemble.py failed: boom" in msg
+
+
+def test_gate_comment_replies_here_not_control():
+    msg = agents_runner._gate_comment({
+        "apr": "APR-0001", "n": 1, "summary": "Need deploy OK",
+        "why": "external publish", "kind": "gate:external_publish", "options": "A) ship",
+    }, "FEAT-0001")
+
+    assert "Reply here:" in msg
+    assert "CONTROL" not in msg
+    assert "hold APR-0001" in msg
 
 
 def test_build_relay_cmd_claude_resume_and_capture():
@@ -477,6 +589,53 @@ def test_cr_enabled_and_branch_helpers():
     assert agents_runner.cr_integration_branch({}) == "dev"
     assert agents_runner.cr_integration_branch(
         {"git": {"integration_branch": "develop"}}) == "develop"
+
+
+# --------------------------------------------------------------------------- #
+# instruction inbox (Phase 4) — pure helpers only (no agent shell-out).
+# --------------------------------------------------------------------------- #
+def test_next_inbox_picks_first_pending_and_skips_target(tmp_path):
+    import inbox
+    root = _specseed_root(tmp_path)
+    pm = root / ".specseed" / "project_management"
+    for iid in ("FEAT-0001", "FEAT-0002"):
+        (pm / "issues" / iid).mkdir(parents=True)
+
+    # no inboxes yet → nothing to do
+    assert agents_runner.next_inbox(root) is None
+
+    inbox.append_entry(pm, "FEAT-0001", "alice", "tweak it")
+    inbox.append_entry(pm, "FEAT-0002", "bob", "and this")
+
+    iid, entries = agents_runner.next_inbox(root)
+    assert iid == "FEAT-0001" and [e["seq"] for e in entries] == [1]
+
+    # skipping the work_step target this pass moves to the next eligible issue
+    iid2, _ = agents_runner.next_inbox(root, skip="FEAT-0001")
+    assert iid2 == "FEAT-0002"
+
+    # an inbox whose entries are all processed is not eligible
+    inbox.write_cursor(pm, "FEAT-0001", 1)
+    assert agents_runner.next_inbox(root)[0] == "FEAT-0002"
+
+
+def test_inbox_prompt_is_fresh_context_with_boundaries():
+    p = agents_runner.INBOX_PROMPT.format(iid="FEAT-0007", cursor=3)
+    assert "FEAT-0007" in p
+    assert "IN-3" in p                                  # process entries after the cursor
+    assert "/specseed" not in p                         # natural language, not a slash
+    assert "do not rely on any earlier session" in p    # fresh context, not resume
+    # the hard boundaries are spelled out
+    assert "add_change_request" in p or "change-request" in p
+    assert "add_work" in p
+    assert "NEVER edit settled spec docs" in p
+
+
+def test_inbox_reply_comment_is_bot_prefixed():
+    c = agents_runner._inbox_reply_comment("FEAT-0001", "Done — added logging.")
+    assert c.startswith("📝")                            # skipped by comment-ingest
+    assert "FEAT-0001" in c
+    assert "Done — added logging." in c
 
 
 def test_cr_step_off_by_default(monkeypatch, tmp_path):

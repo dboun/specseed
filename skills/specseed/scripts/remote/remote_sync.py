@@ -2,8 +2,9 @@
 remote_sync.py — the local<->remote mirror engine (see references/remote.md).
 
 Local `.specseed/` is ground truth. This pushes the work layer onto github/gitlab
-issues and pulls back the ONLY two honored remote inputs: brand-new issues (bugs)
-and (handled by remote_control.py) CONTROL commands.
+issues and pulls back only the honored remote inputs: brand-new issues (bugs) and
+allowlisted comments handled by remote_control.py (CONTROL commands, work-issue gate
+verbs, and work-issue inbox notes).
 
 Commands:
   init                 create the 4 dashboards (pin 3), seed labels, write config,
@@ -126,6 +127,19 @@ def read_entities(root):
 def _num(cfg, eid):
     v = cfg["map"].get(eid)
     return v["n"] if isinstance(v, dict) else v
+
+
+def _iid(cfg, num):
+    """Reverse of `_num`: remote issue number -> local entity id (None if unmapped).
+    Built from the same issue-map; lets the repo-wide comment channel route a comment
+    landing on a WORK issue back to its local id."""
+    if num is None:
+        return None
+    for eid, v in (cfg.get("map") or {}).items():
+        n = v["n"] if isinstance(v, dict) else v
+        if n == num:
+            return eid
+    return None
 
 
 def _ref(cfg, eid, ents):
@@ -559,9 +573,10 @@ Comment one of these verbs (allowlisted users only). The agent replies here.
 | `claim-next` | claim + run the next ready issue |
 | `adapt <text>` | update the spec per `<text>` (runs adapt mode) |
 | `plan-next` | spec + break down the next roadmap slice |
-| `approvals` | list pending HITL approval gates |
-| `approve <ID> [opt]` | approve a parked gate (e.g. `approve FEAT-0101 A`) |
-| `reject <ID> <note>` | reject a parked gate with a reason |
+| `approvals` | list pending HITL approval gates (each with its `APR-NNNN`) |
+| `approve <APR-NNNN> [opt]` | approve a parked gate |
+| `reject <APR-NNNN> <note>` | reject a parked gate with a reason |
+| `hold <APR-NNNN>` | defer a gate (parks it `blocked`) |
 | `crs` | list open spec-change requests + their state |
 
 **Spec changes:** open a NEW issue labeled `change-request` to file one. The agent files
@@ -569,7 +584,14 @@ it as `CR-NNNN`, pauses sprint work, and converses on THAT issue's thread — an
 comment **I approve** to regenerate the spec, or **reject** to drop it.
 
 When an issue needs your OK, the agent posts a `🔔 Needs your approval` comment on that
-issue and waits — reply here with `approve`/`reject`.
+issue (with its `APR-NNNN`). Resolve it EITHER here (`approve APR-NNNN`) OR right on that
+issue — comment `approve` / `reject <note>` / `hold` there; the `APR-NNNN` is optional
+when the issue has a single open gate.
+
+**Talk to an issue:** any OTHER comment on a work issue (not a verb) is a free-form
+instruction or question — "add more comments", "why did you do X?", "don't do it that
+way". The agent reads the issue + the real code and replies on that issue. Boundaries: a
+spec/scope change → it asks you to file a `change-request`; brand-new work → `add_work`.
 
 Local control (no phone): `echo pause > .specseed/memory/runner.ctl` (or `run` /
 `stop`). Stop = graceful (finishes current, then exits). This issue is permanent —
@@ -660,6 +682,7 @@ def init(root, cfg, remote, dry=False, log=print):
     if not dry:
         cfg["pull_cursor"] = rc.now_iso()
         cfg["cli_cursor"] = rc.now_iso()
+        cfg["cli_cursor_ids"] = []
     sync_push(root, cfg, remote, dry=dry, log=log)
     if not dry:
         cfg["initialized"] = True

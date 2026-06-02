@@ -173,7 +173,20 @@ These states keep your claim and are NOT auto-pickable, so nobody steals the iss
 - **Completion gate** (this section): `approval_required` / `review_required` ask *"is this finished unit accepted?"* — fired when the issue is otherwise done.
 - **Action gate** (the **⚠️ Operating policy** block at the top): a *class of action* (push/docker/network/destructive…) is hit *mid-work*, regardless of which issue is active. You **park-and-continue**: write an `approval.md` request, set `awaiting_approval`, run `approvals_render.py`, and move to the next ready non-gated issue. When you're blocked because **the human must do something out of band** (download a model, provision creds, run a one-off migration), that's a `handoff`-kind park: put the steps in a sidecar `issues/<id>/handoff/` dir (`README.md` + optional helper scripts), point the gate's `Handoff:` field at it, and set a `Verify:` check if you can — full contract in the **⚠️ Operating policy** block.
 
-Both surface to the human through `.specseed/project_management/issues/<id>/approval.md` + the generated `APPROVALS.md` index. A human resolves either by running **`/specseed approve`** (interactive, or via an agent: "next thing needing approval" / "approve <ID> <note>"), or — mirror on — by commenting `approve`/`reject <ID>` on the CONTROL issue. Resolution writes a `## Resolved A<N>` marker and flips the issue back (`todo` to resume, `wont_do`/`blocked` if rejected/held). Re-run `approvals_render.py` after any change.
+Both surface to the human through `.specseed/project_management/issues/<id>/approval.md` + the generated `APPROVALS.md` index. A human resolves either by running **`/specseed approve`** (interactive, or via an agent: "next thing needing approval" / "approve <ID> <note>"), or — mirror on — by commenting `approve`/`reject`/`hold <APR-NNNN>` on the CONTROL issue OR directly on the work issue that carries the `🔔` (its own gate; `APR-NNNN` optional when it has a single open gate). Resolution writes a `## Resolved A<N>` marker and flips the issue back (`todo` to resume, `wont_do`/`blocked` if rejected/held). Re-run `approvals_render.py` after any change.
+
+## Instruction inbox (when the runner hands you one)
+
+A work issue can collect free-form human asks/questions in `issues/<id>/inbox.md` (e.g. comments left on the mirror's issue). When the orchestrator asks you to **process an issue's inbox** (a prompt naming the inbox + a cursor), this is NOT a normal claim — work it like this:
+
+1. **Read fresh, never from memory.** Read every `### IN-<seq>` entry after the named cursor, then the issue body, its `plan.md`, `step_reports/`, and the **actual code + git diff** for the issue. Do not assume an earlier session's state — other agents may have changed the tree since.
+2. **Treat the unprocessed entries as one batch** (so "don't do it that way" + "also add comments" stay coherent) and classify each message:
+   - **Question** → answer it from the real code + step reports. No status change.
+   - **In-scope instruction** → do the rework within the issue's **existing scope**. If the issue is already `done`, re-open it (set `in_progress`, re-claim), do the work, then re-close it through the normal **Finish** flow (re-running the review gate if it applies). If it's `blocked`, act anyway — the comment is often what redirects it.
+   - **Out of bounds** → **reject that part** and name the door: a settled-doc / requirement / **scope** change → "file a CR" (`add_change_request`, or open a `change-request`-labeled issue on the mirror); genuinely **new work** → "use `add_work`". **Never** edit a settled spec doc from here, and **never** auto-file a CR yourself.
+3. **End with one concise reply** summarizing what you did, answered, or rejected (and why) — the runner records it as the `agent (re: IN-…)` entry, posts it back on the issue, and advances the cursor. You do NOT edit `inbox.md` or `inbox.state` — that bookkeeping is the runner's.
+
+This is the free-form counterpart to the deterministic approve/reject/hold gates: an instruction or a question, mediated by you; a *decision* never rides the inbox.
 
 ## Finish
 

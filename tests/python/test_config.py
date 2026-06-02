@@ -146,6 +146,12 @@ def test_render_claude_documents_handoff_kind():
     assert "handoff/" in out                       # the sidecar dir convention
 
 
+def test_render_claude_approval_template_has_blank_id():
+    out = config.render_claude(config.default_config())
+    assert "- **Id:**" in out                      # the APR-NNNN slot in the template
+    assert "stamps a global APR-NNNN" in out        # the leave-blank guidance
+
+
 def test_render_claude_review_off():
     cfg = config.default_config()
     cfg["review"]["enabled"] = False

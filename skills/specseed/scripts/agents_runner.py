@@ -38,6 +38,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -48,8 +49,10 @@ from pathlib import Path
 # cluster (remote/).
 sys.path.insert(0, str(Path(__file__).resolve().parent / "remote"))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "core"))
+import approvals_render
 import change_requests
 import config as cfgmod
+import inbox
 import review_gate
 import remote_config as rc
 import remote_control
@@ -112,12 +115,28 @@ REVIEW_PROMPT = (
     "Do NOT edit source, do NOT change the issue status, do NOT merge — only write "
     "review.json. The gate script decides what happens next.")
 
+INBOX_PROMPT = (
+    "Per ./CLAUDE.md, process the unhandled instruction-inbox messages for issue {iid}: "
+    "every `IN-<n>` entry after IN-{cursor} in "
+    ".specseed/project_management/issues/{iid}/inbox.md. Treat them as ONE batch. Work "
+    "FRESH: read the issue body, its plan.md / step reports, and the ACTUAL code + git "
+    "diff for {iid} — do not rely on any earlier session's memory. For each message: a "
+    "QUESTION → answer it; an IN-SCOPE instruction → do the rework within this issue's "
+    "existing scope (if the issue is already done, re-open + re-claim it, do the work, "
+    "re-close it, re-running the review gate if it applies); a SPEC / requirement / "
+    "scope change → REJECT it and tell the user to file a CR (`add_change_request` or the "
+    "`change-request` label); genuinely NEW work → REJECT it and point to `add_work`. "
+    "NEVER edit settled spec docs from here and NEVER auto-file a CR. Finish by printing "
+    "a single concise reply to the user: what you did, answered, or rejected (and why).")
+
+
 def control_prompt(verb, text=""):
     """Natural-language prompt that auto-triggers the specseed skill for a CONTROL
-    work-verb (adapt / plan-next / approve / reject). NOT a `/specseed …` slash
-    command — in `claude -p` (headless) mode user-invoked slash commands are not
-    available, so the verb must be described as a task instead (same reason the CR
-    relay uses RELAY_PROMPT)."""
+    work-verb that genuinely needs a model (adapt / plan-next). NOT a `/specseed …`
+    slash command — in `claude -p` (headless) mode user-invoked slash commands are
+    not available, so the verb must be described as a task instead (same reason the
+    CR relay uses RELAY_PROMPT). approve/reject do NOT come here: they resolve
+    deterministically via approvals_resolve.py (see resolve_gate)."""
     text = (text or "").strip()
     if verb == "adapt":
         mode = "adapt"
@@ -131,11 +150,6 @@ def control_prompt(verb, text=""):
         instr = "Spec and break down the next roadmap slice."
         if text:
             instr += f" {text}"
-    elif verb in ("approve", "reject"):
-        mode = "approve"
-        act = "Approve" if verb == "approve" else "Reject"
-        instr = (f"{act} the pending approval gate {text}." if text
-                 else f"Resolve the next pending approval gate ({verb} it).")
     else:
         mode, instr = verb, text
     return f"Use the specseed skill in {mode} mode. {instr}".strip()
@@ -348,20 +362,11 @@ def _statuses(root):
     return {k: v.get("status") for k, v in json.loads(p.read_text()).items()} if p.exists() else {}
 
 
-def _open_approval(root, iid):
-    """The open approval record for issue `iid` from approvals.json, or None."""
-    p = rc.find_root(root) / ".specseed" / "project_management" / "approvals.json"
-    if not p.exists():
-        return None
-    for r in json.loads(p.read_text()):
-        if r.get("issue") == iid:
-            return r
-    return None
-
-
 def notify_changes(root, cfg, remote, before, after, log):
-    """Compare status snapshots; comment done/blocked/awaiting_approval transitions
-    on the mirror. Returns True if anything changed (so the caller re-pushes)."""
+    """Compare status snapshots; comment done/blocked transitions on the mirror. The
+    `awaiting_approval` surface is NOT done here — it is per-gate and deterministic (see
+    notify_gates), so a 2nd gate on an already-parked issue still gets announced. Returns
+    True if any status changed (so the caller re-pushes)."""
     changed = False
     for iid, st in after.items():
         if st == before.get(iid):
@@ -376,18 +381,53 @@ def notify_changes(root, cfg, remote, before, after, log):
             remote.comment(n, f"✓ Done — `{iid}`.")
         elif st == "blocked":
             remote.comment(n, f"⛔ Blocked — `{iid}`. See the issue's notes / spec_concern.")
-        elif st == "awaiting_approval":
-            ap = _open_approval(root, iid)
-            if ap:
-                remote.comment(n, (
-                    f"🔔 Needs your approval — `{iid}` A{ap['n']}: {ap.get('summary','')}\n"
-                    f"- why: {ap.get('why') or ap.get('kind','')}\n"
-                    f"- options: {ap.get('options','—')}\n"
-                    f"- detail: `.specseed/project_management/issues/{iid}/approval.md`\n"
-                    f"Reply on the CONTROL issue: `approve {iid} <opt>` / `reject {iid} <note>`."))
-            else:
-                remote.comment(n, f"🔔 `{iid}` awaiting approval (no request detail found).")
     return changed
+
+
+def _gate_comment(r, iid):
+    """The 🔔 surface comment for one open approval record."""
+    handle = r.get("apr") or f"A{r['n']}"
+    return (f"🔔 Needs your approval — `{iid}` {handle}: {r.get('summary','')}\n"
+            f"- why: {r.get('why') or r.get('kind','')}\n"
+            f"- options: {r.get('options','—')}\n"
+            f"- detail: `.specseed/project_management/issues/{iid}/approval.md`\n"
+            f"Reply here: `approve {handle}` / `reject {handle} <note>` / `hold {handle}`.")
+
+
+def notify_gates(root, cfg, remote, log):
+    """Per-gate, deterministic HITL surface (replaces the old status-change trigger).
+
+    Each pass: stamp any new APR ids + refresh the index (single writer), then — on the
+    mirror — post one 🔔 on each open gate's WORK issue that hasn't been announced yet,
+    keyed off the gate's `Surfaced:` stamp (not the issue status). This fixes the
+    missed-2nd-gate bug: a 2nd gate opening on an already-`awaiting_approval` issue is
+    unsurfaced, so it gets its own 🔔. Idempotent — a stamped gate is never re-announced.
+
+    Local-only (`remote is None`): stamp ids + refresh the index, but DON'T mark gates
+    surfaced — so a later mirror opt-in announces the backlog once."""
+    pm = _pm(root)
+    if not (pm / "issues").is_dir():
+        return                                    # no work yet → nothing to surface
+    try:
+        approvals_render.assign_ids(pm)
+        records = approvals_render.collect(pm)
+    except Exception as e:
+        log(f"approvals scan error: {e}")
+        return
+    if remote is not None:
+        for r in records:
+            if r.get("surfaced"):
+                continue
+            iid = r["issue"]
+            n = remote_sync._num(cfg, iid)
+            if not n:
+                continue
+            remote.comment(n, _gate_comment(r, iid))
+            approvals_render.stamp_field(pm, iid, r["n"], "Surfaced", rc.now_iso())
+    try:
+        approvals_render.write_index(pm)          # reflect new ids + surfaced stamps
+    except Exception as e:
+        log(f"approvals index error: {e}")
 
 
 def work_step(root, cfg, remote, log):
@@ -487,14 +527,178 @@ def review_step(root, cfg, remote, log):
     return notify_changes(root, cfg, remote, before, after, log)
 
 
+# --------------------------------------------------------------------------- #
+# instruction inbox — free-form per-issue asks/questions (Phase 4). Runs BEFORE
+# work_step (answering humans takes precedence over grinding new work) and acts on issues
+# in ANY state (incl. blocked/done), unlike claiming. Fresh context, never a resumed
+# session: a resumed session reasons against a phantom tree (other agents may have
+# committed since) — re-derive from real code + step reports. The agent does the thinking;
+# the runner records its reply + advances the cursor (pure inbox.py bookkeeping).
+# --------------------------------------------------------------------------- #
+def next_inbox(root, skip=None):
+    """The next issue whose inbox has unprocessed entries, as (iid, entries), or None.
+    Pure disk read (no agent) — issues are scanned in sorted order; `skip` (the issue
+    work_step will target this pass) is passed over so one pass never has two writers on
+    the same issue. Processes at most one inbox per pass (parity with work/review)."""
+    pm = _pm(root)
+    issues_dir = pm / "issues"
+    if not issues_dir.is_dir():
+        return None
+    for d in sorted(p for p in issues_dir.iterdir() if p.is_dir()):
+        if d.name == skip:
+            continue
+        pend = inbox.unprocessed(pm, d.name)
+        if pend:
+            return d.name, pend
+    return None
+
+
+def _inbox_reply_comment(iid, reply):
+    """The 📝-prefixed work-issue comment carrying the agent's inbox reply (the bot prefix
+    keeps comment-ingest from feeding it back as a new instruction)."""
+    return f"📝 Re: your note on `{iid}`\n\n{reply}"
+
+
+def inbox_step(root, cfg, remote, log):
+    """Process ONE issue's unprocessed inbox batch with a fresh-context agent, record the
+    reply + advance the cursor, and post the reply on the mirror. Skips the issue
+    work_step will claim this pass. Returns True if any issue status changed (the agent
+    may re-open/re-close a done issue), so the caller re-pushes the mirror."""
+    if next_inbox(root) is None:                          # nothing pending → skip peek cost
+        return False
+    skip = peek_next(root)                                # don't double-write the work target
+    picked = next_inbox(root, skip=skip[0] if skip else None)
+    if picked is None:
+        return False
+    iid, entries = picked
+    pm = _pm(root)
+
+    pcfg = cfgmod.load_config(root) or {}
+    issues = _load_issues(root)
+    bucket = _bucket((issues.get(iid) or {}).get("difficulty"))
+    chain = cfgmod.agent_chain(pcfg, "implement", bucket)
+    retry_key = _chain_retry_key("inbox", bucket, chain)
+    rem = cooldown_remaining(root, retry_key)
+    if rem > 0:
+        log(f"{iid}: inbox in retry cooldown (~{int(rem // 60)}m left); will retry")
+        return False
+
+    cursor = inbox.read_cursor(pm, iid)
+    prompt = INBOX_PROMPT.format(iid=iid, cursor=cursor)
+    before = _statuses(root)
+    seqs = [e["seq"] for e in entries]
+    # Capture the agent's reply (JSON output, no session resume — fresh each time).
+    for i, spec in enumerate(chain):
+        argv, env = build_relay_cmd(spec, RUNNER)        # --output-format json, no --resume
+        if i:
+            log(f"{iid}: inbox fallback #{i} -> {spec.get('provider')}/{spec.get('model')}")
+        code, out = run_relay_agent(root, prompt, log, argv, env)
+        if code is None:
+            return False                                  # killed — leave unprocessed
+        if code == 0:
+            _clear_cooldown(root, retry_key)
+            reply = parse_reply(out, spec.get("provider")) or \
+                "(processed; see the issue's step reports for detail)"
+            inbox.append_entry(pm, iid, "agent", reply, re_seqs=seqs)
+            inbox.write_cursor(pm, iid, max(seqs))        # advance to the snapshot's max
+            if remote is not None:
+                n = remote_sync._num(cfg, iid)
+                if n:
+                    remote.comment(n, _inbox_reply_comment(iid, reply))
+            log(f"{iid}: inbox batch ({len(seqs)}) processed -> IN-{max(seqs)}")
+            return notify_changes(root, cfg, remote, before, _statuses(root), log)
+        log(f"{iid}: inbox exit {code}")
+    delay = int(cfg.get("retry_delay_minutes", 30)) * 60
+    _arm_cooldown(root, retry_key, delay)
+    log(f"{iid}: all inbox spec(s) failed -> retry in {delay // 60}m")
+    return False
+
+
+def _load_issues(root):
+    p = _pm(root) / "issues.json"
+    try:
+        return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+    except Exception:
+        return {}
+
+
+def _parse_resolve_text(verb, text):
+    """Split a CONTROL `approve`/`reject` body into (handle, extra_cli_args). `text`
+    is the remainder after the verb: `<APR-NNNN|issue-id> [option-letter | note…]`.
+    A lone letter after `approve` is the decided option; anything else is a note."""
+    parts = (text or "").split()
+    if not parts:
+        return None, []
+    handle, rest = parts[0], parts[1:]
+    if verb == "approve" and len(rest) == 1 and re.fullmatch(r"[A-Za-z]", rest[0]):
+        return handle, ["--option", rest[0].upper()]
+    if rest:
+        return handle, ["--note", " ".join(rest)]
+    return handle, []
+
+
+def resolve_gate(root, verb, text, log):
+    """Run the deterministic resolver (no model) for an approve/reject CONTROL verb.
+    Returns (ok, message) — message is the comment to post."""
+    handle, extra = _parse_resolve_text(verb, text)
+    if handle is None:
+        return False, (f"⚠️ `{verb}` needs an `APR-NNNN` id (see `approvals`). "
+                       f"e.g. `{verb} APR-0001`" + (" <note>" if verb == "reject" else ""))
+    pm = _pm(root)
+    script = pm.parent / "scripts" / "core" / "approvals_resolve.py"
+    argv = [sys.executable, str(script), handle, verb, "--pm-dir", str(pm), *extra]
+    try:
+        out = subprocess.run(argv, cwd=str(rc.find_root(root)),
+                             capture_output=True, text=True)
+    except Exception as e:
+        return False, f"⚠️ {handle}: resolver error ({e})"
+    if out.returncode == 0:
+        try:
+            info = json.loads(out.stdout.strip().splitlines()[-1])
+            apr = info.get("apr", handle)
+            warnings = info.get("warnings") or []
+            suffix = f" Warnings: {'; '.join(warnings)}" if warnings else ""
+            if info.get("flipped"):
+                return True, f"✅ Resolved {apr}: {info['issue']} → {info['to_status']}.{suffix}"
+            sib = info.get("open_siblings") or []
+            return True, (f"✅ Resolved {apr}; {info['issue']} stays parked "
+                          f"({len(sib)} gate(s) still open: {', '.join(sib)}).{suffix}")
+        except Exception:
+            return True, f"✅ Resolved {handle}."
+    reason = (out.stderr.strip().splitlines() or ["failed"])[-1].removeprefix("ERROR: ")
+    log(f"resolve {verb} {handle} failed: {reason}")
+    return False, f"⚠️ {handle}: {reason}"
+
+
+def _advance_action_cursor(cfg, action):
+    ts = action.get("created_at") or ""
+    cid = str(action.get("id") or "")
+    cur = cfg.get("cli_cursor") or ""
+    ids = {str(x) for x in (cfg.get("cli_cursor_ids") or [])}
+    if not ts:
+        return
+    if ts > cur:
+        cfg["cli_cursor"] = ts
+        cfg["cli_cursor_ids"] = [cid] if cid else []
+    elif ts == cur and cid:
+        ids.add(cid)
+        cfg["cli_cursor_ids"] = sorted(ids)
+
+
 def execute_actions(root, cfg, remote, actions, log):
-    # CONTROL-issue verbs (adapt/plan-next/approve/reject) are meta routes, not issue
-    # execution — run them on the implement/hard agent chain (the default executor).
+    # adapt/plan-next are meta ROUTES that genuinely need a model — run them on the
+    # implement/hard agent chain. approve/reject are DETERMINISTIC: resolve_gate runs
+    # a script (no model), addressing the gate by its APR-NNNN id.
     pcfg = cfgmod.load_config(root) or {}
     ctl_chain = cfgmod.agent_chain(pcfg, "implement", "hard")
     ctl_retry_key = _chain_retry_key("control", "hard", ctl_chain)
-    for a in actions:
+    # Advance cli_cursor only across a contiguous prefix of SUCCESSFUL actions (oldest
+    # first): a failed/cooling command leaves the cursor behind it so the next pass
+    # re-reads + retries it (fixes the old advance-before-execute loss).
+    advance_ok = True
+    for a in sorted(actions, key=lambda x: (x.get("created_at") or "", str(x.get("id") or ""))):
         verb, n = a["verb"], a["reply_to"]
+        ok = True
         if verb == "sync":
             remote.comment(n, "🔄 Synced.")          # reconcile already ran this loop
         elif verb == "claim-next":
@@ -502,9 +706,14 @@ def execute_actions(root, cfg, remote, actions, log):
                 remote_sync.sync_push(root, cfg, remote, log=log)
                 remote_sync.push_dashboards(root, cfg, remote, log=log)
             remote.comment(n, "▶️ Ran the next ready issue.")
-        elif verb in ("adapt", "plan-next", "approve", "reject"):
-            # approve/reject route to approve mode (its triggers include the bare
-            # verbs) and flip issue status, so re-push the mirror after a good run.
+        elif verb in ("approve", "reject", "hold"):
+            # Deterministic resolve (no agent). Re-push the mirror after a good flip.
+            ok, msg = resolve_gate(root, verb, a.get("text"), log)
+            remote.comment(n, msg)
+            if ok:
+                remote_sync.sync_push(root, cfg, remote, log=log)
+                remote_sync.push_dashboards(root, cfg, remote, log=log)
+        elif verb in ("adapt", "plan-next"):
             if verb == "adapt" and remote_control.read_ctl(root) == "run":
                 remote_control.write_ctl(root, "pause")
                 remote.comment(n, "⏸️ Paused claiming before `adapt`; resume when reviewed.")
@@ -513,14 +722,18 @@ def execute_actions(root, cfg, remote, actions, log):
                                   retry_key=ctl_retry_key)
             if res == 0:
                 remote.comment(n, f"✅ Ran `{verb}`.")
-                if verb in ("approve", "reject"):
-                    remote_sync.sync_push(root, cfg, remote, log=log)
-                    remote_sync.push_dashboards(root, cfg, remote, log=log)
             elif res == "cooldown":
+                ok = False
                 remote.comment(n, "⏳ In retry cooldown (a prior run hit a limit). "
                                   "Retry later, or `resume` after it clears.")
             else:
+                ok = False
                 remote.comment(n, f"⚠️ `{verb}` failed; will retry automatically.")
+        # cursor: extend the high-water mark only while every action so far has stuck.
+        if advance_ok and ok and a.get("created_at"):
+            _advance_action_cursor(cfg, a)
+        if not ok:
+            advance_ok = False
 
 
 # --------------------------------------------------------------------------- #
@@ -973,9 +1186,11 @@ def one_pass(root, cfg, remote, log):
         except Exception as e:
             log(f"control error: {e}")
     # 3. work, unless paused; re-push promptly if a status changed (mirror only).
-    #    Then a review pass (reviews at most one in_review issue per loop). But FIRST:
-    #    if a spec-change request is active, handle it in respec mode and FREEZE claiming
-    #    this pass (respec is mutually exclusive with claiming — decision #7).
+    #    Order within a running pass: CR respec (freezes claiming) → inbox (answer human
+    #    asks first) → work → review. If a spec-change request is active, handle it in
+    #    respec mode and FREEZE the rest this pass (respec is mutually exclusive with
+    #    claiming — decision #7). The inbox runs before work so responding to humans takes
+    #    precedence; review handles at most one in_review issue per loop.
     if remote_control.read_ctl(root) == "run":
         respec = False
         try:
@@ -986,6 +1201,14 @@ def one_pass(root, cfg, remote, log):
             if remote is not None:
                 rc.save_state(cfg, root)
             return cfg, False
+        # inbox BEFORE work: answering a human ask/question takes precedence over
+        # grinding new implementation work (acts on issues in any state).
+        try:
+            if inbox_step(root, cfg, remote, log) and remote is not None:
+                remote_sync.sync_push(root, cfg, remote, log=log)
+                remote_sync.push_dashboards(root, cfg, remote, log=log)
+        except Exception as e:
+            log(f"inbox error: {e}")
         try:
             if work_step(root, cfg, remote, log) and remote is not None:
                 remote_sync.sync_push(root, cfg, remote, log=log)
@@ -998,6 +1221,11 @@ def one_pass(root, cfg, remote, log):
                 remote_sync.push_dashboards(root, cfg, remote, log=log)
         except Exception as e:
             log(f"review error: {e}")
+    # 4. surface HITL gates (runs even when paused — a parked gate still needs a human).
+    try:
+        notify_gates(root, cfg, remote, log)
+    except Exception as e:
+        log(f"gate notify error: {e}")
     if remote is not None:
         rc.save_state(cfg, root)
     return cfg, False

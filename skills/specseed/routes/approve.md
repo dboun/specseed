@@ -5,7 +5,11 @@ an approval request to `.specseed/project_management/issues/<id>/approval.md`, s
 issue `awaiting_approval`, and moves on (see `templates/CLAUDE_template.md` "Operating
 policy"). This mode lets a human walk those pending requests and resolve them — locally
 (spin up an agent, say "next thing needing approval"), or driven from the mirror's
-CONTROL `approve`/`reject` verbs (which invoke this same logic headless).
+`approve`/`reject`/`hold` verbs (which invoke this same `approvals_resolve.py` logic
+headless — no model). Remotely the verb can be commented **on the CONTROL issue** (any
+gate, addressed by `APR-NNNN`) **or directly on the work issue** that carries the `🔔`
+(its own gate; the `APR-NNNN` is optional when the issue has a single open gate). Either
+way the decision lands in the same resolver — see `references/remote.md` "Command channel".
 
 Read-only on code. Touches only `approval.md` files + issue status in `issues.json`.
 
@@ -23,16 +27,18 @@ surface each request faithfully and apply the human's decision.
 
 1. Run `python .specseed/scripts/core/approvals_render.py` to refresh the index.
 2. Read `.specseed/project_management/APPROVALS.md` (human view) / `approvals.json`
-   (records: `issue`, `n`, `summary`, `kind`, `why`, `options`).
+   (records: `issue`, `apr`, `n`, `summary`, `kind`, `why`, `options`). Each gate carries
+   a global `APR-NNNN` id (`apr`) — the stable, human-typeable handle a person uses to
+   address it (`approve APR-NNNN`); `A<N>` stays the per-issue in-file anchor.
 3. None pending → tell the user "no open approvals" and stop. (Also mention any issues
    sitting in `awaiting_approval` with NO open `approval.md` entry — that's an
    inconsistency worth flagging, not resolving blindly.)
 
 ## Stage 2: Present each request faithfully
 
-For each open request (walk in `issue` then `A<N>` order), read the full entry from the
-issue's `approval.md` and show the human everything they need to decide **without
-looking anything up**:
+For each open request (walk in `issue` then `A<N>` order; address each by its `APR-NNNN`
+id when a person names one), read the full entry from the issue's `approval.md` and show
+the human everything they need to decide **without looking anything up**:
 
 - **What** the agent needs / is about to do, and **why it's gated** (which category).
 - **Risks / blast radius** and **links / details** (paths, URLs, expected cost/runtime).
@@ -50,51 +56,46 @@ Then ask for the decision. Interactive local session → ask in chat (a one-shot
 
 ## Stage 3: Apply the decision
 
-Three terminal outcomes. In every case, **append** to the issue's `approval.md` (never
-edit the original question):
+You do the judgment (Stages 1–2); the **write is a script** —
+`approvals_resolve.py` is the single, deterministic mutation path (same code the
+remote CONTROL `approve`/`reject` verbs run). It appends the `## Resolved A<N>`
+marker (never edits the original question), flips `issues.json` status per the gate
+kind, handles the claim, runs the re-renders, and honours the last-open-gate rule.
+Address the gate by its `APR-NNNN` id:
 
-```markdown
-## Resolved A<N> (<ISO date>): <approve|reject|hold> — <note / decided option>
-```
-
-Then set the issue `status` in `issues.json` per the decision (the agent that parked it
-kept its claim; you are a *different* actor, so you may move it — this is the
-no-self-bypass rule working as intended):
-
-| Decision | `issues.json` status | Claim |
-|---|---|---|
-| **approve** (proceed) | `todo` | clear `claimed_by`/`claimed_at` → next agent re-claims and resumes on the existing branch |
-| **reject** (don't do it) | `wont_do` if the issue's whole point was the gated action; else `blocked` with a note to rescope | clear claim |
-| **hold** (not now) | `blocked` | keep or clear per the note |
-
-- A **run-action** the human executed: record the results they report into a new
-  `step_reports/<X>_run-<desc>.md`, mark the gate `approve`d, set the issue back to
-  `todo`/`in_progress` so the agent can consume the outputs. No source edits here.
-- A **handoff** the human says they completed: if the gate carries a **`Verify:`**
-  command, **run it first** and only `approve` if it passes — a failing/empty verify
-  means the action isn't actually done, so leave the gate open and tell them what's still
-  missing (don't trust the toggle). On pass (or no `Verify:`), `approve` → `todo` so the
-  next agent resumes. The sidecar dir stays in place (record + reuse); do not delete it.
-- A **completion gate** (`approval_required` on a finished issue/ticket, OR a
-  **code-review sign-off** — `Kind: entity-approval` written by `review_gate.py` when a
-  review lands in `awaiting_approval`): approve → `done` (+ re-assemble so the ticket
-  rolls up); reject / "request changes" → `in_progress` (changes requested). This is the
-  completion path, NOT the generic `approve → todo` row above — a reviewed-and-approved
-  issue is finished, don't send it back to `todo`.
-- Multiple open `A<N>` on one issue → resolve each; only flip the issue status once the
-  **last** open entry is resolved.
-
-## Stage 4: Re-render + report
-
-After each resolution (or once, at the end of a walk):
 ```bash
-python .specseed/scripts/core/approvals_render.py        # drop resolved entries from the index
-python .specseed/scripts/core/issues_assemble.py         # if a status changed
-python .specseed/scripts/core/tickets_assemble.py        # if a completion gate closed an issue
-python .specseed/scripts/core/roadmap_render.py
+python .specseed/scripts/core/approvals_resolve.py <APR-NNNN> approve|reject|hold \
+    [--note "..."] [--option A] [--wont-do] [--run-verify]
 ```
-If the mirror is on, the next runner reconcile pass re-projects status onto the github
-issue and the CONTROL/PR thread (see `references/remote.md`).
+
+What the script does (so you know what to expect — don't hand-edit `issues.json`):
+
+| Decision | gate kind | `issues.json` status | Claim |
+|---|---|---|---|
+| **approve** | action (`gate:*` / `run-action` / `handoff` / `git-conflict`) | `todo` → next agent re-claims + resumes on the existing branch | cleared |
+| **approve** | completion (`entity-approval`) | `done` (+ re-assembles so the ticket rolls up) | cleared |
+| **reject** | action | `blocked` (default; pass `--wont-do` when the gated action WAS the issue's whole point → `wont_do`) | cleared |
+| **reject** | completion | `in_progress` (changes requested) — NOT `todo`; the issue is finished work bouncing back | kept |
+| **hold** | any | `blocked` | kept |
+
+- A **handoff** the human says they completed: pass `--run-verify` so the script runs
+  the gate's `Verify:` command FIRST and refuses to approve (non-zero exit, gate left
+  open) if it fails — don't trust the toggle. On pass (or no `Verify:`), it approves →
+  `todo`. The sidecar dir stays in place (record + reuse); do not delete it.
+- A **run-action** the human executed: record the results they report into a new
+  `step_reports/<X>_run-<desc>.md` BEFORE you resolve, then `approve` → the agent
+  consumes the outputs. No source edits here.
+- Multiple open `A<N>` on one issue → run the script once per gate; it only flips the
+  issue status once the **last** open entry is resolved (it reports `flipped: false`
+  with the open siblings until then).
+
+## Stage 4: Report
+
+The script already re-ran `approvals_render.py` (drops resolved entries from the
+index) and, on a completion close, `tickets_assemble.py` + `roadmap_render.py` (ticket
+rollup). You don't re-run them. If the mirror is on, the next runner reconcile pass
+re-projects status onto the github issue and the CONTROL/PR thread (see
+`references/remote.md`).
 
 Tell the user, tersely: what was resolved, what each issue moved to, what's still
 pending (if the user stopped a walk early).

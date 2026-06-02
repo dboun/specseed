@@ -17,16 +17,19 @@ issue**.
 ## Invariants (non-negotiable)
 
 1. **Local truth.** The remote is a projection. Reconciliation flows remote→local
-   only for the two allowed remote actions below; everything else flows local→remote.
+   only for the narrow allowed inputs below; everything else flows local→remote.
 2. **Single writer, one laptop.** Always-on laptop runs the orchestrator. No second
    machine, no shared lock needed (local `flock` still guards `issues.json`).
 3. **No API key for the model.** The runner invokes the **local Claude Code CLI**
    (`claude`), already authenticated on the laptop. Only the git host PAT is stored
    (`GITHUB_PAT` / `GITLAB_PAT`).
-4. **The user is instructed NOT to hand-edit mirrored github issues.** Exactly two
-   remote actions are honored as input:
+4. **The user is instructed NOT to hand-edit mirrored github issues.** Remote inputs are
+   honored only through explicit channels:
    - **(a)** Create a NEW github issue (bug / feature request) → ingested as new local work.
-   - **(b)** Comment a command on the **CONTROL** github issue → dispatched as a verb.
+   - **(b)** Comment a command on the **CONTROL** github issue → dispatched as a global /
+     project verb.
+   - **(c)** Comment on a mapped work issue → gate verbs resolve that issue's HITL gates;
+     any other text lands in that issue's instruction inbox.
    Any other remote edit is treated as accidental (see Reconciliation).
 
 ---
@@ -114,12 +117,13 @@ choice (`enabled` + `provider`) and runner knobs live in `config.json` (see
 ```json
 {
   "repo": "owner/name",                  // or full URL; normalized by the wrappers
-  "allowlist": ["octocat"],              // per-repo: usernames whose CONTROL comments execute; [] = owner-only
+  "allowlist": ["octocat"],              // per-repo: usernames whose command/inbox comments execute; [] = owner-only
   "permanent": {                          // numbers of the 4 dashboards
     "roadmap": 1, "timeline": 2, "control": 3, "sprint": 4
   },
   "map": { "PROJ-0042": 17, "FEAT-0101": 18 },   // specseed-id -> github issue number
-  "cli_cursor": "2026-05-31T12:00:00Z",   // last processed CONTROL comment timestamp
+  "cli_cursor": "2026-05-31T12:00:00Z",   // last processed repo-wide comment timestamp
+  "cli_cursor_ids": [123456],              // same-timestamp comment ids already handled
   "pull_cursor": "2026-05-31T12:00:00Z",  // last processed new-issue scan
   "labels_seeded": true,
   "initialized": false                    // flips true after the first remote_sync init
@@ -144,7 +148,7 @@ Assume the user does NOT hand-edit mirrored github issues. On each runner wake:
    ticket+issue skeleton (title/body from the github issue), `status: todo`, flagged
    for the agent to flesh + slot into the DAG. Add to `map`, advance `pull_cursor`,
    comment back the assigned local ID.
-2. **Process CONTROL comments (allowed action b).** See "CONTROL verbs".
+2. **Process command comments (allowed actions b/c).** See "Command channel".
 3. **Detect drift on mapped issues.** For each mapped github issue, compare against
    local:
    - **No conflict** (remote matches local, or remote changed a field local doesn't
@@ -177,13 +181,26 @@ only remote-origin field is *the existence of a brand-new issue* (step 1).
 
 ---
 
-## CONTROL verbs (the command channel)
+## Command channel — where verbs live
 
-The user comments a verb on the **CONTROL** github issue. The runner polls
-`list_repo_issue_comments(since=cli_cursor)`, keeps only comments **on the CONTROL issue
-number** authored by an **allowlisted** user (empty allowlist → repo owner only),
-dispatches, and replies with the result as a comment. Fixed verb set — unknown verb
-→ reply with the cheatsheet.
+The runner polls repo comments once per pass (using `cli_cursor`, or one second before it
+when `cli_cursor_ids` is non-empty so same-second retries stay visible). That call returns
+new comments repo-wide; the runner keeps only comments by an **allowlisted** user (empty
+allowlist → repo owner only), then dispatches **by where the comment landed**. Two
+surfaces:
+
+- **CONTROL issue → global runner ops + project work verbs.** Fixed verb set; unknown
+  verb → reply with the cheatsheet.
+- **A mapped work issue → that issue's HITL gates OR its instruction inbox.** A gate
+  verb (`approve`/`reject`/`hold`) resolves a parked gate right where the `🔔` request
+  appears; no trip to CONTROL. **Any other (free-form) comment** — an ask or a question —
+  is appended to that issue's instruction **inbox** (`inbox.md`) and gets a one-line `📝`
+  ack; the runner's `inbox_step` batch-processes it (see "Instruction inbox" below).
+
+A comment on any other issue (ROADMAP / TIMELINE / a CR issue / unmapped) is ignored
+by this channel (CR comments are relayed by `remote_sync.reconcile_crs`).
+
+### CONTROL issue
 
 | verb | action |
 |------|--------|
@@ -195,17 +212,72 @@ dispatches, and replies with the result as a comment. Fixed verb set — unknown
 | `claim-next` | claim + run the next ready issue now |
 | `adapt <text>` | pause claiming, then run `claude` headless in adapt mode (natural-language prompt, not a slash) |
 | `plan-next` | run `claude` headless in plan-next mode |
-| `approvals` | reply: list of pending HITL gates (from `approvals.json`) |
-| `approve <ID> [opt]` | resolve a parked HITL gate — run `claude` headless in approve mode |
-| `reject <ID> <note>` | reject a parked HITL gate — run `claude` headless in approve mode |
+| `approvals` | reply: list of pending HITL gates (from `approvals.json`), each with its `APR-NNNN` |
+| `approve <APR-NNNN> [opt]` | resolve a parked HITL gate — **deterministic**, runs `approvals_resolve.py` (no model) |
+| `reject <APR-NNNN> <note>` | reject a parked HITL gate — same deterministic script |
+| `hold <APR-NNNN>` | park a gate as `blocked` (defer the decision) — same script |
 
-(Headless `claude -p` does NOT expose user-invoked slash commands, so the runner phrases
-these as a natural-language task that auto-triggers the specseed skill — see
-`agents_runner.control_prompt`. CRs use the same approach via `relay_prompt`.)
+(`approve`/`reject`/`hold` address a gate by its global `APR-NNNN` id and resolve via
+`approvals_resolve.py` — a script flips the status directly, no model, no ambiguity
+about which gate. `adapt`/`plan-next` DO need a model: headless `claude -p` does not
+expose user-invoked slash commands, so the runner phrases them as a natural-language
+task that auto-triggers the specseed skill — see `agents_runner.control_prompt`. CRs
+use the same approach via `relay_prompt`.)
+
+### Work issue (in-place gate resolution)
+
+Comment on the work issue carrying the `🔔`: `approve [APR-NNNN] [opt]` /
+`reject [APR-NNNN] <note>` / `hold [APR-NNNN]`. The `APR-NNNN` is optional **only** when
+the issue has exactly one open gate (the resolver targets it); with two or more open
+gates and no id the runner replies listing the open ids and resolves nothing — name one.
+The decision routes into the same `approvals_resolve.py` as the CONTROL path; the result
+is posted back on the work issue.
 
 The CONTROL issue **top post** (written at init) is a short cheatsheet of exactly these
 verbs + the pause/stop story. Authorization: comment author ∈ allowlist. Sudo /
 arbitrary shell is intentionally NOT a verb — the channel is for control, not RCE.
+
+### Instruction inbox (free-form issue-local asks)
+
+A non-gate comment on a work issue ("add more comments", "don't do it that way", "why
+did you handle X like that?") is **not** a decision — it's an instruction or a question.
+It is appended to that issue's `inbox.md` as an `### IN-<seq>` entry (monotonic per-issue
+counter, not a timestamp) and acked once with `📝`. Each loop the runner's `inbox_step`:
+
+- picks ONE issue with unprocessed inbox entries (skipping the issue the work step will
+  claim this pass, so one pass never has two writers on the same issue), and acts on it
+  in **any** state — including `blocked` and `done` (a human comment is often what
+  unblocks or redirects),
+- feeds the whole unprocessed batch to a **fresh-context** agent (it reads the issue,
+  plan.md, step reports, and the real code/diff — never a resumed session, which would
+  reason against a phantom tree),
+- the agent classifies each message: a **question** → answer; an **in-scope
+  instruction** → rework within the issue's existing scope (re-open + re-claim a `done`
+  issue, redo, re-close, re-running the review gate if it applies); a **spec / scope
+  change** → reject with "file a CR" (`add_change_request` or the `change-request`
+  label); **new work** → reject with "use `add_work`". It NEVER edits settled docs and
+  NEVER auto-files a CR,
+- the runner records the agent's reply as an `agent (re: IN-…)` entry, posts it back on
+  the work issue (`📝`-prefixed so it doesn't re-ingest), and advances the cursor
+  (`inbox.state`: `processed_through: IN-<seq>`) to the **snapshot's max** — a comment
+  that arrives mid-turn is picked up next pass, not skipped.
+
+`inbox_step` runs **before** the work step (answering humans takes precedence over
+grinding new implementation work) and only while the runner is in `run` (a paused runner
+idles the inbox too). The inbox is the agent-mediated, free-form counterpart to the
+deterministic gate verbs — keep the two kinds separate: a decision never rides the inbox,
+an instruction never masquerades as an approval.
+
+### Cursor advance (at-least-once, retry-safe)
+
+`cli_cursor` advances only across comments that were **fully handled this pass**, and
+never past a still-pending work/gate action: the action is RETURNED to the runner and
+executed after polling, so the cursor stops just before the earliest pending action and
+the runner extends it per successful action (oldest first, stopping at the first failure).
+For multiple comments sharing the same second, `cli_cursor_ids` records which comment ids
+at that timestamp are already handled; the next pass re-reads that second and skips only
+those ids. A failed/cooling command therefore stays behind the cursor and is re-read +
+retried next pass — it is never silently lost.
 
 ---
 
@@ -226,9 +298,10 @@ Loop, every ~30–60s:
 1. Read control file `.specseed/memory/runner.ctl` (`run` | `pause` | `stop`).
    `stop` → graceful exit. `pause` → only steps 2–3 run (no claiming).
 2. `remote_sync` reconcile pass (pull new work, drift, heal, push dashboards).
-3. `remote_control` process new CONTROL comments. An `adapt` work verb pauses claiming before it runs, so adapt cannot race the work loop.
-4. If `run`: claim + execute the next ready issue via the local `claude` CLI; on
-   done/blocked, post the progress comment (see below) and re-render dashboards.
+3. `remote_control` process new comments repo-wide (CONTROL ops + per-issue gate verbs + free-form → instruction inbox — see "Command channel"). An `adapt` work verb pauses claiming before it runs, so adapt cannot race the work loop.
+4. If `run`: process one issue's instruction **inbox** (answering humans first), THEN
+   claim + execute the next ready issue via the local `claude` CLI; on done/blocked, post
+   the progress comment (see below) and re-render dashboards.
 5. Sleep.
 
 The `claude` invocation is **built from `config.runner`** (the task prompt is piped on
@@ -273,8 +346,8 @@ Per the locked decision: comment on the mapped github issue **only on the
 moments that matter** (low noise):
 - **done** → `✓ Done. <1-line summary>. PR: <url if any>.`
 - **blocked** → `⛔ Blocked: <reason>. <next step / what's needed>.`
-- **awaiting_approval** → `🔔 Needs your approval — <ID> A<N>: <summary>` + why +
-  options + the `approve <ID>` / `reject <ID> <note>` reply hint. This is the HITL
+- **awaiting_approval** → `🔔 Needs your approval — <ID> APR-NNNN: <summary>` + why +
+  options + the `approve APR-NNNN` / `reject APR-NNNN <note>` / `hold APR-NNNN` reply hint. This is the HITL
   surface step — see "HITL gate lifecycle" below.
 
 Claim and in-review transitions update the **label** only (no comment).
@@ -287,25 +360,27 @@ Lets a human clear approval gates from a phone, mirroring the local `approve` ro
 Local `.specseed/` stays ground truth — the mirror is just the channel.
 
 - **Surface (announce).** When the impl agent parks a gated action it sets the issue
-  `awaiting_approval` and writes the request to `approval.md` + runs
-  `approvals_render.py`. The runner's `work_step` sees the status transition and posts
-  the `🔔 Needs your approval` comment on the mapped github issue (transition-based, so
-  it posts once — no dedup logic needed). The `awaiting_approval` label also flips. Use
-  the `approvals` CONTROL verb anytime for the full pending list.
-- **Resolve (consume reply).** The human comments `approve <ID> <opt>` or
-  `reject <ID> <note>` on the **CONTROL** issue. `remote_control` dispatches it as a
-  work verb; the runner runs the `approve` route headless (natural-language prompt, the
-  same `approve` route a local human uses — `routes/approve.md`). The route appends a
-  `## Resolved` marker to `approval.md`, flips the issue (`todo` to resume / `wont_do` /
-  `blocked`), and re-renders. The runner then re-pushes so the label/state update
+  `awaiting_approval` and writes the request to `approval.md`. The runner calls
+  `approvals_render.py`: it stamps a stable `APR-NNNN` id, writes `approvals.json`, and
+  posts one `🔔 Needs your approval` comment for every open gate without a `Surfaced:`
+  stamp. The stamp is per gate, not per status transition, so a second gate on an already
+  parked issue still gets announced once. Use the `approvals` CONTROL verb anytime for
+  the full pending list.
+- **Resolve (consume reply).** The human comments `approve APR-NNNN [opt]`,
+  `reject APR-NNNN <note>`, or `hold APR-NNNN` either on CONTROL (global alias) or on the
+  work issue carrying the `🔔` (preferred in-place path; id optional only when that issue
+  has exactly one open gate). `remote_control` returns a resolver action; the runner calls
+  `approvals_resolve.py` directly — no model. The script appends a `## Resolved` marker to
+  `approval.md`, flips the issue (`todo` to resume / `wont_do` / `blocked`), re-renders,
+  and reports any render warning. The runner then re-pushes so the label/state update
   projects back.
 - **Global-gate safety.** A reply authorizes answering *that gated question* only. When
   the resumed issue is later worked and hits another `block`-level action, it parks
   again per the operating-policy contract. The reply is not blanket autonomy.
 
-Idempotency: surfacing is transition-based (one comment per entry into
-`awaiting_approval`); resolving keys off the CONTROL comment cursor (`cli_cursor`), so a
-handled reply isn't reprocessed.
+Idempotency: surfacing is gate-stamp-based (`Surfaced:` means already announced);
+resolving keys off the repo-wide comment cursor (`cli_cursor` + `cli_cursor_ids`), so a
+handled reply isn't reprocessed, including same-second comments already marked by id.
 
 ---
 
@@ -321,11 +396,15 @@ handled reply isn't reprocessed.
 - `remote_sync.py` — `init` / `reconcile` (pull → drift → heal → push) / dashboard
   rendering. `--dry-run` prints intended calls without mutating.
 - `remote_control.py` — poll + authorize + dispatch CONTROL verbs (incl. `approvals`
-  inline, `approve`/`reject` as work verbs).
+  inline, `approve`/`reject`/`hold` as work/gate verbs); appends a work issue's free-form
+  comment to its instruction inbox.
 - `agents_runner.py` — the loop; `<repo>_agents_runner.py` shim calls its `main()`.
-  Posts the `awaiting_approval` surface comment and runs the `approve`/`reject` route.
+  Posts the gate surface comment, runs the deterministic gate resolver, and runs
+  `inbox_step` (fresh-context processing of a work issue's instruction inbox).
 - `approvals_render.py` (core, not remote-only) — keeps `approvals.json` current; the
   surface step + `approvals` verb read it.
+- `inbox.py` (core, not remote-only) — pure I/O for a work issue's `inbox.md` + processed
+  cursor; the intake path and `inbox_step` use it.
 
 All stdlib-only, reusing `github_functions.py` / `gitlab_functions.py` for transport.
 

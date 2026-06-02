@@ -146,12 +146,26 @@ say `/specseed approve` (walk every pending one), or resolve one directly:
 - `/specseed hold <ID> <note>`              not now
 
 <!-- MIRROR-ONLY -->
-From your phone, comment on the CONTROL issue instead: `approvals` (list pending),
-`approve <ID> [opt]`, `reject <ID> <note>`.
+From your phone, comment on the CONTROL issue: `approvals` (list pending),
+`approve <APR-NNNN> [opt]`, `reject <APR-NNNN> <note>`, `hold <APR-NNNN>`. Or resolve a
+gate right on the work issue carrying the `🔔` — comment `approve` / `reject <note>` /
+`hold` there (the `APR-NNNN` is optional when that issue has only one open gate).
 <!-- /MIRROR-ONLY -->
 
 You cannot approve your own agent's work as that same agent. The approve step is a
 separate actor on purpose, so a gate is a real gate.
+
+<!-- MIRROR-ONLY -->
+### Talk to an issue
+
+Any comment on a work issue that ISN'T a verb is treated as a free-form note — an
+instruction ("add more comments", "don't do it that way") or a question ("why did you
+handle X like that?"). The agent reads the issue and the real code, then replies on that
+issue. It works within the issue's existing scope; if your note actually wants a
+spec/scope change it points you to a `change-request`, and brand-new work to `add_work`.
+Decisions still go through the `approve`/`reject`/`hold` verbs — the free-form note is for
+asks and questions, not sign-off.
+<!-- /MIRROR-ONLY -->
 
 ## Changing the plan
 

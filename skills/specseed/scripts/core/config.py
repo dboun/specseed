@@ -583,15 +583,17 @@ def render_claude(cfg):
              "loop waiting. The parked issue resumes when a human resolves the request.")
     L.append("")
     L.append("Resolution: the human runs `/specseed approve` (interactively, or by spinning up an "
-             "agent and saying \"approve <ID>\" / \"next thing needing approval\"), or — if the "
-             "mirror is on — comments `approve <ID>` / `reject <ID> <note>` on the github CONTROL "
-             "issue. Either writes a `## Resolved` marker and flips the issue back to `todo` "
-             "(approved) or `wont_do`/`blocked` (rejected/hold).")
+             "agent and saying \"approve <APR-NNNN>\" / \"next thing needing approval\"), or — if the "
+             "mirror is on — comments `approve`/`reject`/`hold <APR-NNNN>` on the github CONTROL "
+             "issue OR directly on the work issue carrying the `🔔` (its own gate; the `APR-NNNN` is "
+             "optional when that issue has a single open gate). Any path writes a `## Resolved` "
+             "marker and flips the issue back to `todo` (approved) or `wont_do`/`blocked` (rejected/hold).")
     L.append("")
     L.append("**approval.md entry template:**")
     L.append("")
     L.append("```markdown")
     L.append("## A<N> — <one-line summary>")
+    L.append("- **Id:** <leave blank — the runner stamps a global APR-NNNN here>")
     L.append("- **Opened:** <ISO date>")
     L.append("- **Kind:** gate:<category> | run-action | handoff | git-conflict | entity-approval")
     L.append("- **Status:** open")
@@ -606,9 +608,15 @@ def render_claude(cfg):
     L.append("- **Handoff:** <path to the sidecar dir>  <!-- handoff kind only; see below -->")
     L.append("- **Verify:** <command that confirms the human did it, e.g. `test -f models/x.gguf`>  "
              "<!-- optional; re-checked on resume -->")
-    L.append("- **Resolve:** `/specseed approve <issue_id> A` (local), or comment "
-             "`approve <issue_id> A` on the CONTROL issue (remote).")
+    L.append("- **Resolve:** `/specseed approve <APR-NNNN> A` (local after runner stamps "
+             "the id), or on the mirror reply to the work issue's `🔔` with "
+             "`approve <APR-NNNN> A` / `reject <APR-NNNN> <note>` / `hold <APR-NNNN>`.")
     L.append("```")
+    L.append("")
+    L.append("Leave `Id:` blank (or omit it) — `approvals_render.py` stamps a stable, "
+             "global `APR-NNNN` there the first time it sees the entry; that id is the "
+             "public handle used in the notification + resolve hints. `A<N>` stays your "
+             "local in-file anchor (a per-issue counter, no global coordination needed).")
     L.append("")
     L.append("For a **run-action** (a gated thing only a human can execute), the agent does NOT run "
              "it — it writes the request WITH comprehensive self-run instructions, then parks. "

@@ -204,7 +204,9 @@ AGENTS.md                       # one line: "Read ./CLAUDE.md. In dirs you work 
     │       │                   # + prose (TECHNICAL acceptance criteria, notes)
     │       ├── plan.md
     │       ├── spec_concern.md # OPTIONAL — written by impl agent if a settled doc looks wrong mid-issue
-    │       ├── approval.md     # OPTIONAL — HITL gate requests (action-gate / run-action / handoff / completion). Resolved via approve route
+    │       ├── approval.md     # OPTIONAL — HITL gate requests (action-gate / run-action / handoff / completion). Each entry carries a global APR-NNNN id (stamped by approvals_render) + Surfaced stamp; resolved via approve route
+    │       ├── inbox.md        # OPTIONAL — free-form issue-local asks/questions (e.g. mirror work-issue comments). Append-only `### IN-<seq>` entries (human + agent replies); batch-processed fresh-context by the runner's inbox_step. NOT a gate/decision channel
+    │       ├── inbox.state     # OPTIONAL — the inbox processed cursor (`processed_through: IN-<seq>`)
     │       ├── handoff/        # OPTIONAL — sidecar for a `handoff` gate: README.md + helper scripts for an out-of-band human action (download model, provision creds). Committed; produced artifact stays outside .specseed/
     │       └── step_reports/
     │           └── <X>_<step>_<desc>.md
@@ -239,7 +241,8 @@ scripts/
 │   ├── drift_check.py                  # mechanical spec-vs-reality drift surface
 │   ├── config.py                       # PORTABLE config: load/validate config.json (hitl + git + backend + runner + review + qa); render-claude → CLAUDE.md block (incl. review/QA completion-gate contract)
 │   ├── entity_templates.py             # writes .specseed/entity_templates and optional GitHub/GitLab issue-template projection
-│   └── approvals_render.py             # scan issues/*/approval.md → APPROVALS.md + approvals.json (pending HITL gates)
+│   ├── approvals_render.py             # scan issues/*/approval.md → APPROVALS.md + approvals.json (pending HITL gates)
+│   └── inbox.py                        # per-issue instruction inbox: pure I/O for inbox.md + the processed cursor (parse/append/cursor); the runner's inbox_step does the thinking
 └── remote/                     # OPTIONAL mirror cluster (only present/used if the user opts in — see references/remote.md)
     ├── github_functions.py             # stdlib GitHub REST wrapper (+ GraphQL pin)
     ├── gitlab_functions.py             # stdlib GitLab REST wrapper (sibling shape)
