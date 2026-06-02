@@ -6,7 +6,7 @@ appending an entry to `.specseed/project_management/issues/<id>/approval.md`:
 
     ## A<N> — <summary>
     - **Opened:** <ISO>
-    - **Kind:** gate:<category> | run-action | git-conflict | entity-approval
+    - **Kind:** gate:<category> | run-action | handoff | git-conflict | entity-approval
     - **Status:** open
     - **What I need ...:** ...
     ...
@@ -87,6 +87,7 @@ def collect(pm_dir):
                 "opened": e["fields"].get("opened", ""),
                 "why": e["fields"].get("why it's gated", ""),
                 "options": e["fields"].get("options", ""),
+                "handoff": e["fields"].get("handoff", ""),
             })
     return out
 
@@ -109,6 +110,8 @@ def render_md(records):
             L.append(f"- **Why gated:** {r['why']}")
         if r["options"]:
             L.append(f"- **Options:** {r['options']}")
+        if r.get("handoff"):
+            L.append(f"- **Handoff:** {r['handoff']}")
         L.append(f"- **Detail:** `.specseed/project_management/issues/{r['issue']}/approval.md`")
         L.append("")
     return "\n".join(L) + "\n"

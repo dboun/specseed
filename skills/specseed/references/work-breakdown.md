@@ -380,6 +380,13 @@ territory), SUGGEST splitting it so each issue completes in a clean, gate-free s
 - **run** issue — the gated execution. The agent writes comprehensive self-run
   instructions into `approval.md` and **parks** (run-action); the human runs it; the
   agent transcribes results into a step report. **No source edits during a run issue.**
+  When the human action is fat (multi-step setup, "download this model", provision
+  creds) the instructions belong in a **handoff sidecar** (`issues/<id>/handoff/` —
+  `README.md` + optional helper scripts) rather than crammed into the gate; the gate then
+  carries a short summary, a `Handoff:` pointer, and an optional `Verify:` check (see the
+  `handoff` kind in `CLAUDE_template.md` / `config.py render-claude`). The sidecar README
+  + scripts get committed; the heavy artifact the action yields stays outside `.specseed/`
+  and gitignored.
 - **consume** issue (optional) — non-trivial analysis of the run's outputs. Agent
   territory again; unit-testable with mocks.
 

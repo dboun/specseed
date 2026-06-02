@@ -39,6 +39,10 @@ looking anything up**:
 - **Options** + the agent's recommendation.
 - For a **run-action**: the **self-run instructions** verbatim (the exact commands +
   expected runtime/output) — this is a thing the human (or only the human) runs.
+- For a **handoff** (the human must do something out of band before the agent can
+  proceed): point them at the sidecar **`Handoff:` dir** — read its `README.md` to them
+  (or summarize) and name any helper script there. The gate body is just a summary; the
+  dir holds the steps.
 
 Then ask for the decision. Interactive local session → ask in chat (a one-shot
 `AskUserQuestion` popup is fine here — the human is present by definition). Headless
@@ -66,6 +70,11 @@ no-self-bypass rule working as intended):
 - A **run-action** the human executed: record the results they report into a new
   `step_reports/<X>_run-<desc>.md`, mark the gate `approve`d, set the issue back to
   `todo`/`in_progress` so the agent can consume the outputs. No source edits here.
+- A **handoff** the human says they completed: if the gate carries a **`Verify:`**
+  command, **run it first** and only `approve` if it passes — a failing/empty verify
+  means the action isn't actually done, so leave the gate open and tell them what's still
+  missing (don't trust the toggle). On pass (or no `Verify:`), `approve` → `todo` so the
+  next agent resumes. The sidecar dir stays in place (record + reuse); do not delete it.
 - A **completion gate** (`approval_required` on a finished issue/ticket, OR a
   **code-review sign-off** — `Kind: entity-approval` written by `review_gate.py` when a
   review lands in `awaiting_approval`): approve → `done` (+ re-assemble so the ticket

@@ -204,7 +204,8 @@ AGENTS.md                       # one line: "Read ./CLAUDE.md. In dirs you work 
     │       │                   # + prose (TECHNICAL acceptance criteria, notes)
     │       ├── plan.md
     │       ├── spec_concern.md # OPTIONAL — written by impl agent if a settled doc looks wrong mid-issue
-    │       ├── approval.md     # OPTIONAL — HITL gate requests (action-gate / run-action / completion). Resolved via approve route
+    │       ├── approval.md     # OPTIONAL — HITL gate requests (action-gate / run-action / handoff / completion). Resolved via approve route
+    │       ├── handoff/        # OPTIONAL — sidecar for a `handoff` gate: README.md + helper scripts for an out-of-band human action (download model, provision creds). Committed; produced artifact stays outside .specseed/
     │       └── step_reports/
     │           └── <X>_<step>_<desc>.md
     ├── sprints/

@@ -75,7 +75,31 @@ def test_cli_writes_markdown_and_json(repo):
         "opened": "2026-06-01T10:00:00Z",
         "why": "touches production data",
         "options": "approve or reject",
+        "handoff": "",
     }]
+
+
+HANDOFF = """## A1 - Download the base model
+- **Opened:** 2026-06-02T09:00:00Z
+- **Kind:** handoff
+- **Status:** open
+- **What I need / am about to do:** human must fetch the model weights
+- **Handoff:** .specseed/project_management/issues/FEAT-0009/handoff/
+- **Verify:** test -f models/base.gguf
+"""
+
+
+def test_collect_and_render_surface_handoff_pointer(repo):
+    write(repo.pm / "issues" / "FEAT-0009" / "approval.md", HANDOFF)
+    records = A.collect(repo.pm)
+    assert len(records) == 1
+    assert records[0]["kind"] == "handoff"
+    assert records[0]["handoff"] == \
+        ".specseed/project_management/issues/FEAT-0009/handoff/"
+
+    md = A.render_md(records)
+    assert "**Handoff:**" in md
+    assert "issues/FEAT-0009/handoff/" in md
 
 
 def test_empty_cli_and_check_exit_codes(repo):

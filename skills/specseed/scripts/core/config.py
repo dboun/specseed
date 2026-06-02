@@ -593,7 +593,7 @@ def render_claude(cfg):
     L.append("```markdown")
     L.append("## A<N> — <one-line summary>")
     L.append("- **Opened:** <ISO date>")
-    L.append("- **Kind:** gate:<category> | run-action | git-conflict | entity-approval")
+    L.append("- **Kind:** gate:<category> | run-action | handoff | git-conflict | entity-approval")
     L.append("- **Status:** open")
     L.append("- **What I need / am about to do:** <one paragraph>")
     L.append("- **Why it's gated:** <category + reason>")
@@ -603,6 +603,9 @@ def render_claude(cfg):
     L.append("- **How to run it yourself (if applicable):** <exact commands + expected runtime/output>")
     L.append("  <!-- include when a human can/should run it directly — sometimes the ONLY path, "
              "e.g. prod deploy. Use judgement. -->")
+    L.append("- **Handoff:** <path to the sidecar dir>  <!-- handoff kind only; see below -->")
+    L.append("- **Verify:** <command that confirms the human did it, e.g. `test -f models/x.gguf`>  "
+             "<!-- optional; re-checked on resume -->")
     L.append("- **Resolve:** `/specseed approve <issue_id> A` (local), or comment "
              "`approve <issue_id> A` on the CONTROL issue (remote).")
     L.append("```")
@@ -611,6 +614,18 @@ def render_claude(cfg):
              "it — it writes the request WITH comprehensive self-run instructions, then parks. "
              "After the human runs it, the agent transcribes results into a step report. No source "
              "edits while waiting on a run-action.")
+    L.append("")
+    L.append("For a **handoff** (the human must do something OUT OF BAND before you can proceed — "
+             "download a model, provision creds, run a one-off migration), don't cram fat "
+             "instructions into the gate. Create a sidecar dir — `issues/<issue_id>/handoff/` "
+             "(issue-scoped) — with a human-facing `README.md` and any helper scripts (a download "
+             "script, etc.), set the `Handoff:` field to that path, keep the `What I need` summary "
+             "short, and park exactly like a run-action. **Commit the README + scripts** (they are "
+             "a record + reusable); the heavy artifact the action produces (model weights, secrets) "
+             "lands where the app expects it, OUTSIDE `.specseed/`, and should be gitignored — never "
+             "in the handoff dir. Put helpers under `handoff/`, never `.specseed/scripts/` (that is "
+             "skill plumbing). Set `Verify:` to a command that confirms completion so you can "
+             "re-check on resume instead of trusting the toggle.")
     L.append("")
     L.append(_render_completion_gates(cfg))
     if cr_config(cfg).get("enabled"):

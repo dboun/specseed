@@ -171,7 +171,7 @@ These states keep your claim and are NOT auto-pickable, so nobody steals the iss
 
 **Two kinds of gate, same `awaiting_approval` landing state — don't confuse them:**
 - **Completion gate** (this section): `approval_required` / `review_required` ask *"is this finished unit accepted?"* — fired when the issue is otherwise done.
-- **Action gate** (the **⚠️ Operating policy** block at the top): a *class of action* (push/docker/network/destructive…) is hit *mid-work*, regardless of which issue is active. You **park-and-continue**: write an `approval.md` request, set `awaiting_approval`, run `approvals_render.py`, and move to the next ready non-gated issue.
+- **Action gate** (the **⚠️ Operating policy** block at the top): a *class of action* (push/docker/network/destructive…) is hit *mid-work*, regardless of which issue is active. You **park-and-continue**: write an `approval.md` request, set `awaiting_approval`, run `approvals_render.py`, and move to the next ready non-gated issue. When you're blocked because **the human must do something out of band** (download a model, provision creds, run a one-off migration), that's a `handoff`-kind park: put the steps in a sidecar `issues/<id>/handoff/` dir (`README.md` + optional helper scripts), point the gate's `Handoff:` field at it, and set a `Verify:` check if you can — full contract in the **⚠️ Operating policy** block.
 
 Both surface to the human through `.specseed/project_management/issues/<id>/approval.md` + the generated `APPROVALS.md` index. A human resolves either by running **`/specseed approve`** (interactive, or via an agent: "next thing needing approval" / "approve <ID> <note>"), or — mirror on — by commenting `approve`/`reject <ID>` on the CONTROL issue. Resolution writes a `## Resolved A<N>` marker and flips the issue back (`todo` to resume, `wont_do`/`blocked` if rejected/held). Re-run `approvals_render.py` after any change.
 
@@ -201,7 +201,7 @@ When all plan steps `[x]`, tests pass, and any required gates are cleared (see a
 ## What you CAN edit
 
 - `issues.json` — your OWN issue's `status` (`todo`→`in_progress`→ optional `in_review`/`awaiting_approval` gates →`done`; or `blocked`; `wont_do`/`deprecated` are set by the skill/human, not you), claim fields (set by `claim_issue.py`, cleared by you on done), `notes`, `artifacts.tests`/`artifacts.migrations` as work progresses
-- Your issue's folder: `<issue_id>.md` frontmatter (mirror status; update artifacts/notes), `plan.md`, `spec_concern.md`, `approval.md` (append action-gate / run-action requests — never write your own `## Resolved` marker; only a human/approve-route does that), `step_reports/*`
+- Your issue's folder: `<issue_id>.md` frontmatter (mirror status; update artifacts/notes), `plan.md`, `spec_concern.md`, `approval.md` (append action-gate / run-action / handoff requests — never write your own `## Resolved` marker; only a human/approve-route does that), `handoff/` (a sidecar dir with a `README.md` + optional helper scripts when you park a `handoff`), `step_reports/*`
 - All source code, test files, build configs in your issue's scope
 
 You may NOT edit other issues, any ticket or epic, `tickets.json`, or the spec docs — even if you think something is wrong. Surface to the user instead.

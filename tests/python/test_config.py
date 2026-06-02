@@ -138,6 +138,14 @@ def test_render_claude_includes_completion_gates():
     assert "type: qa" in out
 
 
+def test_render_claude_documents_handoff_kind():
+    out = config.render_claude(config.default_config())
+    assert "handoff" in out                       # in the Kind enum + the guidance para
+    assert "**Handoff:**" in out                   # sidecar pointer field
+    assert "**Verify:**" in out                    # optional re-check field
+    assert "handoff/" in out                       # the sidecar dir convention
+
+
 def test_render_claude_review_off():
     cfg = config.default_config()
     cfg["review"]["enabled"] = False
