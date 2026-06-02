@@ -67,6 +67,39 @@ def _parse(body):
     return parts[0].lower(), (parts[1] if len(parts) > 1 else "")
 
 
+def _cooldown_line(root):
+    rp = _mem(root) / "runner.retry"
+    if not rp.exists():
+        return ""
+    try:
+        import time
+        text = rp.read_text(encoding="utf-8").strip()
+        try:
+            rem = float(text) - time.time()       # legacy bare timestamp
+            return (f"\n- ⏳ retry cooldown: ~{int(rem // 60)}m left"
+                    if rem > 0 else "")
+        except ValueError:
+            pass
+        data = json.loads(text)
+        cds = data.get("cooldowns") if isinstance(data, dict) else {}
+        if not isinstance(cds, dict):
+            return ""
+        rems = []
+        for until in cds.values():
+            try:
+                rem = float(until) - time.time()
+            except (TypeError, ValueError):
+                continue
+            if rem > 0:
+                rems.append(rem)
+        if not rems:
+            return ""
+        label = "1 chain" if len(rems) == 1 else f"{len(rems)} chains"
+        return f"\n- ⏳ retry cooldown: {label}, max ~{int(max(rems) // 60)}m left"
+    except Exception:
+        return ""
+
+
 def _status_reply(root, cfg):
     pm = rc.find_root(root) / ".specseed" / "project_management"
     issues = json.loads((pm / "issues.json").read_text()) if (pm / "issues.json").exists() else {}
@@ -74,16 +107,7 @@ def _status_reply(root, cfg):
     in_flight = [i for i, v in issues.items() if v.get("status") == "in_progress"]
     ready = [i for i, v in issues.items() if v.get("status") in ("todo", "blocked")]
     active = [s.get("id") for s in sprints.values() if s.get("status") == "in_progress"]
-    cooldown = ""
-    rp = _mem(root) / "runner.retry"
-    if rp.exists():
-        try:
-            import time
-            rem = float(rp.read_text(encoding="utf-8").strip()) - time.time()
-            if rem > 0:
-                cooldown = f"\n- ⏳ retry cooldown: ~{int(rem // 60)}m left"
-        except Exception:
-            pass
+    cooldown = _cooldown_line(root)
     cr_line = _cr_rollup(list_crs_safe(root))
     return (f"**status**\n- runner: `{read_ctl(root)}`\n"
             f"- active sprint: {', '.join(active) or '—'}\n"

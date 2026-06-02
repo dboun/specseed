@@ -35,6 +35,7 @@ In mirror mode you can also comment the verbs on the pinned CONTROL issue (e.g. 
 """
 
 import argparse
+import hashlib
 import json
 import os
 import signal
@@ -190,31 +191,101 @@ def run_agent(root, prompt, log, argv, env=None):
 
 
 # --------------------------------------------------------------------------- #
-# retry cooldown — a failed claude run (e.g. hit a session limit / exit!=0) pauses
-# only CLAUDE attempts for `retry_delay_minutes`; reconcile + CONTROL keep running.
+# retry cooldown — a failed agent chain (e.g. hit a session limit / exit!=0) pauses
+# only that function+difficulty+chain for `retry_delay_minutes`; other ready work with
+# a different chain may still run. Reconcile + CONTROL keep running.
 # --------------------------------------------------------------------------- #
 def _retry_path(root):
     return rc.find_root(root) / ".specseed" / "memory" / "runner.retry"
 
 
-def cooldown_remaining(root):
-    """Seconds left in the retry cooldown, else 0."""
+def _chain_retry_key(function, bucket, chain):
+    """Stable cooldown key for one runner function/bucket/ordered agent chain."""
+    sig = json.dumps(chain or [], sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha1(sig.encode("utf-8")).hexdigest()[:12]
+    return f"{function}:{bucket}:{digest}"
+
+
+def _read_retry_state(root):
+    """Return (legacy_until, cooldowns). Old runner.retry files were a bare float."""
     p = _retry_path(root)
     if not p.exists():
-        return 0
+        return None, {}
+    text = p.read_text(encoding="utf-8").strip()
+    if not text:
+        return None, {}
     try:
-        rem = float(p.read_text(encoding="utf-8").strip()) - time.time()
+        return float(text), {}
     except Exception:
+        pass
+    try:
+        data = json.loads(text)
+    except Exception:
+        return None, {}
+    cds = data.get("cooldowns") if isinstance(data, dict) else {}
+    if not isinstance(cds, dict):
+        return None, {}
+    out = {}
+    for key, until in cds.items():
+        try:
+            out[str(key)] = float(until)
+        except (TypeError, ValueError):
+            continue
+    return None, out
+
+
+def _write_retry_state(root, cooldowns):
+    p = _retry_path(root)
+    now = time.time()
+    active = {k: v for k, v in (cooldowns or {}).items() if v > now}
+    if not active:
+        if p.exists():
+            p.unlink()
+        return
+    p.write_text(json.dumps({"version": 1, "cooldowns": active}, sort_keys=True),
+                 encoding="utf-8")
+
+
+def cooldown_remaining(root, retry_key=None):
+    """Seconds left in retry cooldown, else 0. `retry_key=None` returns max active."""
+    legacy_until, cooldowns = _read_retry_state(root)
+    now = time.time()
+    if legacy_until is not None:
+        rem = legacy_until - now
+        return rem if rem > 0 else 0
+    if retry_key is not None:
+        rem = cooldowns.get(retry_key, 0) - now
+        return rem if rem > 0 else 0
+    if not cooldowns:
         return 0
+    rem = max(cooldowns.values()) - now
     return rem if rem > 0 else 0
 
 
-def run_agent_chain(root, cfg, chain, prompt, log):
+def _arm_cooldown(root, retry_key, delay_seconds):
+    legacy_until, cooldowns = _read_retry_state(root)
+    if legacy_until is not None and legacy_until > time.time():
+        cooldowns["legacy"] = legacy_until
+    cooldowns[retry_key] = time.time() + delay_seconds
+    _write_retry_state(root, cooldowns)
+
+
+def _clear_cooldown(root, retry_key):
+    legacy_until, cooldowns = _read_retry_state(root)
+    if legacy_until is not None:
+        return
+    if retry_key in cooldowns:
+        cooldowns.pop(retry_key, None)
+        _write_retry_state(root, cooldowns)
+
+
+def run_agent_chain(root, cfg, chain, prompt, log, retry_key=None):
     """Run a task against an ordered fallback chain of specs. Returns 0 on the first
     success, 'cooldown' if skipped (in retry cooldown), None if killed, or the last
     nonzero exit code (cooldown then armed). A nonzero spec falls through to the next;
     the cooldown is armed only once the whole chain has failed."""
-    rem = cooldown_remaining(root)
+    retry_key = retry_key or _chain_retry_key("agent", "default", chain)
+    rem = cooldown_remaining(root, retry_key)
     if rem > 0:
         log(f"agent in retry cooldown (~{int(rem // 60)}m left); skipping")
         return "cooldown"
@@ -228,14 +299,12 @@ def run_agent_chain(root, cfg, chain, prompt, log):
         if code is None:
             return None                               # killed — not a failure
         if code == 0:
-            p = _retry_path(root)                     # success clears any cooldown
-            if p.exists():
-                p.unlink()
+            _clear_cooldown(root, retry_key)          # success clears its cooldown
             return 0
         last = code
         log(f"agent exit {code} via {tag}")
     delay = int(cfg.get("retry_delay_minutes", 30)) * 60
-    _retry_path(root).write_text(str(time.time() + delay), encoding="utf-8")
+    _arm_cooldown(root, retry_key, delay)
     log(f"all {len(chain)} agent spec(s) failed -> retry in {delay // 60}m")
     return last
 
@@ -245,14 +314,17 @@ def _bucket(difficulty):
     return "easy" if difficulty == "easy" else "hard"
 
 
-def peek_next(root):
+def peek_next(root, skip=None):
     """Read-only: the next ready issue as (iid, type, difficulty), or None. Shells
     `claim_issue.py --peek` (no claim) so the runner can pick the right agent chain
     before spawning."""
     claim = _pm(root).parent / "scripts" / "core" / "claim_issue.py"
     try:
-        out = subprocess.run([sys.executable, str(claim), "--peek",
-                              "--pm-dir", str(_pm(root))],
+        argv = [sys.executable, str(claim), "--peek", "--pm-dir", str(_pm(root))]
+        skip = [s for s in (skip or []) if s]
+        if skip:
+            argv += ["--skip", ",".join(skip)]
+        out = subprocess.run(argv,
                              cwd=str(rc.find_root(root)),
                              capture_output=True, text=True, check=False)
         data = json.loads(out.stdout.strip().splitlines()[-1])
@@ -312,22 +384,43 @@ def notify_changes(root, cfg, remote, before, after, log):
 
 
 def work_step(root, cfg, remote, log):
-    """Peek the next ready issue, choose its (function, difficulty) agent chain, then
-    have that agent claim + execute the issue. Function is `qa` for a type:qa issue,
-    else `implement` (merges still ride the implement agent's finish flow). Returns
-    True if any issue status changed (so the caller re-pushes the mirror)."""
-    peek = peek_next(root)
-    if peek is None:
-        return False                                  # nothing ready
-    iid, itype, difficulty = peek
-    function = "qa" if itype == "qa" else "implement"
+    """Run the first ready issue whose agent chain is not cooling down. If the next
+    ready issue is cooling down, skip only that issue for this pass and ask
+    claim_issue.py for the next candidate. Function is `qa` for a type:qa issue, else
+    `implement` (merges still ride the implement agent's finish flow). Returns True if
+    any issue status changed (so the caller re-pushes the mirror)."""
     pcfg = cfgmod.load_config(root) or {}
-    chain = cfgmod.agent_chain(pcfg, function, _bucket(difficulty))
-    before = _statuses(root)
-    if run_agent_chain(root, cfg, chain, WORK_PROMPT.format(iid=iid), log) != 0:
-        return False                                  # killed / cooldown / failed
-    after = _statuses(root)
-    return notify_changes(root, cfg, remote, before, after, log)
+    skipped = []
+    before_all = _statuses(root)
+    attempted = False
+    while True:
+        peek = peek_next(root, skip=skipped)
+        if peek is None:
+            if attempted:
+                return notify_changes(root, cfg, remote, before_all, _statuses(root), log)
+            return False                              # nothing ready outside cooldown
+        iid, itype, difficulty = peek
+        function = "qa" if itype == "qa" else "implement"
+        bucket = _bucket(difficulty)
+        chain = cfgmod.agent_chain(pcfg, function, bucket)
+        retry_key = _chain_retry_key(function, bucket, chain)
+        rem = cooldown_remaining(root, retry_key)
+        if rem > 0:
+            log(f"{iid}: {function}/{bucket} in retry cooldown "
+                f"(~{int(rem // 60)}m left); checking next ready issue")
+            skipped.append(iid)
+            continue
+        attempted = True
+        res = run_agent_chain(root, cfg, chain, WORK_PROMPT.format(iid=iid), log,
+                              retry_key=retry_key)
+        if res == 0:
+            return notify_changes(root, cfg, remote, before_all, _statuses(root), log)
+        if res == "cooldown":
+            skipped.append(iid)
+            continue
+        if res is None:
+            return False                              # killed
+        skipped.append(iid)                           # failed; try other chains
 
 
 def _pm(root):
@@ -369,8 +462,11 @@ def review_step(root, cfg, remote, log):
 
     before = _statuses(root)
     if not has_verdict:
-        chain = cfgmod.agent_chain(pcfg, "review", _bucket(issues[target].get("difficulty")))
-        res = run_agent_chain(root, cfg, chain, REVIEW_PROMPT.format(iid=target), log)
+        bucket = _bucket(issues[target].get("difficulty"))
+        chain = cfgmod.agent_chain(pcfg, "review", bucket)
+        retry_key = _chain_retry_key("review", bucket, chain)
+        res = run_agent_chain(root, cfg, chain, REVIEW_PROMPT.format(iid=target), log,
+                              retry_key=retry_key)
         if res != 0:                              # killed / cooldown / failed — retry next pass
             return False
     gate = _pm(root).parent / "scripts" / "core" / "review_gate.py"
@@ -389,6 +485,7 @@ def execute_actions(root, cfg, remote, actions, log):
     # execution — run them on the implement/hard agent chain (the default executor).
     pcfg = cfgmod.load_config(root) or {}
     ctl_chain = cfgmod.agent_chain(pcfg, "implement", "hard")
+    ctl_retry_key = _chain_retry_key("control", "hard", ctl_chain)
     for a in actions:
         verb, n = a["verb"], a["reply_to"]
         if verb == "sync":
@@ -402,7 +499,8 @@ def execute_actions(root, cfg, remote, actions, log):
             # approve/reject route to approve mode (its triggers include the bare
             # verbs) and flip issue status, so re-push the mirror after a good run.
             prompt = control_prompt(verb, a.get("text"))
-            res = run_agent_chain(root, cfg, ctl_chain, prompt, log)
+            res = run_agent_chain(root, cfg, ctl_chain, prompt, log,
+                                  retry_key=ctl_retry_key)
             if res == 0:
                 remote.comment(n, f"✅ Ran `{verb}`.")
                 if verb in ("approve", "reject"):
@@ -738,13 +836,15 @@ def cr_relay(root, cfg, pcfg, cr, remote, log):
     it on `agent`. `remote` is None in local-only mode (no comment fetch / reply post)."""
     cr_id = cr["id"]
     session_id = cr.get("session_id")
-    rem = cooldown_remaining(root)
+    chain = respec_chain(pcfg)
+    retry_key = _chain_retry_key("respec", "hard", chain)
+    rem = cooldown_remaining(root, retry_key)
     if rem > 0:
         log(f"CR {cr_id}: relay in cooldown (~{int(rem // 60)}m); will retry")
         return
     pending = change_requests.read_pending_comment(root, cr_id)   # peek; clear on success
     prompt = relay_prompt(cr_id, comment=pending)
-    for i, spec in enumerate(respec_chain(pcfg)):
+    for i, spec in enumerate(chain):
         argv, env = build_relay_cmd(spec, RUNNER, session_id)
         if i:
             log(f"CR {cr_id}: relay fallback #{i} -> {spec.get('provider')}/{spec.get('model')}")
@@ -752,9 +852,7 @@ def cr_relay(root, cfg, pcfg, cr, remote, log):
         if code is None:
             return                                    # killed — not a failure
         if code == 0:
-            p = _retry_path(root)
-            if p.exists():
-                p.unlink()
+            _clear_cooldown(root, retry_key)
             if pending:
                 change_requests.clear_pending_comment(root, cr_id)
             sid = parse_session_id(out, spec.get("provider"))
@@ -771,7 +869,7 @@ def cr_relay(root, cfg, pcfg, cr, remote, log):
             return
         log(f"CR {cr_id}: relay exit {code}")
     delay = int(cfg.get("retry_delay_minutes", 30)) * 60
-    _retry_path(root).write_text(str(time.time() + delay), encoding="utf-8")
+    _arm_cooldown(root, retry_key, delay)
     log(f"CR {cr_id}: all relay spec(s) failed -> retry in {delay // 60}m")
 
 

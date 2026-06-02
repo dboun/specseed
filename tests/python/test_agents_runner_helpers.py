@@ -55,7 +55,7 @@ def test_build_agent_cmd_dispatches_on_provider():
 def test_run_agent_chain_walks_fallbacks(monkeypatch, tmp_path):
     root = _specseed_root(tmp_path)
     monkeypatch.setattr(agents_runner, "RUNNER", config.default_config()["runner"])
-    monkeypatch.setattr(agents_runner, "cooldown_remaining", lambda r: 0)
+    monkeypatch.setattr(agents_runner, "cooldown_remaining", lambda r, retry_key=None: 0)
 
     seen = []
 
@@ -96,10 +96,19 @@ def test_peek_next_parses_claim_issue_output(monkeypatch, tmp_path):
 
     def fake_run(argv, **kw):
         assert "--peek" in argv
+        assert "--skip" not in argv
         return _CP('{"peek": true, "issue_id": "I-7", "type": "qa", "difficulty": "hard"}\n')
 
     monkeypatch.setattr(agents_runner.subprocess, "run", fake_run)
     assert agents_runner.peek_next(root) == ("I-7", "qa", "hard")
+
+    def fake_run_with_skip(argv, **kw):
+        assert "--skip" in argv
+        assert argv[argv.index("--skip") + 1] == "I-7,I-8"
+        return _CP('{"peek": true, "issue_id": "I-9", "type": "feature", "difficulty": "easy"}\n')
+
+    monkeypatch.setattr(agents_runner.subprocess, "run", fake_run_with_skip)
+    assert agents_runner.peek_next(root, skip=["I-7", "I-8"]) == ("I-9", "feature", "easy")
 
     # nothing ready → None
     monkeypatch.setattr(agents_runner.subprocess, "run",
@@ -124,6 +133,119 @@ def test_cooldown_remaining_reads_retry_timestamp(tmp_path):
 
     retry_path.write_text("not-a-float", encoding="utf-8")
     assert agents_runner.cooldown_remaining(root) == 0
+
+
+def test_scoped_cooldown_state_is_per_retry_key(tmp_path):
+    root = _specseed_root(tmp_path)
+
+    agents_runner._arm_cooldown(root, "implement:hard:aaa", 120)
+
+    assert agents_runner.cooldown_remaining(root, "implement:hard:aaa") > 0
+    assert agents_runner.cooldown_remaining(root, "implement:easy:bbb") == 0
+    assert agents_runner.cooldown_remaining(root) > 0
+
+    agents_runner._clear_cooldown(root, "implement:hard:aaa")
+    assert agents_runner.cooldown_remaining(root, "implement:hard:aaa") == 0
+    assert not agents_runner._retry_path(root).exists()
+
+
+def test_run_agent_chain_clears_only_matching_cooldown(monkeypatch, tmp_path):
+    root = _specseed_root(tmp_path)
+    monkeypatch.setattr(agents_runner, "RUNNER", config.default_config()["runner"])
+    monkeypatch.setattr(agents_runner, "run_agent", lambda *a, **k: 0)
+    chain = config.default_config()["runner"]["agents"]["implement"]["easy"]
+    other_key = "implement:hard:other"
+    this_key = agents_runner._chain_retry_key("implement", "easy", chain)
+    agents_runner._arm_cooldown(root, other_key, 120)
+
+    res = agents_runner.run_agent_chain(root, {"retry_delay_minutes": 30}, chain,
+                                        "do it", lambda m: None, retry_key=this_key)
+
+    assert res == 0
+    assert agents_runner.cooldown_remaining(root, this_key) == 0
+    assert agents_runner.cooldown_remaining(root, other_key) > 0
+
+
+def test_work_step_skips_cooled_chain_and_runs_next_candidate(monkeypatch, tmp_path):
+    root = _specseed_root(tmp_path)
+    issues_path = root / ".specseed" / "project_management" / "issues.json"
+    issues_path.write_text(json.dumps({
+        "I-hard": {"status": "todo"},
+        "I-easy": {"status": "todo"},
+    }), encoding="utf-8")
+
+    pcfg = config.default_config()
+    hard_chain = config.agent_chain(pcfg, "implement", "hard")
+    easy_chain = config.agent_chain(pcfg, "implement", "easy")
+    hard_key = agents_runner._chain_retry_key("implement", "hard", hard_chain)
+    easy_key = agents_runner._chain_retry_key("implement", "easy", easy_chain)
+
+    seen_skips = []
+
+    def fake_peek(r, skip=None):
+        seen_skips.append(list(skip or []))
+        if not skip:
+            return "I-hard", "feature", "hard"
+        if skip == ["I-hard"]:
+            return "I-easy", "feature", "easy"
+        return None
+
+    ran = []
+
+    def fake_run_chain(r, cfg, chain, prompt, log, retry_key=None):
+        ran.append((prompt, retry_key))
+        return 0
+
+    monkeypatch.setattr(agents_runner.cfgmod, "load_config", lambda r: pcfg)
+    monkeypatch.setattr(agents_runner, "peek_next", fake_peek)
+    monkeypatch.setattr(
+        agents_runner, "cooldown_remaining",
+        lambda r, retry_key=None: 60 if retry_key == hard_key else 0,
+    )
+    monkeypatch.setattr(agents_runner, "run_agent_chain", fake_run_chain)
+    monkeypatch.setattr(agents_runner, "notify_changes", lambda *a, **k: True)
+
+    assert agents_runner.work_step(root, {"retry_delay_minutes": 30}, None,
+                                   lambda m: None) is True
+    assert seen_skips == [[], ["I-hard"]]
+    assert ran == [(agents_runner.WORK_PROMPT.format(iid="I-easy"), easy_key)]
+
+
+def test_work_step_scans_next_candidate_after_chain_failure(monkeypatch, tmp_path):
+    root = _specseed_root(tmp_path)
+    issues_path = root / ".specseed" / "project_management" / "issues.json"
+    issues_path.write_text(json.dumps({
+        "I-hard": {"status": "todo"},
+        "I-easy": {"status": "todo"},
+    }), encoding="utf-8")
+
+    pcfg = config.default_config()
+    peeks = [
+        ("I-hard", "feature", "hard"),
+        ("I-easy", "feature", "easy"),
+        None,
+    ]
+    ran = []
+
+    def fake_peek(r, skip=None):
+        return peeks.pop(0)
+
+    def fake_run_chain(r, cfg, chain, prompt, log, retry_key=None):
+        ran.append(prompt)
+        return 1 if "I-hard" in prompt else 0
+
+    monkeypatch.setattr(agents_runner.cfgmod, "load_config", lambda r: pcfg)
+    monkeypatch.setattr(agents_runner, "peek_next", fake_peek)
+    monkeypatch.setattr(agents_runner, "cooldown_remaining", lambda r, retry_key=None: 0)
+    monkeypatch.setattr(agents_runner, "run_agent_chain", fake_run_chain)
+    monkeypatch.setattr(agents_runner, "notify_changes", lambda *a, **k: True)
+
+    assert agents_runner.work_step(root, {"retry_delay_minutes": 30}, None,
+                                   lambda m: None) is True
+    assert ran == [
+        agents_runner.WORK_PROMPT.format(iid="I-hard"),
+        agents_runner.WORK_PROMPT.format(iid="I-easy"),
+    ]
 
 
 def test_path_helpers_and_status_snapshot(tmp_path):
