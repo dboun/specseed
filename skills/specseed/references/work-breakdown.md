@@ -361,13 +361,44 @@ approval):**
 - **Per-issue `difficulty`** (`easy`/`hard`) — drives the code-review gate (see "Code
   review"). Default each issue from its scope (broad/cross-component/security-touching/
   irreversible → `hard`; localized, well-understood → `easy`); the user adjusts. Add it as
-  a column in the consolidated table.
+  a column in the consolidated table, with a short rationale (`foundation`,
+  `safety/data`, `broad refactor`, `localized`, etc.) so the human can correct obvious
+  mismatches without tuning the whole policy.
 - **Per-ticket QA** — whether to append a terminal `type: qa` issue to each ticket (see
   "QA issues"). Honor `config.json` `qa.mode`: `off` → never; `all` → every ticket;
   `suggest` (default) → propose QA for tickets that clear the bar (effort ≥
   `qa.effort_threshold_hours`, breadth across ≥2 components, or — if reviews are on — a
   cluster of low expected review confidence / many `hard` issues). Present the suggestion
   per ticket; the user accepts or declines.
+
+### Difficulty posture
+
+Use judgement. `difficulty` is a routing hint for model/review weight, not an effort
+score and not a user-facing settings maze. Let the agent decide first, then let the user
+correct rows in the risk/gating table.
+
+Bias `hard` when the issue is:
+
+- **Foundational** — later tickets build on it, or a wrong base would cascade. Trivial
+  scaffolding can still be `easy`; unstable substrate cannot.
+- **Safety/security/data integrity related** — auth, permissions, secrets, destructive
+  data paths, migrations, persisted formats, privacy, financial/medical/legal risk.
+  Also consider `approval_required` when a runtime action gate applies.
+- **Broad or semantic refactor** — cross-component change, API contract shift, behavior
+  rewrite, major dependency/config change. Small mechanical cleanup can stay `easy`.
+- **Multi-phase or externally gated** — work that mixes prep/run/consume, deployment,
+  training, paid API runs, real infra, or human-run steps. Consider the split heuristic
+  below before leaving it as one large `hard` issue.
+- **Low-confidence or ambiguous** — unclear acceptance criteria, unknown library/domain,
+  brittle tests, or codebase area the spec/adopt pass could not inspect well.
+
+Bias `easy` when the issue is localized, reversible, well-understood, has a narrow blast
+radius, and has obvious validation. Mixed signals → default `hard` or split.
+
+If the user gives an explicit lightweight preference for the session ("be conservative"
+or "use hard sparingly"), apply it as a tie-breaker only. Do not expose a separate
+difficulty-bias setting unless they ask for one; their real control is already the
+easy/hard agent matrix, review scope, and auto-approve policy in `config.json`.
 
 ### Isolate gated execution (the split heuristic)
 
