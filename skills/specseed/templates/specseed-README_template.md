@@ -238,6 +238,9 @@ What you can do from the remote:
   `pause`, `resume`, `kill`, `sync`, `claim-next`, `approvals`, `approve`, `reject`,
   `plan-next`, `adapt <text>`.
 - **Open new issues** for bugs or requests. The runner picks them up.
+- **Draft without intake:** add an ignore label (`draft`, `ignore`, `specseed:ignore`,
+  `changes-requested`, `needs-more-info`, `needs-triage` by default). The runner skips
+  that issue until the label is removed.
 
 What you should not do:
 - **Do not hand-edit the mirrored issues.** Manual edits get reverted to match local,

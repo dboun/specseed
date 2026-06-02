@@ -52,7 +52,8 @@ def test_find_root_walks_up_to_specseed_dir(tmp_path):
 def test_load_runtime_merges_backend_provider(tmp_path):
     root = _specseed_root(tmp_path)
     write(root / ".specseed" / "memory" / "config.json", json.dumps({
-        "backend": {"enabled": True, "provider": "gitlab"},
+        "backend": {"enabled": True, "provider": "gitlab",
+                    "ignore_labels": ["draft", "park"]},
     }))
     rc.save_state(rc.default_state("group/project", ["alice"]), root)
 
@@ -62,6 +63,7 @@ def test_load_runtime_merges_backend_provider(tmp_path):
     assert cfg["repo"] == "group/project"
     assert cfg["allowlist"] == ["alice"]
     assert cfg["provider"] == "gitlab"
+    assert cfg["ignore_labels"] == ["draft", "park"]
 
 
 def test_load_runtime_missing_files_uses_empty_defaults(tmp_path):
@@ -73,6 +75,7 @@ def test_load_runtime_missing_files_uses_empty_defaults(tmp_path):
     assert cfg["repo"] is None
     assert cfg["allowlist"] == []
     assert cfg["provider"] is None
+    assert "draft" in cfg["ignore_labels"]
 
 
 def test_now_iso_is_utc_timestamp():

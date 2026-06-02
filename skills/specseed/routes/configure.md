@@ -47,6 +47,8 @@ the hitl+git half into the READ-FIRST block of `CLAUDE.md`. Shape:
           "branch_naming": "{issue_id}-{slug}", "push": "user", "pull_request": "never",
           "auto_merge": "clean_close", "refresh_on_merge": true},
   "backend": {"enabled": false, "provider": null,
+              "ignore_labels": ["draft","ignore","specseed:ignore","changes-requested",
+                                "needs-more-info","needs-triage"],
               "entity_templates": {"enabled": false}},
   "runner": {"interval": 45, "max_turns": 400, "allowed_tools": ["Read","Edit","Bash"],
              "retry_delay_minutes": 30,
@@ -103,6 +105,9 @@ fields never leak in.
 - **Don't hand-edit mirrored issues** — manual edits are reverted with a note. You MAY
   (a) create new issues (bugs / requests), (b) comment commands on the CONTROL issue.
 - **GitHub pins max 3 issues** (ROADMAP / TIMELINE / CONTROL). **GitLab can't pin** at all.
+- To keep a remote issue as a note/draft, add any configured ignore label
+  (`draft`, `ignore`, `specseed:ignore`, `changes-requested`, `needs-more-info`,
+  `needs-triage` by default). The runner will not ingest it until the label is removed.
 - You start the runner yourself (`python <repo>_agents_runner.py &`); sync lag ~30–60s + API latency.
 
 ## Round 2 — git workflow + HITL gates + review/QA (+ mirror options if mirror)
@@ -237,6 +242,12 @@ templates until that branch lands on the repo's default branch. → `config.json
 
 **3. Failure retry.** On a failed runner step (e.g. a usage/session limit), retry after N minutes. Default **30**. → `config.json` `runner.retry_delay_minutes` (portable; applies even local-only).
 
+**4. Remote ignore labels.** Default:
+`["draft","ignore","specseed:ignore","changes-requested","needs-more-info","needs-triage"]`.
+Unknown remote issues carrying any of these labels are skipped by intake. Use this for
+phone-side drafts, review buckets, or non-actionable notes. Remove the label to let the
+next reconcile ingest it. → `config.json` `backend.ignore_labels` (portable).
+
 ### 2f. Spec-change requests → `config.json` `cr{}`
 
 ONE line, heavy default = **off**. Don't interview — this is an opt-in toggle.
@@ -259,7 +270,8 @@ owns git branch/merge for the respec branch, so they assume `git.automation:true
 Write the config files:
 1. `config.json` — from Round 1 (`backend`), 2a/2b (`git`/`hitl`), 2c (`review`/`qa`),
    2e (`runner.agents`), 2d-#2 (`backend.entity_templates.enabled`),
-   2d-#3 (`runner.retry_delay_minutes`), and 2f (`cr`) answers (or
+   2d-#3 (`runner.retry_delay_minutes`), 2d-#4 (`backend.ignore_labels`),
+   and 2f (`cr`) answers (or
    `default_config()` on `defaults`).
    Run `python .specseed/scripts/core/config.py validate` to confirm it's well-formed.
 2. `remote.json` — **mirror only**: `repo` (Round 1 #2) + `allowlist` (2d-#1) + the rest

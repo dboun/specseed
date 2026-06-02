@@ -41,6 +41,10 @@ CR_LABEL = "change-request"           # the intake label a CR issue carries
 # comment-ingest never feeds the agent's own replies back as a user turn — the PAT
 # owner is usually allowlisted, so an author check alone would not catch them.
 CR_BOT_MARKER = "<!-- specseed:cr -->"
+DEFAULT_IGNORE_LABELS = {
+    "draft", "ignore", "specseed:ignore", "changes-requested",
+    "needs-more-info", "needs-triage",
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -284,6 +288,16 @@ def is_cr_issue(iss):
     return CR_LABEL in (iss.get("labels") or [])
 
 
+def ignored_by_label(iss, cfg=None):
+    """True when an unknown remote issue carries a draft/ignore label. Applied before
+    bug/feature/CR intake so phone drafts stay remote-only until the label is removed."""
+    labels = set(iss.get("labels") or [])
+    ignore_source = cfg.get("ignore_labels") if cfg and "ignore_labels" in cfg \
+        else DEFAULT_IGNORE_LABELS
+    ignore = set(ignore_source or [])
+    return bool(labels & ignore)
+
+
 def sync_pull(root, cfg, remote, dry=False, log=print):
     known = _known_numbers(cfg)
     cursor = cfg.get("pull_cursor")
@@ -300,6 +314,9 @@ def sync_pull(root, cfg, remote, dry=False, log=print):
             continue
         created = (iss.get("raw") or {}).get("created_at", "")
         if cursor and created and created <= cursor:
+            continue
+        if ignored_by_label(iss, cfg):
+            log(f"skip #{n}: ignored by label")
             continue
         if is_cr_issue(iss):                          # CR, NOT a bug — feed adapt, not work
             cr_id = _ingest_cr_issue(root, cfg, remote, iss, dry, log)
@@ -602,8 +619,12 @@ def push_dashboards(root, cfg, remote, dry=False, log=print):
 # --------------------------------------------------------------------------- #
 # init
 # --------------------------------------------------------------------------- #
-def ensure_labels(remote, dry, log):
-    for name in list(rc.LABEL_COLORS):
+def ensure_labels(remote, dry, log, extra_labels=None):
+    names = list(rc.LABEL_COLORS)
+    for name in extra_labels or []:
+        if name not in names:
+            names.append(name)
+    for name in names:
         if dry:
             log(f"[dry] label {name}")
         else:
@@ -611,7 +632,7 @@ def ensure_labels(remote, dry, log):
 
 
 def init(root, cfg, remote, dry=False, log=print):
-    ensure_labels(remote, dry, log)
+    ensure_labels(remote, dry, log, cfg.get("ignore_labels"))
     cfg["labels_seeded"] = True
     specs = {
         "roadmap": ("📍 ROADMAP", _read_text(PM(root) / "ROADMAP.md")),

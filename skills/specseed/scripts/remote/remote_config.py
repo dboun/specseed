@@ -51,6 +51,9 @@ LABEL_COLORS = {
     "status:awaiting_approval": "d93f0b", "status:done": "0e8a16",
     "status:wont_do": "555555", "status:deprecated": "555555",
     "tier:epic": "5319e7", "tier:ticket": "0052cc", "tier:issue": "006b75",
+    "draft": "cfd3d7", "ignore": "555555", "specseed:ignore": "555555",
+    "changes-requested": "d93f0b", "needs-more-info": "fbca04",
+    "needs-triage": "bfe5bf",
     # change-request intake + status labels (CRs are not work entities)
     "change-request": "8250df", "cr:open": "1d76db",
     "cr:done": "0e8a16", "cr:rejected": "555555",
@@ -111,11 +114,14 @@ def load_runtime(root=None):
     (remote.json) ∪ the portable backend `provider` (config.json). Returns
     (cfg, enabled, config) where `enabled` is config.backend.enabled and `config`
     is the full portable config (None if config.json is missing)."""
-    config = _load_config_mod().load_config(root)
+    config_mod = _load_config_mod()
+    config = config_mod.load_config(root)
     backend = (config or {}).get("backend") or {}
     enabled = bool(backend.get("enabled"))
     state = load_state(root) or default_state()
-    cfg = {**state, "provider": backend.get("provider")}
+    backend_full = config_mod.backend_config(config or {})
+    cfg = {**state, "provider": backend.get("provider"),
+           "ignore_labels": list(backend_full.get("ignore_labels") or [])}
     return cfg, enabled, config
 
 
@@ -229,7 +235,7 @@ class Remote:
 
     def ensure_label(self, name, color=None):
         try:
-            return self.m.create_label(name, color=color or LABEL_COLORS.get(name),
+            return self.m.create_label(name, color=color or LABEL_COLORS.get(name) or "808080",
                                        repo=self.repo)
         except Exception as e:
             if "already exists" in str(e).lower() or "409" in str(e):

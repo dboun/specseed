@@ -165,6 +165,7 @@ class FakeRemote:
         self.user = user or {"login": "owner"}
         self.posted = []          # (number, body)
         self.labels = {}          # number -> labels
+        self.labels_ensured = []   # seeded label names
         self.closed = []          # (number, planned)
         self.reopened = []        # number
 
@@ -186,6 +187,9 @@ class FakeRemote:
     def set_labels(self, n, labels):
         self.labels[n] = labels
 
+    def ensure_label(self, name):
+        self.labels_ensured.append(name)
+
     def close_issue(self, n, planned=True):
         self.closed.append((n, planned))
 
@@ -203,6 +207,42 @@ def test_is_cr_issue_label_routing():
     assert rs.is_cr_issue({"labels": ["bug"]}) is False
     assert rs.is_cr_issue({"labels": []}) is False
     assert rs.is_cr_issue({}) is False
+
+
+def test_ignored_by_label_uses_defaults_and_config_override():
+    assert rs.ignored_by_label({"labels": ["draft"]}) is True
+    assert rs.ignored_by_label({"labels": ["changes-requested"]}) is True
+    assert rs.ignored_by_label({"labels": ["bug"]}) is False
+    assert rs.ignored_by_label({"labels": ["park"]}, {"ignore_labels": ["park"]}) is True
+    assert rs.ignored_by_label({"labels": ["draft"]}, {"ignore_labels": ["park"]}) is False
+    assert rs.ignored_by_label({"labels": ["draft"]}, {"ignore_labels": []}) is False
+
+
+def test_sync_pull_skips_ignored_remote_issue_even_if_cr_labeled(tmp_path):
+    root = _cr_root(tmp_path)
+    cfg = {"map": {}, "permanent": {}, "pull_cursor": None,
+           "ignore_labels": ["draft"]}
+    remote = FakeRemote(issues=[{
+        "number": 9, "title": "maybe change scope",
+        "labels": ["change-request", "draft"],
+        "body": "not ready", "state": "open",
+        "raw": {"created_at": "2026-06-02T08:00:00Z"},
+    }])
+    seen = []
+
+    ingested = rs.sync_pull(root, cfg, remote, log=seen.append)
+
+    assert ingested == []
+    assert cfg["map"] == {}
+    assert any("skip #9: ignored by label" in msg for msg in seen)
+
+
+def test_ensure_labels_seeds_custom_ignore_labels_once():
+    remote = FakeRemote()
+    rs.ensure_labels(remote, dry=False, log=lambda m: None,
+                     extra_labels=["park", "draft"])
+    assert "park" in remote.labels_ensured
+    assert remote.labels_ensured.count("draft") == 1
 
 
 def test_cr_status_label_mapping():

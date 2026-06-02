@@ -113,6 +113,12 @@ DEFAULT_GIT = {
 DEFAULT_BACKEND = {
     "enabled": False,                   # true = mirror the work onto a github/gitlab repo
     "provider": None,                   # "github" | "gitlab" (required when enabled)
+    "ignore_labels": [
+        # Unknown remote issues carrying any of these labels are treated as drafts /
+        # non-actionable notes and are NOT ingested as work.
+        "draft", "ignore", "specseed:ignore", "changes-requested",
+        "needs-more-info", "needs-triage",
+    ],
     "entity_templates": {
         "enabled": False,               # true = also write bug/feature/CR templates into the host issue-template dir
     },
@@ -213,7 +219,9 @@ def _deep_copy_review():
 
 
 def default_backend():
-    b = {k: v for k, v in DEFAULT_BACKEND.items() if k != "entity_templates"}
+    b = {k: v for k, v in DEFAULT_BACKEND.items()
+         if k not in ("entity_templates", "ignore_labels")}
+    b["ignore_labels"] = list(DEFAULT_BACKEND["ignore_labels"])
     b["entity_templates"] = dict(DEFAULT_BACKEND["entity_templates"])
     return b
 
@@ -451,6 +459,11 @@ def validate(cfg):
             errs.append(f"backend.provider must be one of {PROVIDERS}")
         if backend.get("enabled") and not backend.get("provider"):
             errs.append("backend.enabled is true but backend.provider is not set")
+        ignore_labels = backend.get("ignore_labels")
+        if ignore_labels is not None:
+            if not isinstance(ignore_labels, list) or \
+                    not all(isinstance(x, str) and x.strip() for x in ignore_labels):
+                errs.append("backend.ignore_labels must be a list of non-empty strings")
         et = backend.get("entity_templates")
         if et is not None:
             if not isinstance(et, dict):

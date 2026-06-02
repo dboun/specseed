@@ -52,6 +52,9 @@ linked from each other's bodies + from `README`.
 - `sprint:<id>` created lazily as sprints appear.
 - `tier:epic` `tier:ticket` `tier:issue` — the ONE structural label allowed, only so
   the phone can filter a flat list by tier (it's an attribute, not a relationship).
+- Intake ignore labels: `draft`, `ignore`, `specseed:ignore`, `changes-requested`,
+  `needs-more-info`, `needs-triage` by default. These are configurable in portable
+  `config.json` under `backend.ignore_labels`.
 
 Optional repo issue templates:
 - Canonical templates live under `.specseed/entity_templates/` no matter which backend
@@ -135,10 +138,12 @@ does NOT live here — it stays in the environment / `.env` the wrappers already
 Assume the user does NOT hand-edit mirrored github issues. On each runner wake:
 
 1. **Pull new work (allowed action a).** Scan for github issues NOT in `map` and not
-   one of the four permanent ones, created after `pull_cursor`. Each → a new local
-   **BUG** (or feature) ticket+issue skeleton (title/body from the github issue),
-   `status: todo`, flagged for the agent to flesh + slot into the DAG. Add to `map`,
-   advance `pull_cursor`, comment back the assigned local ID.
+   one of the four permanent ones, created after `pull_cursor`. If the issue has any
+   configured `backend.ignore_labels`, skip it without ingesting (draft / review /
+   non-actionable bucket). Otherwise each issue → a new local **BUG** (or feature)
+   ticket+issue skeleton (title/body from the github issue), `status: todo`, flagged
+   for the agent to flesh + slot into the DAG. Add to `map`, advance `pull_cursor`,
+   comment back the assigned local ID.
 2. **Process CONTROL comments (allowed action b).** See "CONTROL verbs".
 3. **Detect drift on mapped issues.** For each mapped github issue, compare against
    local:
@@ -311,7 +316,8 @@ handled reply isn't reprocessed.
   back only the canonical state keys; provider dispatch (imports `github_functions` or
   `gitlab_functions`); label/body rendering helpers.
 - `config.py` (core, not remote-only) — the portable `config.json` (hitl + git +
-  `backend{enabled,provider}` + `runner{}`); the runner loads + validates it on startup.
+  `backend{enabled,provider,ignore_labels}` + `runner{}`); the runner loads + validates
+  it on startup.
 - `remote_sync.py` — `init` / `reconcile` (pull → drift → heal → push) / dashboard
   rendering. `--dry-run` prints intended calls without mutating.
 - `remote_control.py` — poll + authorize + dispatch CONTROL verbs (incl. `approvals`
@@ -331,7 +337,8 @@ The opt-in is split so the technical decisions happen EARLY and the heavy mirror
 creation happens LATE (once work exists):
 
 **Phase 1 — configure (early).** `routes/configure.md` captures the technical prefs:
-the portable bits into `config.json` (`backend{enabled,provider}`, `runner.retry_delay_minutes`)
+the portable bits into `config.json` (`backend{enabled,provider,ignore_labels}`,
+`runner.retry_delay_minutes`)
 and the per-repo bits into `remote.json` (`repo`, `allowlist`, `initialized:false`) —
 verifying the PAT, explaining the limitations — but does NOT touch the remote. Runs as a
 first-run preamble before bootstrap/adopt, or via `/specseed configure`.

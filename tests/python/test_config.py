@@ -8,6 +8,7 @@ import config
 def test_default_config_valid():
     assert config.validate(config.default_config()) == []
     assert config.default_config()["backend"]["entity_templates"]["enabled"] is False
+    assert "draft" in config.default_config()["backend"]["ignore_labels"]
 
 
 def test_old_config_without_optional_blocks_still_valid():
@@ -25,6 +26,13 @@ def test_old_backend_without_entity_templates_still_valid():
     assert config.validate(old) == []
     assert config.backend_config(old)["entity_templates"]["enabled"] is False
     assert config.entity_templates_config(old)["enabled"] is False
+
+
+def test_old_backend_without_ignore_labels_still_valid():
+    old = config.default_config()
+    del old["backend"]["ignore_labels"]
+    assert config.validate(old) == []
+    assert "changes-requested" in config.backend_config(old)["ignore_labels"]
 
 
 def test_review_config_fills_defaults_when_absent():
@@ -82,11 +90,13 @@ def test_validate_catches_bad_values():
     bad["qa"]["mode"] = "nope"
     bad["runner"]["agents"]["implement"]["easy"][0]["provider"] = "gpt"
     bad["backend"]["entity_templates"]["enabled"] = "yes"
+    bad["backend"]["ignore_labels"] = ["ok", ""]
     errs = config.validate(bad)
     assert any("review.scope" in e for e in errs)
     assert any("qa.mode" in e for e in errs)
     assert any("provider must be one of" in e for e in errs)
     assert any("backend.entity_templates.enabled" in e for e in errs)
+    assert any("backend.ignore_labels" in e for e in errs)
 
 
 def test_validate_catches_agents_structure_errors():
