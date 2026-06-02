@@ -375,7 +375,7 @@ def _write_md(path, fm, body):
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = ["---"]
     for k, v in fm.items():
-        lines.append(f"{k}: {json.dumps(v) if isinstance(v, (list, dict, bool)) else v}")
+        lines.append(f"{k}: {json.dumps(v) if v is None or isinstance(v, (list, dict, bool)) else v}")
     lines += ["---", "", body.strip(), ""]
     path.write_text("\n".join(lines), encoding="utf-8")
 

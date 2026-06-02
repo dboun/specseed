@@ -274,6 +274,9 @@ def test_remote_new_bug_intake_becomes_local_work_and_validates(tmp_path):
     assert "Ingested as **PROJ-0001**" in remote.posted[0][1]
 
     assert_core_ok(root, "issues_assemble.py")
+    issues = json.loads((root / ".specseed/project_management/issues.json").read_text(encoding="utf-8"))
+    assert issues["BUG-0001"]["claimed_at"] is None
+    assert issues["BUG-0001"]["claimed_by"] is None
     assert_core_ok(root, "tickets_assemble.py")
     assert_core_ok(root, "issues_validate.py")
     assert_core_ok(root, "tickets_validate.py")
