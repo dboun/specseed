@@ -36,7 +36,7 @@ Load `references/question-protocol.md` before any user-facing round.
 | 7 settle | whole SRS | whole SRS | settle first-increment reqs only |
 | 8 ADR+SDD | short | full | SDD for first-increment scope only |
 | 12 entry files | end | end | **early (post-stage-8)** + README at end |
-| 11 breakdown | all tickets/issues, ~1 sprint | all, sprints as needed | **first increment only → 1 sprint**; rest stays roadmap titles |
+| 11 breakdown | all tickets/issues, 1 sprint by default | all, one or more sprints as needed | **first increment only → 1 sprint**; rest stays roadmap titles |
 | 14 end | normal | normal | handoff: `/specseed plan-next` for next slice |
 
 ---
@@ -126,7 +126,7 @@ Note in `session_state.md`: cross-cutting component yes/no.
 Now (vision + split known) there's real signal. Pick a **depth tier**. Auto-suggest from signal, user overrides. The tier shapes how the rest of bootstrap runs (see the deltas table above).
 
 **Signal → suggestion heuristic:**
-- **`lite`** — N=1, no cross-cutting, bounded scope (vision Scope lists few areas, no "scale/compliance/multi-team" themes surfaced). Small tool/script/single service. *Same docs, fewer questions, ~1 sprint.*
+- **`lite`** — N=1, no cross-cutting, bounded scope (vision Scope lists few areas, no "scale/compliance/multi-team" themes surfaced). Small tool/script/single service. *Same docs, fewer questions, one sprint by default.*
 - **`standard`** — N=2–4, contained scope, user willing to plan it all now. Today's full bootstrap. *Plan everything at full depth.*
 - **`incremental`** — N≥3, OR large/multi-phase scope, OR user signals a long/evolving project ("platform", "v1 then…", "big"), OR speccing it all would clearly cost the user hours. *Spec the shared contract whole-but-lean, then deep-dive only the first increment; defer the rest to `plan-next`.*
 
@@ -345,7 +345,7 @@ Write the approved structure → `session_state.md` under `## Roadmap`.
 Use `references/work-breakdown.md`.
 
 **Tier scope (breakdown horizon):**
-- `standard` / `lite` — flesh ALL roadmap tickets → issues; sprints as needed (`lite` typically 1 sprint). As written below.
+- `standard` / `lite` — flesh ALL roadmap tickets → issues; create at least one sprint so claimable work has an `in_progress` target. `lite` defaults to a single sprint with a lightweight approval. `standard` may create multiple sprints as needed.
 - `incremental` — detail ONLY the **first increment**: create ticket + issue folders for the roadmap titles in the first slice (the area you deep-specced), pack them into **one sprint** (`SPRINT_…_1`, mark `in_progress`). The rest of the roadmap stays TITLES in `ROADMAP.md` with no ticket folders yet — that's intentional, not incomplete. The chain (assemble/validate/`tickets_analyze`/`sprint_plan`/`sprints_validate`/`timeline_render`/`roadmap_render`) runs over whatever folders exist; CP is computed over the increment-1 tickets now and **recomputed across all tickets by `plan-next`** as later slices are added. No script changes — `roadmap_render.py` leaves un-foldered titles untouched, validators see a consistent (smaller) graph. `satisfies_reqs` on these tickets reference only settled increment-1 reqs, which exist.
 
 ### Form
@@ -378,7 +378,7 @@ Run the **risk-detection & gating pass** from `work-breakdown.md` — scan the f
 
 ### Sprint planning
 
-After the critical path is settled, batch tickets into sprints (see `work-breakdown.md` "Sprints"). Optional but recommended for anything beyond a handful of tickets.
+After the critical path is settled, batch tickets into sprints (see `work-breakdown.md` "Sprints"). This is mandatory for onboarding when claimable work exists: the first `in_progress` sprint is the runner's normal claim target. For tiny/lite flows, keep it nearly invisible — one sprint, simple "OK" approval unless the user wants dates or swaps.
 
 1. Read `.specseed/memory/sprint_planning.md` for any durable prefs.
 2. `python .specseed/scripts/core/sprint_plan.py` → advisory proposal (cohesion-aware, CP-first, ~168h budget).

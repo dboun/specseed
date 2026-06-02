@@ -346,9 +346,9 @@ first-run preamble before bootstrap/adopt, or via `/specseed configure`.
 **Phase 2 — init (late).** At the end of bootstrap (stage 13.5) / adopt (9.5), if
 `config.backend.enabled` is true and `remote.json` is not yet `initialized`, the mirror
 is created with NO further questions:
-1. `python .specseed/scripts/remote/remote_sync.py init` — creates the 4 dashboards, pins
+1. Write the `<repo>_agents_runner.py` shim at repo root.
+2. `python .specseed/scripts/remote/remote_sync.py init` — creates the 4 dashboards, pins
    the 3, seeds labels, pushes the current work.
-2. Write the `<repo>_agents_runner.py` shim at repo root.
 3. Add the "Remote mirror" block to `CLAUDE.md` (runtime contract — see
    `CLAUDE_template.md`).
 4. Flip `initialized:true`; tell the user the start command + the pause/stop story.

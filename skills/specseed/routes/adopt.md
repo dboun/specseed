@@ -85,7 +85,7 @@ If no agent-rules found → skip; specseed's `CLAUDE_template.md` supplies defau
 Reuse **bootstrap stage 3.5** verbatim (`lite` / `standard` / `incremental`). Auto-suggest from the recon: component count + project size + how much forward work remains. Same meaning — the tier shapes how much the user answers/reviews and how far forward we break work down, NOT what artifacts get produced.
 
 Mapping to adopt's forward work (stage 8):
-- `lite` / `standard` — spec the whole codebase, break down ALL remaining forward gaps now (~1 sprint for `lite`).
+- `lite` / `standard` — spec the whole codebase, break down ALL remaining forward gaps now (`lite` defaults to one lightweight sprint).
 - `incremental` — spec the shared contract whole-but-lean, deep-spec the first forward slice, break it into 1 sprint; defer the rest of the forward roadmap to `plan-next`.
 
 Write tier → `session_state.md` under `## Depth`.
@@ -146,8 +146,10 @@ If the user wants automated `req → ticket → test` traceability over the **ex
 
 ### Forward gaps → full breakdown (per depth tier)
 The gap reqs (stage 5c) are the real work. Break them down exactly as bootstrap stage 11:
-- `lite` / `standard` — all forward gaps → tickets + issues + ~1 sprint (or as many as needed). Run the full assemble → validate → `tickets_analyze` → `sprint_plan` → `sprints_validate` → `timeline_render` → `roadmap_render` chain.
+- `lite` / `standard` — all forward gaps → tickets + issues + at least one sprint (`lite` defaults to one lightweight sprint; `standard` may create as many as needed). Run the full assemble → validate → `tickets_analyze` → `sprint_plan` → `sprints_validate` → `timeline_render` → `roadmap_render` chain.
 - `incremental` — first forward slice only → 1 sprint; rest stays roadmap titles for `plan-next`.
+
+If recon + imports identify **no forward gaps**, say so plainly: the recovered spec maps what already exists, but there is no claimable implementation work yet. Skip forward ticket/issue formation, sprint planning, and the risk-detection pass unless the user opts into done-tickets for verification coverage. Still write the entry files and runner shim; tell the user the runner will idle until work exists. Next step options: file manual work with `add_work.py`, run `/specseed adapt` to add/change planned scope, or `/specseed plan-next` only if there are deferred roadmap titles.
 
 Forward tickets' `satisfies_reqs` reference gap reqs; their `depends_on` DAG covers only forward work (built work is already done). If a forward ticket genuinely needs a built capability the user wanted in the graph, that's the opt-in done-ticket case above.
 
@@ -179,7 +181,8 @@ Same as bootstrap **stage 13.5**. **Always** write the runner shim (`python .spe
 ## Stage 10: Session end
 
 - Summary: spec recovered for <components>, <N> built capabilities mapped in ROADMAP Phase 0, <M> forward gaps broken into sprint(s).
-- Tell user the runtime contract is live (`CLAUDE.md` written) → an impl agent can claim forward issues now.
+- If forward gaps exist: tell user the runtime contract is live (`CLAUDE.md` written) → an impl agent can claim forward issues now.
+- If no forward gaps exist: tell user the runtime contract is live, but no claimable work was identified; the runner shim exists and will idle until new work is added.
 - `incremental` handoff: `/specseed plan-next` for the next forward slice (same as bootstrap's incremental handoff).
 - Delete `session_state.md` (keep `sprint_planning.md`). Future spec changes → adapt / tweak; future forward slices → plan-next.
 
