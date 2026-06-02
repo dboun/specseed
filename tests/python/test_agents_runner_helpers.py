@@ -262,6 +262,7 @@ def test_path_helpers_and_status_snapshot(tmp_path):
     )
 
     assert agents_runner._kill_flag(root) == root / ".specseed" / "memory" / "runner.kill"
+    assert agents_runner._pid_path(root) == root / ".specseed" / "memory" / "runner.pid"
     assert agents_runner._pm(root) == root / ".specseed" / "project_management"
     assert agents_runner._retry_path(root) == root / ".specseed" / "memory" / "runner.retry"
     assert agents_runner._statuses(root) == {"I-1": "todo", "I-2": "in_review"}
@@ -335,12 +336,53 @@ def test_control_prompt_is_natural_language_not_slash():
     # mode routing + argument carry-through
     assert "adapt mode" in agents_runner.control_prompt("adapt", "add OAuth")
     assert "add OAuth" in agents_runner.control_prompt("adapt", "add OAuth")
+    assert "claiming has been paused" in agents_runner.control_prompt("adapt", "add OAuth")
+    assert "do not refuse" in agents_runner.control_prompt("adapt", "add OAuth")
     assert "plan-next mode" in agents_runner.control_prompt("plan-next")
     # approve/reject both route to approve mode and carry the ID
     ap = agents_runner.control_prompt("approve", "I-12")
     assert "approve mode" in ap and "I-12" in ap and "Approve" in ap
     rj = agents_runner.control_prompt("reject", "I-12 not safe")
     assert "approve mode" in rj and "I-12 not safe" in rj and "Reject" in rj
+
+
+def test_execute_actions_pauses_before_remote_adapt(monkeypatch, tmp_path):
+    root = _specseed_root(tmp_path)
+    agents_runner.remote_control.write_ctl(root, "run")
+    pcfg = config.default_config()
+    chain = [{"provider": "claude", "config_dir": None, "model": "opus", "effort": "high"}]
+    seen = []
+
+    class Remote:
+        def __init__(self):
+            self.comments = []
+
+        def comment(self, issue_no, body):
+            self.comments.append((issue_no, body))
+
+    remote = Remote()
+
+    def fake_run_agent_chain(root_arg, cfg, chain_arg, prompt, log, retry_key=None):
+        seen.append((chain_arg, prompt, retry_key))
+        return 0
+
+    monkeypatch.setattr(agents_runner.cfgmod, "load_config", lambda r: pcfg)
+    monkeypatch.setattr(agents_runner.cfgmod, "agent_chain", lambda cfg, fn, diff: chain)
+    monkeypatch.setattr(agents_runner, "run_agent_chain", fake_run_agent_chain)
+
+    agents_runner.execute_actions(
+        root,
+        {"retry_delay_minutes": 30},
+        remote,
+        [{"verb": "adapt", "text": "add OAuth", "reply_to": 7}],
+        lambda m: None,
+    )
+
+    assert agents_runner.remote_control.read_ctl(root) == "pause"
+    assert remote.comments[0] == (7, "⏸️ Paused claiming before `adapt`; resume when reviewed.")
+    assert remote.comments[-1] == (7, "✅ Ran `adapt`.")
+    assert "add OAuth" in seen[0][1]
+    assert "do not refuse" in seen[0][1]
 
 
 def test_build_relay_cmd_claude_resume_and_capture():

@@ -193,7 +193,7 @@ dispatches, and replies with the result as a comment. Fixed verb set — unknown
 | `resume` | leave idle, resume claiming work |
 | `kill` | stop the current `claude` run immediately (SIGTERM the child) |
 | `claim-next` | claim + run the next ready issue now |
-| `adapt <text>` | run `claude` headless in adapt mode (natural-language prompt, not a slash) |
+| `adapt <text>` | pause claiming, then run `claude` headless in adapt mode (natural-language prompt, not a slash) |
 | `plan-next` | run `claude` headless in plan-next mode |
 | `approvals` | reply: list of pending HITL gates (from `approvals.json`) |
 | `approve <ID> [opt]` | resolve a parked HITL gate — run `claude` headless in approve mode |
@@ -226,7 +226,7 @@ Loop, every ~30–60s:
 1. Read control file `.specseed/memory/runner.ctl` (`run` | `pause` | `stop`).
    `stop` → graceful exit. `pause` → only steps 2–3 run (no claiming).
 2. `remote_sync` reconcile pass (pull new work, drift, heal, push dashboards).
-3. `remote_control` process new CONTROL comments.
+3. `remote_control` process new CONTROL comments. An `adapt` work verb pauses claiming before it runs, so adapt cannot race the work loop.
 4. If `run`: claim + execute the next ready issue via the local `claude` CLI; on
    done/blocked, post the progress comment (see below) and re-render dashboards.
 5. Sleep.

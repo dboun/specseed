@@ -4,6 +4,21 @@ Existing `.specseed/spec/` tree present. User wants to update, extend, or revise
 
 Load `references/question-protocol.md` before any user-facing round. Most adapt sessions are SHORTER than bootstrap — apply anti-max-bias harder.
 
+## Runner preflight
+
+Adapt must not run while the runner is actively claiming work. Before stage 1:
+
+1. Check `.specseed/memory/runner.pid`. If it exists, verify whether that PID is alive (`kill -0 <pid>` on Unix-like systems). If the PID is stale, ignore/delete the stale marker.
+2. If the runner PID is alive AND `.specseed/memory/runner.ctl` is missing or contains `run`, **refuse to start adapt**. Tell the user to pause or stop the runner first:
+   ```bash
+   echo pause > .specseed/memory/runner.ctl
+   # or
+   echo stop > .specseed/memory/runner.ctl
+   ```
+   Then re-run `/specseed adapt`.
+3. If the runner PID is alive but `runner.ctl` contains `pause` or `stop`, adapt may proceed.
+4. If this adapt was invoked by `agents_runner.py` from the remote CONTROL channel, the runner pauses claiming before launching this route; do not refuse on this preflight.
+
 ## Flow overview
 
 1. Assess existing artifacts + drift → 1-paragraph state-of-spec summary to user

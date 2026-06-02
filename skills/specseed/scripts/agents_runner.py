@@ -123,6 +123,9 @@ def control_prompt(verb, text=""):
         mode = "adapt"
         instr = (f"Update the spec per this request: {text}" if text
                  else "Update the spec per the latest request in this thread.")
+        instr += (" This adapt was invoked by agents_runner from the CONTROL channel; "
+                  "claiming has been paused before this run, so do not refuse on the "
+                  "runner-running preflight.")
     elif verb == "plan-next":
         mode = "plan-next"
         instr = "Spec and break down the next roadmap slice."
@@ -148,6 +151,10 @@ def _on_signal(signum, frame):
 
 def _kill_flag(root):
     return rc.find_root(root) / ".specseed" / "memory" / "runner.kill"
+
+
+def _pid_path(root):
+    return rc.find_root(root) / ".specseed" / "memory" / "runner.pid"
 
 
 def run_agent(root, prompt, log, argv, env=None):
@@ -498,6 +505,9 @@ def execute_actions(root, cfg, remote, actions, log):
         elif verb in ("adapt", "plan-next", "approve", "reject"):
             # approve/reject route to approve mode (its triggers include the bare
             # verbs) and flip issue status, so re-push the mirror after a good run.
+            if verb == "adapt" and remote_control.read_ctl(root) == "run":
+                remote_control.write_ctl(root, "pause")
+                remote.comment(n, "⏸️ Paused claiming before `adapt`; resume when reviewed.")
             prompt = control_prompt(verb, a.get("text"))
             res = run_agent_chain(root, cfg, ctl_chain, prompt, log,
                                   retry_key=ctl_retry_key)
@@ -1036,15 +1046,25 @@ def main(argv):
     impl = cfgmod.agent_main(config, "implement", "hard")
     log(f"runner up ({'mirror: ' + str(cfg.get('provider')) if mirror else 'local-only'}; "
         f"impl/hard {impl['provider']}:{impl['model']}/{impl['effort']}, interval {interval}s)")
-    while not _STOP:
-        cfg, stop = one_pass(root, cfg, remote, log)
-        if stop or args.once:
-            break
-        for _ in range(interval):                # interruptible sleep
-            if _STOP or remote_control.read_ctl(root) == "stop":
+    pidp = _pid_path(root)
+    pidp.parent.mkdir(parents=True, exist_ok=True)
+    pidp.write_text(str(os.getpid()) + "\n", encoding="utf-8")
+    try:
+        while not _STOP:
+            cfg, stop = one_pass(root, cfg, remote, log)
+            if stop or args.once:
                 break
-            time.sleep(1)
-    log("runner down")
+            for _ in range(interval):                # interruptible sleep
+                if _STOP or remote_control.read_ctl(root) == "stop":
+                    break
+                time.sleep(1)
+    finally:
+        try:
+            if pidp.exists() and pidp.read_text(encoding="utf-8").strip() == str(os.getpid()):
+                pidp.unlink()
+        except Exception:
+            pass
+        log("runner down")
     return 0
 
 

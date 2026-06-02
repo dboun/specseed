@@ -237,6 +237,7 @@ What you can do from the remote:
 - **Comment a verb on the CONTROL issue** (see the command table above): `status`,
   `pause`, `resume`, `kill`, `sync`, `claim-next`, `approvals`, `approve`, `reject`,
   `plan-next`, `adapt <text>`.
+  `adapt <text>` pauses claiming before it runs; comment `resume` after reviewing the result.
 - **Open new issues** for bugs or requests. The runner picks them up.
 - **Draft without intake:** add an ignore label (`draft`, `ignore`, `specseed:ignore`,
   `changes-requested`, `needs-more-info`, `needs-triage` by default). The runner skips
