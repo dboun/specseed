@@ -139,9 +139,11 @@ Detect at session start:
 
 **Chat mode (no repo / no filesystem):**
 - Deliver files as chat artifacts
-- **Bootstrap:** progressive delivery — each major artifact handed off as its stage completes (vision after stage 2, per-component srs after stage 5, sad after stage 6, etc). At session end, deliver a *manifest* artifact listing every file with its canonical path
-- **Adapt:** only the changed files as artifacts + a diff summary in chat
-- **Tweak:** only the changed file(s). Nothing else
+- **Bundle protocol:** once 2+ files exist OR the folder structure matters, also deliver a zip artifact named `specseed-bundle.zip` with the full canonical tree (`.specseed/...` plus root entry files). Refresh the zip at coherent checkpoints (major stage end, after work breakdown, session end), not after every tiny edit. In each round, attach individual artifacts only for files created/changed in that round; the zip is the complete handoff.
+- Tell the user when the bundle appears: "The zip is enough to unpack into a repo with the right structure; the separate artifacts are only the files changed/created this round for review." If the host cannot attach zip/binary artifacts, say so and fall back to manifest + individual file artifacts.
+- **Bootstrap:** progressive individual-file delivery — each major artifact handed off as its stage completes (vision after stage 2, per-component srs after stage 5, sad after stage 6, etc). At session end, deliver a *manifest* artifact listing every file with its canonical path
+- **Adapt:** only the changed files as individual artifacts + a diff summary in chat; bundle refresh follows the bundle protocol above
+- **Tweak:** only the changed file(s) as individual artifacts. Refresh the zip only if a mature file set already exists and the change should replace the user's local tree; skip zip for typo-only noise
 - After any edit that would trigger a script (reqs.json regen, validation), **remind** the user with copy-paste-ready commands. Do not assume the user has scripts wired
 - **Naming:** deliver each file with its full canonical path as its identifier (e.g. `.specseed/spec/api-srs.md`, not bare `srs.md`) so multiple files of the same type don't collide visually in the chat history
 

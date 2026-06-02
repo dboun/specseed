@@ -72,6 +72,7 @@ Use `references/work-breakdown.md`:
 
 ### 8. Session end
 - Tell user: slice `<scope>` specced + broken down as sprint `<N>`; issues claimable; updated CP.
+- Chat mode: refresh `specseed-bundle.zip` when available, and attach only this slice's changed/created files individually. Tell user the zip is enough to unpack the complete tree.
 - Remaining roadmap tail (if any): `/specseed plan-next` again when ready. If the roadmap is now fully detailed, say so.
 - Delete `session_state.md`; keep `sprint_planning.md`.
 

@@ -197,7 +197,7 @@ Append-only — never edit existing rows.
 
 **Repo mode:** files already written; print a tight summary of changes (file paths + 1-line per change).
 
-**Chat mode:** deliver ONLY changed files as artifacts + a diff summary in chat. Do NOT re-deliver unchanged docs (the user already has them). Use full canonical paths as artifact identifiers.
+**Chat mode:** deliver ONLY changed files as individual artifacts + a diff summary in chat. Do NOT re-deliver unchanged docs individually (the user already has them). Also refresh `specseed-bundle.zip` if enough files exist to make a bundle useful; per `SKILL.md`, the zip is the complete tree and the individual artifacts are only this round's changed files. Use full canonical paths as artifact identifiers.
 
 ---
 

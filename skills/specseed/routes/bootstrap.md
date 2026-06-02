@@ -498,7 +498,7 @@ the files land on the repo's default branch.
 
 ## Stage 14: Session end
 
-- Deliver manifest (chat mode): single artifact listing every file with its canonical path
+- Chat mode: deliver the final `specseed-bundle.zip` plus a manifest artifact listing every file with its canonical path. Per `SKILL.md` bundle protocol, the zip is the complete handoff; separate artifacts are only this round's changed/created files.
 - Delete `.specseed/memory/session_state.md` (or move salient bits to a changelog file if user wants — confirm before). KEEP `.specseed/memory/sprint_planning.md` — it's durable cross-session memory.
 - Tell user what was created + any open TODOs
 - Note: future spec changes → re-invoke skill in adapt or tweak mode

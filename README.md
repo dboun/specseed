@@ -2,7 +2,7 @@
 
 A skill for producing and maintaining software specification artifacts — vision, SRS, SAD, ADRs, SDD, requirements JSON — plus a three-tier project-management breakdown (epics → tickets → issues) for greenfield projects or adapting existing ones. Agents (or humans) pick up the technical *issues* and implement. Adaptations iteratively can happen.
 
-Designed for agent harnesses that can read files (Claude Code, Codex, similar). Works in chat too with progressive artifact delivery.
+Designed for agent harnesses that can read files (Claude Code, Codex, similar). Works in chat too with progressive artifact delivery and zipped handoffs when the host supports file artifacts.
 
 
 ## What it does
