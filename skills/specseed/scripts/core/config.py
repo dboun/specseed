@@ -11,8 +11,10 @@ process ("how I work"), never project-specific data. Blocks:
     (silent).
   - git            : the git-workflow contract (branch model, push, PR, merge).
   - backend        : the work-tracking choice — local-only vs a github/gitlab
-    mirror. Just `enabled` + `provider`; the per-repo `repo`/credentials/issue
-    map live in `.specseed/memory/remote.json` (state, NOT portable).
+    mirror. `enabled` + `provider`, plus portable mirror options like whether to
+    project user-facing entity templates into the git host's issue-template dir.
+    The per-repo `repo`/credentials/issue map live in `.specseed/memory/remote.json`
+    (state, NOT portable).
   - runner         : how `agents_runner.py` drives the coding-agent CLIs. Global
     knobs (interval, turn cap, allowed tools, retry cooldown) PLUS `agents` — a
     matrix of FUNCTION (implement/review/qa) → DIFFICULTY (easy/hard) → an ordered
@@ -111,6 +113,9 @@ DEFAULT_GIT = {
 DEFAULT_BACKEND = {
     "enabled": False,                   # true = mirror the work onto a github/gitlab repo
     "provider": None,                   # "github" | "gitlab" (required when enabled)
+    "entity_templates": {
+        "enabled": False,               # true = also write bug/feature/CR templates into the host issue-template dir
+    },
 }
 
 # runner knobs — how agents_runner.py drives the coding-agent CLIs.
@@ -192,7 +197,7 @@ def default_config():
         "configured": True,
         "hitl": {"categories": dict(DEFAULT_CATEGORIES)},
         "git": dict(DEFAULT_GIT),
-        "backend": dict(DEFAULT_BACKEND),
+        "backend": default_backend(),
         "runner": default_runner(),
         "review": _deep_copy_review(),
         "qa": dict(DEFAULT_QA),
@@ -205,6 +210,12 @@ def _deep_copy_review():
     r["auto_approve"] = dict(DEFAULT_REVIEW["auto_approve"])
     r["auto_approve"]["difficulty"] = list(DEFAULT_REVIEW["auto_approve"]["difficulty"])
     return r
+
+
+def default_backend():
+    b = {k: v for k, v in DEFAULT_BACKEND.items() if k != "entity_templates"}
+    b["entity_templates"] = dict(DEFAULT_BACKEND["entity_templates"])
+    return b
 
 
 # --------------------------------------------------------------------------- #
@@ -232,6 +243,22 @@ def cr_config(cfg):
     base = dict(DEFAULT_CR)
     base.update((cfg or {}).get("cr") or {})
     return base
+
+
+def backend_config(cfg):
+    """The `backend` block, with nested defaults filled (back-compat: old configs
+    had only enabled/provider)."""
+    base = default_backend()
+    b = (cfg or {}).get("backend") or {}
+    base.update({k: v for k, v in b.items() if k != "entity_templates"})
+    et = b.get("entity_templates") or {}
+    if isinstance(et, dict):
+        base["entity_templates"].update(et)
+    return base
+
+
+def entity_templates_config(cfg):
+    return backend_config(cfg)["entity_templates"]
 
 
 def agent_chain(cfg, function, difficulty):
@@ -424,6 +451,12 @@ def validate(cfg):
             errs.append(f"backend.provider must be one of {PROVIDERS}")
         if backend.get("enabled") and not backend.get("provider"):
             errs.append("backend.enabled is true but backend.provider is not set")
+        et = backend.get("entity_templates")
+        if et is not None:
+            if not isinstance(et, dict):
+                errs.append("backend.entity_templates must be an object")
+            elif not isinstance(et.get("enabled", False), bool):
+                errs.append("backend.entity_templates.enabled must be a boolean")
 
     runner = cfg.get("runner")
     if not isinstance(runner, dict):

@@ -406,7 +406,7 @@ Bumps each ticket title's `(X/Y complete)` annotation in `ROADMAP.md` from `tick
 
 **Tier note:** `incremental` already wrote `CLAUDE.md` + `AGENTS.md` (+ per-component) early, after stage 8 — at this point in the flow only `README.md` remains here. `lite` / `standard` write all of them now.
 
-These are the ONLY files written outside `.specseed/`. Before writing any of them, **for each that already exists on disk, follow the merge protocol** in `SKILL.md` ("Main-repo files & merge protocol"): read the existing file, default to replacing with the skill's version, but scan for project-specific additions worth keeping and offer to append them; never destroy user content without explicit OK. **Tell the user** which of these will be placed in the main repo and that everything else stays under `.specseed/`.
+These are the ONLY standard files written outside `.specseed/`. The exception is optional host issue-template projection, controlled by configure mode (`.github/ISSUE_TEMPLATE/*.md` or `.gitlab/issue_templates/*.md`, only if mirror + user opt-in). Before writing any standard entry file, **for each that already exists on disk, follow the merge protocol** in `SKILL.md` ("Main-repo files & merge protocol"): read the existing file, default to replacing with the skill's version, but scan for project-specific additions worth keeping and offer to append them; never destroy user content without explicit OK. **Tell the user** which of these will be placed in the main repo and that everything else stays under `.specseed/`.
 
 ### README.md
 
@@ -483,6 +483,16 @@ here. Read `config.backend.enabled` in `.specseed/memory/config.json` (the per-r
 - **`backend.enabled: true` and `remote.json` already `initialized`** (re-run) → just `remote_sync.py reconcile` to push the latest work.
 
 If the user never configured but now wants the mirror → point them to `/specseed configure`. See `references/remote.md` for the full model.
+
+**Entity templates.** Ensure `.specseed/entity_templates/` exists before session end:
+```bash
+python .specseed/scripts/core/entity_templates.py sync
+```
+This always writes/keeps canonical templates for agents. If the configured provider is
+GitHub/GitLab and `backend.entity_templates.enabled:true`, it also writes only
+`bug`, `feature`, and `change-request` to that provider's top-level issue-template
+directory on the current branch. GitHub/GitLab may show those in the web UI only after
+the files land on the repo's default branch.
 
 ---
 

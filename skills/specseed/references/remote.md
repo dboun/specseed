@@ -53,6 +53,17 @@ linked from each other's bodies + from `README`.
 - `tier:epic` `tier:ticket` `tier:issue` — the ONE structural label allowed, only so
   the phone can filter a flat list by tier (it's an attribute, not a relationship).
 
+Optional repo issue templates:
+- Canonical templates live under `.specseed/entity_templates/` no matter which backend
+  is used.
+- If the user opts in (`backend.entity_templates.enabled:true`), only user-facing
+  templates (`bug`, `feature`, `change-request`) are projected to the selected host's
+  native directory: GitHub `.github/ISSUE_TEMPLATE/`, GitLab `.gitlab/issue_templates/`.
+- Specseed supports one mirror provider at a time (`github` OR `gitlab` OR local-only),
+  not simultaneous GitHub+GitLab projection.
+- Projection is plain file output on the current branch. The host UI may only show the
+  templates once those files reach the repo's default branch.
+
 ---
 
 ## Mapping — local → github issue

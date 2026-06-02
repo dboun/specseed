@@ -30,9 +30,10 @@ NOT a spec; they do NOT change mode routing (bootstrap/adopt still key off
 
 **1. `config.json` — ALWAYS written (PORTABLE).** The whole "how-you-work" contract:
 HITL action-gates + git workflow (obeyed by the impl agent via `CLAUDE.md`), the
-**backend choice** (local vs github/gitlab — just on/off + provider, no repo), and the
-**runner knobs** (`agents_runner.py` model/effort/interval/turn-cap/tools/retry). Zero
-project-specific data, so it transfers cleanly. Schema + defaults in
+**backend choice** (local vs github/gitlab — on/off + provider + portable mirror
+options, no repo), and the **runner knobs** (`agents_runner.py`
+model/effort/interval/turn-cap/tools/retry). Zero project-specific data, so it
+transfers cleanly. Schema + defaults in
 `.specseed/scripts/core/config.py` (`default_config()`); `config.py validate` checks it
 (and the runner fails fast on startup if it's invalid); `config.py render-claude` turns
 the hitl+git half into the READ-FIRST block of `CLAUDE.md`. Shape:
@@ -45,7 +46,8 @@ the hitl+git half into the READ-FIRST block of `CLAUDE.md`. Shape:
   "git": {"automation": true, "integration_branch": "dev", "base_branch": null,
           "branch_naming": "{issue_id}-{slug}", "push": "user", "pull_request": "never",
           "auto_merge": "clean_close", "refresh_on_merge": true},
-  "backend": {"enabled": false, "provider": null},
+  "backend": {"enabled": false, "provider": null,
+              "entity_templates": {"enabled": false}},
   "runner": {"interval": 45, "max_turns": 400, "allowed_tools": ["Read","Edit","Bash"],
              "retry_delay_minutes": 30,
              "agents": {
@@ -222,7 +224,18 @@ ride the coding (implement) agent.
 
 **1. Command allowlist.** github/gitlab usernames whose CONTROL-issue comments are allowed to run. Default: **PAT owner only**. → `remote.json` `allowlist` (per-repo state — usernames vary per project, so NOT in the portable config).
 
-**2. Failure retry.** On a failed runner step (e.g. a usage/session limit), retry after N minutes. Default **30**. → `config.json` `runner.retry_delay_minutes` (portable; applies even local-only).
+**2. Publish host issue templates?** Default **no**. Canonical templates are ALWAYS
+written under `.specseed/entity_templates/` for agents. If yes, also write only the
+user-facing templates (`bug`, `feature`, `change-request`) into the selected
+provider's native directory:
+- GitHub → `.github/ISSUE_TEMPLATE/*.md`
+- GitLab → `.gitlab/issue_templates/*.md`
+
+This is branch-local file output, not an API push. The provider UI may not show the
+templates until that branch lands on the repo's default branch. → `config.json`
+`backend.entity_templates.enabled`.
+
+**3. Failure retry.** On a failed runner step (e.g. a usage/session limit), retry after N minutes. Default **30**. → `config.json` `runner.retry_delay_minutes` (portable; applies even local-only).
 
 ### 2f. Spec-change requests → `config.json` `cr{}`
 
@@ -245,7 +258,8 @@ owns git branch/merge for the respec branch, so they assume `git.automation:true
 
 Write the config files:
 1. `config.json` — from Round 1 (`backend`), 2a/2b (`git`/`hitl`), 2c (`review`/`qa`),
-   2e (`runner.agents`), 2d-#2 (`runner.retry_delay_minutes`), and 2f (`cr`) answers (or
+   2e (`runner.agents`), 2d-#2 (`backend.entity_templates.enabled`),
+   2d-#3 (`runner.retry_delay_minutes`), and 2f (`cr`) answers (or
    `default_config()` on `defaults`).
    Run `python .specseed/scripts/core/config.py validate` to confirm it's well-formed.
 2. `remote.json` — **mirror only**: `repo` (Round 1 #2) + `allowlist` (2d-#1) + the rest
@@ -256,6 +270,15 @@ Write the config files:
    This marks which skill format built the tree so the migrate route can later detect
    drift. Don't overwrite it on a `/specseed configure` re-run (migrate owns it after
    creation).
+4. `.specseed/entity_templates/` — ALWAYS write/sync canonical entity templates:
+   ```bash
+   python .specseed/scripts/core/entity_templates.py sync
+   ```
+   This writes `epic`, `ticket`, `issue`, `bug`, `feature`, and `change-request`
+   templates for agents. If `backend.entity_templates.enabled:true`, the same command
+   also projects `bug`, `feature`, and `change-request` to the configured provider's
+   top-level template directory. Existing files are kept unless the user explicitly
+   asks to refresh them (`--force`).
 
 **Do NOT run `remote_sync.py init` here** — there's no work to push yet. It runs
 automatically at the end of bootstrap/adopt because the prefs are stored (see bootstrap
@@ -282,8 +305,11 @@ re-run.
 hitl/git/review/qa/cr changed AND `CLAUDE.md` already exists in the repo, **re-render its
 operating-policy block** (`config.py render-claude` → replace the block at the top of
 `CLAUDE.md`; the block now also states the review-gate + QA-issue contract, and a CR line
-when `cr.enabled`). If mirror structural fields (`backend.provider` / `remote.json` `repo`)
-changed, re-run `remote_sync.py init` (idempotent / self-healing).
+when `cr.enabled`). If `backend.entity_templates.enabled` changed, rerun
+`entity_templates.py sync`; do not delete old host-template files automatically if the
+user switches provider or disables projection. If mirror structural fields
+(`backend.provider` / `remote.json` `repo`) changed, re-run `remote_sync.py init`
+(idempotent / self-healing).
 
 ## End message (template — phrase naturally)
 

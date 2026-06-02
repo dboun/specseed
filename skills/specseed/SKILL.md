@@ -7,7 +7,7 @@ description: Documentation-driven development spec creation skill. Use whenever 
 
 Skill for producing and maintaining software specification artifacts. Routes by mode. Produces a `.specseed/` tree (repo) or chat artifacts.
 
-**Hard rule — never touch the main repo's own files.** All spec artifacts live under `<repo_root>/.specseed/`. The skill does NOT create or edit `spec/`, `docs/`, or any pre-existing source layout. The ONLY files the skill writes into the main repo proper are: `README.md`, root `CLAUDE.md`, per-component `CLAUDE.md` files, and top-level `AGENTS.md` — and each of those, if it already exists, triggers the merge protocol (see "Main-repo files & merge protocol" below). No `CONTRIBUTING.md` is ever written — its content folds into `CLAUDE.md`.
+**Hard rule — never touch the main repo's own files.** All spec artifacts live under `<repo_root>/.specseed/`. The skill does NOT create or edit `spec/`, `docs/`, or any pre-existing source layout. The ONLY files the skill writes into the main repo proper are: `README.md`, root `CLAUDE.md`, per-component `CLAUDE.md` files, and top-level `AGENTS.md`; if a GitHub/GitLab mirror is enabled and the user opts in, it may also project user-facing entity templates to the provider's top-level issue-template directory. Each main-repo file, if it already exists, triggers the merge protocol (see "Main-repo files & merge protocol" below). No `CONTRIBUTING.md` is ever written — its content folds into `CLAUDE.md`.
 Similarly, when running from the target repo to spec it out, the skills doesn't edit / auto-improve itself unless the user is very clear about it.
 
 Agent-agnostic — works in Claude Code, Codex, or any agent harness with filesystem access. Detects repo vs chat at session start and delivers accordingly.
@@ -155,12 +155,21 @@ README.md                       # user-facing, normal English, brief, anti-fluff
 CLAUDE.md                       # agent runtime entry — write from templates/CLAUDE_template.md. Merge protocol if exists
 AGENTS.md                       # one line: "Read ./CLAUDE.md. In dirs you work on, read corresponding CLAUDE.md too." Merge protocol if exists
 <component>/CLAUDE.md           # OPTIONAL per-component agent notes (multi-component repos). Merge protocol if exists
+.github/ISSUE_TEMPLATE/*.md     # OPTIONAL GitHub projection: bug / feature / change-request only, if mirror + user opt-in
+.gitlab/issue_templates/*.md    # OPTIONAL GitLab projection: bug / feature / change-request only, if mirror + user opt-in
 # NO docs/CONTRIBUTING.md — its content folds into CLAUDE.md (see templates/CLAUDE_template.md)
 
 # ---- .specseed/ (all spec artifacts + runtime) ----
 .specseed/
 ├── version.txt                 # the skill version this tree was last built/migrated to (single line x.y.z). Missing → assume 0.1.0. Drives the migrate route. Stamped at creation (configure Persist), re-stamped by migrate
 ├── README.md                   # HUMAN operator manual (run/kill the runner, approve, configure, github/gitlab). Written at first setup from templates/specseed-README_template.md
+├── entity_templates/           # canonical templates agents use to scaffold epics/tickets/issues + user-facing bug/feature/CR intake
+│   ├── epic.md
+│   ├── ticket.md
+│   ├── issue.md
+│   ├── bug.md
+│   ├── feature.md
+│   └── change-request.md
 ├── memory/                     # ALL skill memory lives here (dir, not a single file)
 │   ├── session_state.md        #   session scratch — deleted at end; preserved on /specseed stop
 │   ├── sprint_planning.md      #   reusable sprint-planning prefs (tiny, persists across sessions)
@@ -226,6 +235,7 @@ scripts/
 │   ├── verification_map.py             # inverse map: req → ticket → issues → test files
 │   ├── drift_check.py                  # mechanical spec-vs-reality drift surface
 │   ├── config.py                       # PORTABLE config: load/validate config.json (hitl + git + backend + runner + review + qa); render-claude → CLAUDE.md block (incl. review/QA completion-gate contract)
+│   ├── entity_templates.py             # writes .specseed/entity_templates and optional GitHub/GitLab issue-template projection
 │   └── approvals_render.py             # scan issues/*/approval.md → APPROVALS.md + approvals.json (pending HITL gates)
 └── remote/                     # OPTIONAL mirror cluster (only present/used if the user opts in — see references/remote.md)
     ├── github_functions.py             # stdlib GitHub REST wrapper (+ GraphQL pin)
@@ -235,7 +245,7 @@ scripts/
     └── remote_control.py               # CONTROL-issue command channel (poll/authorize/dispatch)
 ```
 
-The remote-mirror scripts + `.specseed/memory/remote.json` exist ONLY when the user opts into the mirror. They are shipped plumbing (not analysis seams) and never run otherwise.
+The remote-mirror scripts + `.specseed/memory/remote.json` exist ONLY when the user opts into the mirror. They are shipped plumbing (not analysis seams) and never run otherwise. Host issue-template dirs are also opt-in projection only; canonical templates always stay in `.specseed/entity_templates/`.
 
 Notes:
 - **Three work tiers, always present:** `epic → ticket → issue`. **Epics + tickets are PM / non-technical** (outcomes, user-visible value). **Issues are technical** — the unit an agent claims and executes (carry `artifacts`, `effort_hours`, `plan.md`, `step_reports/`). An issue MAY belong to a ticket; a ticket MAY belong to an epic. There is NO separate "story" tier — a user story is a section inside a ticket's prose body.
