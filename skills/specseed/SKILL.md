@@ -274,6 +274,11 @@ The skill writes four kinds of file into the main repo (everything else goes und
 
 **Inform the user** (first message of a repo-mode session, and again at session end) which of these will land in the main repo and that everything else is confined to `.specseed/`.
 
+**First-run `.gitignore` choice.** During bootstrap/adopt, ask at the same moment you explain/write the `.specseed/` tree and main-repo entry files:
+> "Add specseed artifacts to `.gitignore`? Default/recommended: **no**. Keeping `.specseed/`, `CLAUDE.md`, and `AGENTS.md` tracked makes the spec and agent contract transfer with the repo. Ignore them only if this repo's specseed setup is private/local."
+
+If user says **yes**, append missing entries to `.gitignore` for `.specseed/`, root `CLAUDE.md`, root `AGENTS.md`, and any selected per-component `CLAUDE.md` paths. If `.gitignore` does not exist, create it. Never add these ignore rules by default. Do not add `README.md` or provider issue-template projections to `.gitignore` unless user explicitly asks.
+
 **If the file does NOT already exist:** write the skill's version directly.
 
 **If the file ALREADY exists** (`README.md`, any `CLAUDE.md`, or `AGENTS.md`): do NOT silently overwrite. Discuss a merge strategy with the user before writing:

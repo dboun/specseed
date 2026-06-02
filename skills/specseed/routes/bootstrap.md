@@ -22,7 +22,7 @@ Load `references/question-protocol.md` before any user-facing round.
 9. `reqs.json` generation + cycle resolution (run `requirements_generate_json.py`, then `requirements_analyze.py`; resolve cycles if any)
 10. **ROADMAP draft + discussion gate** — phases → epics → ticket TITLES, discussed with user BEFORE detailed formation (use `work-breakdown.md`). Whole roadmap in ALL tiers — it's the cheap map.
 11. Work breakdown: flesh tickets + form issues + assemble + validate + critical path + **sprint planning** (use `work-breakdown.md`; run the assemble scripts, `tickets_validate.py` + `issues_validate.py` + `tickets_analyze.py`, then `sprint_plan.py` → write sprints → `sprints_validate.py` + `timeline_render.py`). **`incremental`: detail first increment only.**
-12. Write main-repo entry files (merge protocol if any already exist): `README.md` + `CLAUDE.md` (from `templates/CLAUDE_template.md`, with `CONTRIBUTING` content folded into its `## Project conventions` section) + `AGENTS.md` + per-component `CLAUDE.md` (if N>1). No separate `CONTRIBUTING.md`. **`incremental`: write `CLAUDE.md`+`AGENTS.md` EARLY (after stage 8) so the runtime contract is locked before breakdown.**
+12. Write main-repo entry files (merge protocol if any already exist): `README.md` + `CLAUDE.md` (from `templates/CLAUDE_template.md`, with `CONTRIBUTING` content folded into its `## Project conventions` section) + `AGENTS.md` + per-component `CLAUDE.md` (if N>1). Ask whether to add `.specseed/`, `CLAUDE.md`, `AGENTS.md`, and selected per-component `CLAUDE.md` paths to `.gitignore` at this same step. Recommend **no** because ignored artifacts transfer poorly. No separate `CONTRIBUTING.md`. **`incremental`: write `CLAUDE.md`+`AGENTS.md` EARLY (after stage 8) so the runtime contract is locked before breakdown.**
 13. Optional artifacts (`deployment.md`) if triggered
 14. Session end (clean `session_state.md`; `incremental` hands off to `plan-next`)
 
@@ -277,7 +277,7 @@ For the cross-cutting component (if present), SDD covers how cross-cutting reqs 
 
 **Chat mode:** deliver `sdd.md` (or per-component versions) as artifact.
 
-**`incremental` only — write entry files now (early stage 12).** Specs for increment 1 are settled, so the runtime contract can be locked before breakdown. Jump to **stage 12** and write `CLAUDE.md` + `AGENTS.md` (+ per-component `CLAUDE.md` if N>1) now — defer only `README.md` to the end. This is the "how agents behave" the user wants front-loaded; it lets an impl agent start the moment sprint 1 has issues. Then return here for stage 9.
+**`incremental` only — write entry files now (early stage 12).** Specs for increment 1 are settled, so the runtime contract can be locked before breakdown. Jump to **stage 12** and write `CLAUDE.md` + `AGENTS.md` (+ per-component `CLAUDE.md` if N>1) now — defer only `README.md` to the end. Ask the `.gitignore` question from stage 12 now too, since this is when the runtime files first land. This is the "how agents behave" the user wants front-loaded; it lets an impl agent start the moment sprint 1 has issues. Then return here for stage 9.
 
 ---
 
@@ -407,6 +407,11 @@ Bumps each ticket title's `(X/Y complete)` annotation in `ROADMAP.md` from `tick
 **Tier note:** `incremental` already wrote `CLAUDE.md` + `AGENTS.md` (+ per-component) early, after stage 8 — at this point in the flow only `README.md` remains here. `lite` / `standard` write all of them now.
 
 These are the ONLY standard files written outside `.specseed/`. The exception is optional host issue-template projection, controlled by configure mode (`.github/ISSUE_TEMPLATE/*.md` or `.gitlab/issue_templates/*.md`, only if mirror + user opt-in). Before writing any standard entry file, **for each that already exists on disk, follow the merge protocol** in `SKILL.md` ("Main-repo files & merge protocol"): read the existing file, default to replacing with the skill's version, but scan for project-specific additions worth keeping and offer to append them; never destroy user content without explicit OK. **Tell the user** which of these will be placed in the main repo and that everything else stays under `.specseed/`.
+
+At this same step, ask whether to add specseed artifacts to `.gitignore`:
+> "Add specseed artifacts to `.gitignore`? Default/recommended: **no**. Tracking `.specseed/`, `CLAUDE.md`, and `AGENTS.md` keeps the spec and agent contract portable. Ignore them only if this setup is private/local."
+
+If user says yes, append missing ignore lines for `.specseed/`, root `CLAUDE.md`, root `AGENTS.md`, and any selected per-component `CLAUDE.md` paths. If `.gitignore` is absent, create it. Do not add those lines by default. Do not ignore `README.md` or provider issue-template projections unless user explicitly asks.
 
 ### README.md
 

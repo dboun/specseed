@@ -158,7 +158,7 @@ Forward tickets' `satisfies_reqs` reference gap reqs; their `depends_on` DAG cov
 ## Stage 9: Entry files + propagate-back
 
 ### Entry files
-Reuse bootstrap **stage 12** + the merge protocol (`SKILL.md`). Write `README.md` (if absent/merge), root `CLAUDE.md` (from `CLAUDE_template.md`, `## Project conventions` filled from stage 3's recovered conventions), `AGENTS.md`, per-component `CLAUDE.md` if N>1. An existing `CLAUDE.md`/`AGENTS.md` from stage 1 → merge protocol, never silent clobber.
+Reuse bootstrap **stage 12** + the merge protocol (`SKILL.md`). Write `README.md` (if absent/merge), root `CLAUDE.md` (from `CLAUDE_template.md`, `## Project conventions` filled from stage 3's recovered conventions), `AGENTS.md`, per-component `CLAUDE.md` if N>1. Ask the same `.gitignore` question at this step for `.specseed/`, `CLAUDE.md`, `AGENTS.md`, and selected per-component `CLAUDE.md` paths. Recommend **no** because ignored artifacts transfer poorly. An existing `CLAUDE.md`/`AGENTS.md` from stage 1 → merge protocol, never silent clobber.
 
 ### Propagate-back (opt-in, one-time)
 If the user had docs under `spec/`/`docs/` that we imported + reconciled, offer ONCE at the end:
