@@ -380,6 +380,10 @@ def main():
                    default="spill",
                    help="auto-pick scope: current sprint only / spill to next "
                         "(default) / ignore sprints")
+    p.add_argument("--peek", action="store_true",
+                   help="read-only: print the next ready issue's id+type+difficulty "
+                        "WITHOUT claiming it (no lock, no write). Lets the runner pick "
+                        "a per-function/difficulty agent before spawning it.")
     args = p.parse_args()
 
     pm = Path(args.pm_dir)
@@ -397,6 +401,23 @@ def main():
     sprints = load_sprints(sprints_path)
     s_rank = sprint_rank_map(sprints)
     t_sprint = ticket_sprint_map(tickets, sprints)
+
+    # --peek: read-only next-ready selection (no lock, no claim). The runner uses
+    # this to learn the issue's type+difficulty so it can choose the right agent
+    # config before spawning. Race-free under the single-writer invariant.
+    if args.peek:
+        try:
+            issues = json.loads(issues_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as e:
+            print(f"ERROR: malformed issues.json: {e}", file=sys.stderr)
+            sys.exit(2)
+        tdone = ticket_done_map(tickets, issues)
+        target = args.issue_id or pick_next(issues, tickets, tdone, skip, t_sprint,
+                                            s_rank, args.sprint_scope)
+        ie = issues.get(target) if target else None
+        report({"peek": True, "issue_id": target,
+                "type": (ie or {}).get("type"),
+                "difficulty": (ie or {}).get("difficulty")})
 
     f = acquire_lock(issues_path, args.lock_timeout)
     if f is None:

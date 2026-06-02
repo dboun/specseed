@@ -1,18 +1,20 @@
 """
 agents_runner.py — the always-on orchestrator loop (see references/remote.md).
 
-ONE laptop, single writer. Each iteration: (unless paused) claim + run the next ready
-issue via the LOCAL `claude` CLI, then — if code review is on — run ONE review pass
-(review an in_review issue, write review.json, apply review_gate.py). No Anthropic API
-key — it shells out to the already-authenticated Claude Code CLI on this machine
-(prompt piped on stdin). Per-role models come from `config.runner.models`
-(implement/review/merge), each falling back to `config.runner.model`. QA needs no
-special handling — a `type:qa` issue is claimed + run like any other issue.
+ONE laptop, single writer. Each iteration: (unless paused) peek the next ready issue
+(`claim_issue.py --peek`), pick the agent chain for its (function, difficulty), and have
+that agent claim + run it; then — if code review is on — run ONE review pass (review an
+in_review issue, write review.json, apply review_gate.py). No Anthropic API key — it
+shells out to the already-authenticated coding-agent CLI on this machine (prompt piped on
+stdin). The agent matrix is `config.runner.agents`: FUNCTION (implement/review/qa) →
+DIFFICULTY (easy/hard) → an ordered fallback chain of {provider, config_dir, model,
+effort} specs (provider claude|codex). A type:qa issue routes to the `qa` function;
+merges still ride the implement agent's finish flow.
 
 Config comes from `.specseed/memory/config.json` (the portable "how-you-work"
 file — validated on startup; the runner refuses to start if it's invalid or
 missing). `config.backend.enabled` picks the backend; `config.runner` supplies
-the model/effort/interval/turn-cap/allowed-tools/retry knobs below. Per-repo
+the agent matrix plus the global interval/turn-cap/allowed-tools/retry knobs. Per-repo
 mirror STATE (repo, issue map, cursors) lives separately in `remote.json`.
 
 Works in BOTH backends, keyed off `config.backend.enabled`:
@@ -34,6 +36,7 @@ In mirror mode you can also comment the verbs on the pinned CONTROL issue (e.g. 
 
 import argparse
 import json
+import os
 import signal
 import subprocess
 import sys
@@ -50,33 +53,49 @@ import remote_config as rc
 import remote_control
 import remote_sync
 
-# Built in main() from config.runner. Prompt is piped on stdin (so `-p` takes no
-# positional prompt). CLAUDE_CMD is the default (the `implement` role); the review
-# step builds its own command with the `review` model when one is configured.
-CLAUDE_CMD = None
+# Global runner knobs (interval/max_turns/allowed_tools/retry), set in main() from
+# config.runner. Per-task commands are built on the fly from the (function,difficulty)
+# agent chain — see build_agent_cmd / run_agent_chain. Prompt is piped on stdin.
 RUNNER = None
 
 
-def build_claude_cmd(runner, model=None):
-    return ["claude", "-p",
-            "--model", str(model or runner["model"]),
-            "--effort", str(runner["effort"]),
+def build_claude_cmd(spec, runner):
+    """(argv, env_overrides) for a Claude Code spec. config_dir → CLAUDE_CONFIG_DIR."""
+    argv = ["claude", "-p",
+            "--model", str(spec["model"]),
+            "--effort", str(spec["effort"]),
             "--permission-mode", "auto",
             "--allowedTools", ",".join(runner["allowed_tools"]),
             "--max-turns", str(runner["max_turns"])]
+    env = {"CLAUDE_CONFIG_DIR": str(spec["config_dir"])} if spec.get("config_dir") else {}
+    return argv, env
 
 
-def cmd_for_role(cfg, role):
-    """Claude command for a runner role ('implement'/'review'/'merge'); the model
-    falls back to runner.model when no per-role override is set. `implement`
-    reuses the prebuilt CLAUDE_CMD."""
-    if role == "implement":
-        return CLAUDE_CMD
-    return build_claude_cmd(RUNNER, cfgmod.runner_model(cfg, role))
+def build_codex_cmd(spec, runner):
+    """(argv, env_overrides) for a Codex spec. Prompt is piped on stdin (trailing
+    '-'); config_dir → CODEX_HOME. max_turns/allowed_tools are Claude-only, ignored."""
+    argv = ["codex", "exec",
+            "--model", str(spec["model"]),
+            "-c", f'model_reasoning_effort="{spec["effort"]}"',
+            "--sandbox", "workspace-write",
+            "--ask-for-approval", "never",
+            "-"]
+    env = {"CODEX_HOME": str(spec["config_dir"])} if spec.get("config_dir") else {}
+    return argv, env
 
-WORK_PROMPT = ("Per ./CLAUDE.md, claim and fully implement the next ready issue "
-               "(run .specseed/scripts/core/claim_issue.py, then execute it to its "
-               "finish flow). If no issue is ready, do nothing and say so.")
+
+def build_agent_cmd(spec, runner):
+    """(argv, env_overrides) for an agent spec, dispatched on spec.provider."""
+    if spec.get("provider") == "codex":
+        return build_codex_cmd(spec, runner)
+    return build_claude_cmd(spec, runner)
+
+
+WORK_PROMPT = ("Per ./CLAUDE.md, claim issue {iid} (run "
+               "`python .specseed/scripts/core/claim_issue.py {iid}`) and then fully "
+               "execute it to its finish flow (for a type:qa issue, follow the QA "
+               "contract in CLAUDE.md). If the claim is refused — already resolved or "
+               "in flight — do nothing and say so.")
 
 REVIEW_PROMPT = (
     "You are a CODE REVIEWER, not the implementer. Review the completed work for "
@@ -103,19 +122,23 @@ def _kill_flag(root):
     return rc.find_root(root) / ".specseed" / "memory" / "runner.kill"
 
 
-def run_claude(root, prompt, log, cmd=None):
-    """Run the local Claude Code CLI (prompt piped on stdin, output appended to
+def run_agent(root, prompt, log, argv, env=None):
+    """Run a coding-agent CLI (`argv`, prompt piped on stdin, output appended to
     runner.log); poll the kill flag and terminate on demand. Returns None if killed.
-    `cmd` overrides the default CLAUDE_CMD (e.g. the review-model command)."""
+    `env` (if given) is merged over os.environ — e.g. CLAUDE_CONFIG_DIR / CODEX_HOME."""
     kf = _kill_flag(root)
     if kf.exists():
         kf.unlink()
-    log(f"claude: {prompt[:60]}…")
+    log(f"agent: {prompt[:60]}…")
     logf = open(rc.find_root(root) / ".specseed" / "memory" / "runner.log",
                 "a", encoding="utf-8")
-    proc = subprocess.Popen(cmd or CLAUDE_CMD, cwd=str(rc.find_root(root)),
+    run_env = None
+    if env:
+        run_env = dict(os.environ)
+        run_env.update(env)
+    proc = subprocess.Popen(argv, cwd=str(rc.find_root(root)),
                             stdin=subprocess.PIPE, stdout=logf,
-                            stderr=subprocess.STDOUT, text=True)
+                            stderr=subprocess.STDOUT, text=True, env=run_env)
     try:
         proc.stdin.write(prompt)
         proc.stdin.close()
@@ -132,7 +155,7 @@ def run_claude(root, prompt, log, cmd=None):
             killed = True
             if kf.exists():
                 kf.unlink()
-            log("claude terminated (kill/stop)")
+            log("agent terminated (kill/stop)")
             break
         time.sleep(1)
     logf.close()
@@ -159,26 +182,59 @@ def cooldown_remaining(root):
     return rem if rem > 0 else 0
 
 
-def attempt_claude(root, cfg, prompt, log, cmd=None):
-    """Run claude unless in cooldown. Returns 0 on success, 'cooldown' if skipped,
-    None if killed, or the nonzero exit code (cooldown then armed). `cmd` overrides
-    the default command (per-role model)."""
+def run_agent_chain(root, cfg, chain, prompt, log):
+    """Run a task against an ordered fallback chain of specs. Returns 0 on the first
+    success, 'cooldown' if skipped (in retry cooldown), None if killed, or the last
+    nonzero exit code (cooldown then armed). A nonzero spec falls through to the next;
+    the cooldown is armed only once the whole chain has failed."""
     rem = cooldown_remaining(root)
     if rem > 0:
-        log(f"claude in retry cooldown (~{int(rem // 60)}m left); skipping")
+        log(f"agent in retry cooldown (~{int(rem // 60)}m left); skipping")
         return "cooldown"
-    code = run_claude(root, prompt, log, cmd=cmd)
-    if code is None:
-        return None                                   # killed — not a failure
-    if code != 0:
-        delay = int(cfg.get("retry_delay_minutes", 30)) * 60
-        _retry_path(root).write_text(str(time.time() + delay), encoding="utf-8")
-        log(f"claude exit {code} (e.g. session limit) -> retry in {delay // 60}m")
-        return code
-    p = _retry_path(root)                             # success clears any cooldown
-    if p.exists():
-        p.unlink()
-    return 0
+    last = None
+    for i, spec in enumerate(chain):
+        argv, env = build_agent_cmd(spec, RUNNER)
+        tag = f"{spec.get('provider')}/{spec.get('model')}/{spec.get('effort')}"
+        if i:
+            log(f"fallback #{i} -> {tag}")
+        code = run_agent(root, prompt, log, argv, env)
+        if code is None:
+            return None                               # killed — not a failure
+        if code == 0:
+            p = _retry_path(root)                     # success clears any cooldown
+            if p.exists():
+                p.unlink()
+            return 0
+        last = code
+        log(f"agent exit {code} via {tag}")
+    delay = int(cfg.get("retry_delay_minutes", 30)) * 60
+    _retry_path(root).write_text(str(time.time() + delay), encoding="utf-8")
+    log(f"all {len(chain)} agent spec(s) failed -> retry in {delay // 60}m")
+    return last
+
+
+def _bucket(difficulty):
+    """Issue difficulty → agent-chain bucket ('easy'/'hard'; missing → hard)."""
+    return "easy" if difficulty == "easy" else "hard"
+
+
+def peek_next(root):
+    """Read-only: the next ready issue as (iid, type, difficulty), or None. Shells
+    `claim_issue.py --peek` (no claim) so the runner can pick the right agent chain
+    before spawning."""
+    claim = _pm(root).parent / "scripts" / "core" / "claim_issue.py"
+    try:
+        out = subprocess.run([sys.executable, str(claim), "--peek",
+                              "--pm-dir", str(_pm(root))],
+                             cwd=str(rc.find_root(root)),
+                             capture_output=True, text=True, check=False)
+        data = json.loads(out.stdout.strip().splitlines()[-1])
+    except Exception:
+        return None
+    iid = data.get("issue_id")
+    if not iid:
+        return None
+    return iid, data.get("type"), data.get("difficulty")
 
 
 def _statuses(root):
@@ -229,11 +285,20 @@ def notify_changes(root, cfg, remote, before, after, log):
 
 
 def work_step(root, cfg, remote, log):
-    """Claim + run the next issue; comment on done/blocked transitions. Returns
+    """Peek the next ready issue, choose its (function, difficulty) agent chain, then
+    have that agent claim + execute the issue. Function is `qa` for a type:qa issue,
+    else `implement` (merges still ride the implement agent's finish flow). Returns
     True if any issue status changed (so the caller re-pushes the mirror)."""
+    peek = peek_next(root)
+    if peek is None:
+        return False                                  # nothing ready
+    iid, itype, difficulty = peek
+    function = "qa" if itype == "qa" else "implement"
+    pcfg = cfgmod.load_config(root) or {}
+    chain = cfgmod.agent_chain(pcfg, function, _bucket(difficulty))
     before = _statuses(root)
-    if attempt_claude(root, cfg, WORK_PROMPT, log) != 0:   # killed / cooldown / failed
-        return False
+    if run_agent_chain(root, cfg, chain, WORK_PROMPT.format(iid=iid), log) != 0:
+        return False                                  # killed / cooldown / failed
     after = _statuses(root)
     return notify_changes(root, cfg, remote, before, after, log)
 
@@ -277,8 +342,8 @@ def review_step(root, cfg, remote, log):
 
     before = _statuses(root)
     if not has_verdict:
-        res = attempt_claude(root, cfg, REVIEW_PROMPT.format(iid=target), log,
-                             cmd=cmd_for_role(pcfg, "review"))
+        chain = cfgmod.agent_chain(pcfg, "review", _bucket(issues[target].get("difficulty")))
+        res = run_agent_chain(root, cfg, chain, REVIEW_PROMPT.format(iid=target), log)
         if res != 0:                              # killed / cooldown / failed — retry next pass
             return False
     gate = _pm(root).parent / "scripts" / "core" / "review_gate.py"
@@ -293,6 +358,10 @@ def review_step(root, cfg, remote, log):
 
 
 def execute_actions(root, cfg, remote, actions, log):
+    # CONTROL-issue verbs (adapt/plan-next/approve/reject) are meta routes, not issue
+    # execution — run them on the implement/hard agent chain (the default executor).
+    pcfg = cfgmod.load_config(root) or {}
+    ctl_chain = cfgmod.agent_chain(pcfg, "implement", "hard")
     for a in actions:
         verb, n = a["verb"], a["reply_to"]
         if verb == "sync":
@@ -306,7 +375,7 @@ def execute_actions(root, cfg, remote, actions, log):
             # approve/reject route to approve mode (its triggers include the bare
             # verbs) and flip issue status, so re-push the mirror after a good run.
             slash = f"/specseed {verb}" + (f" {a['text']}" if a.get("text") else "")
-            res = attempt_claude(root, cfg, slash, log)
+            res = run_agent_chain(root, cfg, ctl_chain, slash, log)
             if res == 0:
                 remote.comment(n, f"✅ Ran `{slash}`.")
                 if verb in ("approve", "reject"):
@@ -360,7 +429,7 @@ def one_pass(root, cfg, remote, log):
 
 
 def main(argv):
-    global CLAUDE_CMD, RUNNER
+    global RUNNER
     ap = argparse.ArgumentParser(description="specseed orchestrator loop (local-only or github/gitlab mirror)")
     ap.add_argument("--interval", type=int, default=None, help="seconds between passes (default: config.runner.interval)")
     ap.add_argument("--once", action="store_true", help="single pass then exit")
@@ -386,7 +455,6 @@ def main(argv):
 
     runner = config["runner"]
     RUNNER = runner
-    CLAUDE_CMD = build_claude_cmd(runner)
     interval = args.interval if args.interval is not None else runner["interval"]
 
     cfg, mirror, _ = rc.load_runtime(root)       # cfg = mirror state ∪ {provider}
@@ -400,8 +468,9 @@ def main(argv):
         with open(logp, "a", encoding="utf-8") as f:
             f.write(line + "\n")
 
+    impl = cfgmod.agent_main(config, "implement", "hard")
     log(f"runner up ({'mirror: ' + str(cfg.get('provider')) if mirror else 'local-only'}; "
-        f"model {runner['model']}/{runner['effort']}, interval {interval}s)")
+        f"impl/hard {impl['provider']}:{impl['model']}/{impl['effort']}, interval {interval}s)")
     while not _STOP:
         cfg, stop = one_pass(root, cfg, remote, log)
         if stop or args.once:

@@ -46,18 +46,26 @@ the hitl+git half into the READ-FIRST block of `CLAUDE.md`. Shape:
           "branch_naming": "{issue_id}-{slug}", "push": "user", "pull_request": "never",
           "auto_merge": "clean_close", "refresh_on_merge": true},
   "backend": {"enabled": false, "provider": null},
-  "runner": {"model": "opus", "effort": "high", "interval": 45, "max_turns": 400,
-             "allowed_tools": ["Read","Edit","Bash"], "retry_delay_minutes": 30,
-             "models": {}},
+  "runner": {"interval": 45, "max_turns": 400, "allowed_tools": ["Read","Edit","Bash"],
+             "retry_delay_minutes": 30,
+             "agents": {
+               "implement": {"easy": [{"provider":"claude","config_dir":null,"model":"sonnet","effort":"medium"}],
+                             "hard": [{"provider":"claude","config_dir":null,"model":"opus","effort":"high"}]},
+               "review":    {"easy": [{"provider":"claude","config_dir":null,"model":"sonnet","effort":"medium"}],
+                             "hard": [{"provider":"claude","config_dir":null,"model":"opus","effort":"high"}]},
+               "qa":        {"easy": [{"provider":"claude","config_dir":null,"model":"sonnet","effort":"medium"}],
+                             "hard": [{"provider":"claude","config_dir":null,"model":"sonnet","effort":"high"}]}}},
   "review": {"enabled": true, "scope": "hard",
              "auto_approve": {"min_confidence": 90, "difficulty": ["easy"]}},
   "qa": {"enabled": true, "mode": "suggest", "effort_threshold_hours": 4.0}
 }
 ```
 
-`runner.models` (optional) overrides the model per role — `implement` / `review` /
-`merge` — each falling back to `runner.model`. `review` + `qa` are OPTIONAL blocks
-(absent = the defaults shown); old configs written before they existed still validate.
+`runner.agents` is the agent matrix: each FUNCTION (`implement` / `review` / `qa`) →
+each DIFFICULTY (`easy` / `hard`) → an **ordered fallback chain** of specs
+`{provider, config_dir, model, effort}` (first = main, rest tried on failure). See
+**2e** for how it's set. `max_turns` / `allowed_tools` are Claude-only (ignored for codex
+specs). `review` + `qa` are OPTIONAL blocks (absent = the defaults shown).
 
 **2. `remote.json` — per-repo mirror STATE, written ONLY for a mirror.** Project-specific,
 never copied between repos. Holds `repo`, `allowlist` (per-repo, like the toolset), the
@@ -174,8 +182,36 @@ Suggestion: **A**. QA where it pays off, without doubling effort on small ticket
 Map onto `qa.mode` (`suggest`/`all`/`off`). `qa.effort_threshold_hours` (default 4) tunes
 the suggest heuristic — leave default unless the user raises it.
 
-(Per-role models — a different model for review/merge — are an advanced `runner.models`
-knob; don't ask unless the user brings it up. Mention it exists if they ask about cost.)
+### 2e. Coding agents → `config.json` `runner.agents`
+
+Which model drives each job. Heavy default = **all Claude** (`default_agents()`):
+implement/review **hard → opus/high, easy → sonnet/medium**; qa **hard → sonnet/high,
+easy → sonnet/medium**. `defaults`/`OK` accepts the whole matrix — only ask further if
+the user wants per-function or Codex control.
+
+State it in one breath, then take overrides:
+
+> Default: every job runs on **Claude** (opus for hard work, sonnet for easy). You can set
+> a different agent per **function** (coding / code-review / QA) and per **difficulty**
+> (easy / hard), and give each an ordered **fallback** list (if the first hits a limit, the
+> next is tried).
+
+Each entry is a spec `{provider, config_dir, model, effort}`:
+- **provider** — `claude` or `codex`.
+- **config_dir** — `null` = the provider's default home (`CLAUDE_CONFIG_DIR`→`~/.claude`,
+  `CODEX_HOME`→`~/.codex`); or a path to use a specific login/profile.
+- **model** — enumerate the choices, don't free-type:
+  - `python .specseed/scripts/core/config.py list-models claude` → `opus` / `sonnet` / `haiku`.
+  - `python .specseed/scripts/core/config.py list-models codex [config_dir]` → the visible
+    slugs from `<config_dir|$CODEX_HOME|~/.codex>/models_cache.json` (e.g. `gpt-5.5`, …).
+- **effort** — Claude: `low`/`medium`/`high`. Codex: the model's `supported_reasoning_levels`
+  (the configure agent can read them from the same cache; e.g. `low`/`medium`/`high`/`xhigh`).
+
+Map answers onto `runner.agents[function][difficulty]` as the ordered list. A user who just
+names one model ("use codex gpt-5.5 for everything") fills all six buckets with one spec.
+Validate with `config.py validate` (it checks every function/difficulty has a non-empty
+chain and each spec's provider/model/effort). Merges are NOT a separate function — they
+ride the coding (implement) agent.
 
 ### 2d. Mirror options (mirror only; skip if local-only or user says "defaults")
 
@@ -187,7 +223,8 @@ knob; don't ask unless the user brings it up. Mention it exists if they ask abou
 
 Write the config files:
 1. `config.json` — from Round 1 (`backend`), 2a/2b (`git`/`hitl`), 2c (`review`/`qa`),
-   and 2d-#2 (`runner.retry_delay_minutes`) answers (or `default_config()` on `defaults`).
+   2e (`runner.agents`), and 2d-#2 (`runner.retry_delay_minutes`) answers (or
+   `default_config()` on `defaults`).
    Run `python .specseed/scripts/core/config.py validate` to confirm it's well-formed.
 2. `remote.json` — **mirror only**: `repo` (Round 1 #2) + `allowlist` (2d-#1) + the rest
    of `default_state()`. Local-only writes nothing here.

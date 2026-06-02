@@ -13,9 +13,11 @@ process ("how I work"), never project-specific data. Blocks:
   - backend        : the work-tracking choice — local-only vs a github/gitlab
     mirror. Just `enabled` + `provider`; the per-repo `repo`/credentials/issue
     map live in `.specseed/memory/remote.json` (state, NOT portable).
-  - runner         : how `agents_runner.py` drives the local Claude CLI (model,
-    effort, loop interval, turn cap, allowed tools, retry cooldown, per-role
-    model overrides).
+  - runner         : how `agents_runner.py` drives the coding-agent CLIs. Global
+    knobs (interval, turn cap, allowed tools, retry cooldown) PLUS `agents` — a
+    matrix of FUNCTION (implement/review/qa) → DIFFICULTY (easy/hard) → an ordered
+    fallback chain of {provider, config_dir, model, effort} specs. provider is
+    claude or codex; merges keep running inside the coding (implement) agent.
   - review         : the code-review phase — scope (which issues) + the
     confidence/difficulty auto-approve gate. Read by review_gate.py.
   - qa             : end-of-ticket QA — whether to emit a terminal `type: qa`
@@ -33,6 +35,7 @@ CLI:
   python .specseed/scripts/core/config.py validate          # exit 1 on schema errors
   python .specseed/scripts/core/config.py render-claude      # emit the CLAUDE.md block
   python .specseed/scripts/core/config.py init               # write a default config.json (won't clobber)
+  python .specseed/scripts/core/config.py list-models claude|codex [config_dir]  # selectable models
 """
 
 import json
@@ -52,6 +55,22 @@ CATEGORIES = {
 }
 LEVELS = ("block", "surface", "auto")
 PROVIDERS = (None, "github", "gitlab")
+
+# --------------------------------------------------------------------------- #
+# multi-agent runner taxonomy.
+#   FUNCTIONS   — the three independently-configurable runner jobs.
+#   DIFFICULTIES — each function splits by issue difficulty (easy/hard).
+#   AGENT_PROVIDERS — the coding-agent CLIs the runner can drive.
+# A "spec" = {provider, config_dir, model, effort}; a list of specs is an ordered
+# fallback chain (first = main, rest tried on failure).
+# --------------------------------------------------------------------------- #
+FUNCTIONS = ("implement", "review", "qa")
+DIFFICULTIES = ("easy", "hard")
+AGENT_PROVIDERS = ("claude", "codex")
+CLAUDE_MODEL_ALIASES = ("opus", "sonnet", "haiku")
+# per-provider default config dir (when a spec's config_dir is null).
+PROVIDER_CONFIG_ENV = {"claude": "CLAUDE_CONFIG_DIR", "codex": "CODEX_HOME"}
+PROVIDER_DEFAULT_HOME = {"claude": "~/.claude", "codex": "~/.codex"}
 
 DEFAULT_CATEGORIES = {
     "container":        "block",
@@ -83,17 +102,30 @@ DEFAULT_BACKEND = {
     "provider": None,                   # "github" | "gitlab" (required when enabled)
 }
 
-# runner knobs — how agents_runner.py drives the local Claude Code CLI.
+# runner knobs — how agents_runner.py drives the coding-agent CLIs.
+# `agents` maps each FUNCTION → each DIFFICULTY → an ordered fallback chain of
+# specs. The runner peeks the next issue's type+difficulty, picks the matching
+# chain, and tries each spec until one succeeds. `max_turns`/`allowed_tools` are
+# Claude-only (ignored for codex specs).
+def default_agents():
+    """Default agent matrix: all-Claude, opus/high for hard, sonnet/medium for easy."""
+    def spec(model, effort):
+        return {"provider": "claude", "config_dir": None, "model": model, "effort": effort}
+    hard = lambda m="opus": [spec(m, "high")]
+    easy = lambda m="sonnet": [spec(m, "medium")]
+    return {
+        "implement": {"easy": easy(), "hard": hard()},
+        "review":    {"easy": easy(), "hard": hard()},
+        "qa":        {"easy": easy(), "hard": [spec("sonnet", "high")]},
+    }
+
+
 DEFAULT_RUNNER = {
-    "model": "opus",
-    "effort": "high",
     "interval": 45,                     # seconds between loop passes
-    "max_turns": 400,
-    "allowed_tools": ["Read", "Edit", "Bash"],
-    "retry_delay_minutes": 30,          # after a failed claude run (e.g. session limit), wait this long before retrying
-    # per-ROLE model overrides; each falls back to `model` above when unset.
-    # implement = the impl agent, review = the code reviewer, merge = the merge/PR agent.
-    "models": {},                       # e.g. {"review": "sonnet", "merge": "haiku"}
+    "max_turns": 400,                   # Claude only
+    "allowed_tools": ["Read", "Edit", "Bash"],  # Claude only
+    "retry_delay_minutes": 30,          # after a failed run (e.g. session limit), wait this long before retrying the chain
+    "agents": default_agents(),
 }
 
 # code-review phase. Default ON at `hard` (configure asks + suggests this).
@@ -120,13 +152,24 @@ DEFAULT_QA = {
 QA_MODES = ("suggest", "all", "off")
 
 
+def default_runner():
+    """Fresh runner block (no shared nested mutables)."""
+    return {
+        "interval": DEFAULT_RUNNER["interval"],
+        "max_turns": DEFAULT_RUNNER["max_turns"],
+        "allowed_tools": list(DEFAULT_RUNNER["allowed_tools"]),
+        "retry_delay_minutes": DEFAULT_RUNNER["retry_delay_minutes"],
+        "agents": default_agents(),
+    }
+
+
 def default_config():
     return {
         "configured": True,
         "hitl": {"categories": dict(DEFAULT_CATEGORIES)},
         "git": dict(DEFAULT_GIT),
         "backend": dict(DEFAULT_BACKEND),
-        "runner": dict(DEFAULT_RUNNER),
+        "runner": default_runner(),
         "review": _deep_copy_review(),
         "qa": dict(DEFAULT_QA),
     }
@@ -158,11 +201,76 @@ def qa_config(cfg):
     return base
 
 
-def runner_model(cfg, role):
-    """Model for a runner role ('implement'/'review'/'merge'), falling back to
-    runner.model when no override is set."""
-    runner = (cfg or {}).get("runner") or {}
-    return (runner.get("models") or {}).get(role) or runner.get("model") or "opus"
+def agent_chain(cfg, function, difficulty):
+    """Ordered fallback chain of agent specs for a (function, difficulty), filling
+    from default_agents() when the block is absent/partial. `difficulty` is bucketed
+    to 'easy'/'hard' (anything but 'easy' → 'hard', conservative)."""
+    bucket = "easy" if difficulty == "easy" else "hard"
+    agents = ((cfg or {}).get("runner") or {}).get("agents") or {}
+    fn = agents.get(function) or {}
+    chain = fn.get(bucket)
+    if isinstance(chain, list) and chain:
+        return chain
+    return default_agents()[function][bucket]
+
+
+def agent_main(cfg, function, difficulty):
+    """The primary (first) spec for a (function, difficulty)."""
+    return agent_chain(cfg, function, difficulty)[0]
+
+
+# --------------------------------------------------------------------------- #
+# model enumeration (for the configure flow + tests)
+# --------------------------------------------------------------------------- #
+def _codex_cache_path(config_dir=None):
+    import os
+    base = config_dir or os.environ.get("CODEX_HOME") or "~/.codex"
+    return Path(base).expanduser() / "models_cache.json"
+
+
+def _load_codex_cache(config_dir=None):
+    try:
+        with _codex_cache_path(config_dir).open("r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def list_codex_models(config_dir=None):
+    """Visible Codex model slugs from `<config_dir|$CODEX_HOME|~/.codex>/models_cache.json`
+    (visibility == 'list'), de-duped in cache order. [] if the cache is missing/unreadable."""
+    payload = _load_codex_cache(config_dir)
+    models = (payload or {}).get("models")
+    if not isinstance(models, list):
+        return []
+    slugs, seen = [], set()
+    for model in models:
+        if not isinstance(model, dict) or model.get("visibility") != "list":
+            continue
+        slug = str(model.get("slug") or "").strip()
+        if slug and slug not in seen:
+            seen.add(slug)
+            slugs.append(slug)
+    return slugs
+
+
+def codex_reasoning_levels(slug, config_dir=None):
+    """Supported reasoning (effort) levels for a Codex model slug, [] if unknown."""
+    payload = _load_codex_cache(config_dir)
+    for model in (payload or {}).get("models") or []:
+        if isinstance(model, dict) and model.get("slug") == slug:
+            levels = model.get("supported_reasoning_levels")
+            return [str(x) for x in levels] if isinstance(levels, list) else []
+    return []
+
+
+def list_models(provider, config_dir=None):
+    """Selectable models for a provider: Claude = the fixed aliases; Codex = cache slugs."""
+    if provider == "claude":
+        return list(CLAUDE_MODEL_ALIASES)
+    if provider == "codex":
+        return list_codex_models(config_dir)
+    return []
 
 
 # --------------------------------------------------------------------------- #
@@ -197,6 +305,45 @@ def save_config(cfg, root=None):
 # --------------------------------------------------------------------------- #
 # validation
 # --------------------------------------------------------------------------- #
+def _validate_agents(agents):
+    """Validate runner.agents: every FUNCTION → every DIFFICULTY → non-empty list
+    of {provider, config_dir, model, effort} specs."""
+    errs = []
+    if not isinstance(agents, dict):
+        return ["runner.agents missing or not an object"]
+    for fn in FUNCTIONS:
+        if fn not in agents:
+            errs.append(f"runner.agents missing function '{fn}'")
+            continue
+        buckets = agents.get(fn)
+        if not isinstance(buckets, dict):
+            errs.append(f"runner.agents['{fn}'] must be an object")
+            continue
+        for diff in DIFFICULTIES:
+            chain = buckets.get(diff)
+            if not isinstance(chain, list) or not chain:
+                errs.append(f"runner.agents['{fn}']['{diff}'] must be a non-empty list")
+                continue
+            for i, spec in enumerate(chain):
+                where = f"runner.agents['{fn}']['{diff}'][{i}]"
+                if not isinstance(spec, dict):
+                    errs.append(f"{where} must be an object")
+                    continue
+                if spec.get("provider") not in AGENT_PROVIDERS:
+                    errs.append(f"{where}.provider must be one of {AGENT_PROVIDERS}")
+                for key in ("model", "effort"):
+                    if not isinstance(spec.get(key), str) or not spec.get(key):
+                        errs.append(f"{where}.{key} must be a non-empty string")
+                cd = spec.get("config_dir", None)
+                if cd is not None and not isinstance(cd, str):
+                    errs.append(f"{where}.config_dir must be null or a string")
+    for fn in agents:
+        if fn not in FUNCTIONS:
+            errs.append(f"runner.agents has unknown function '{fn}' "
+                        f"(expected {' | '.join(FUNCTIONS)})")
+    return errs
+
+
 def validate(cfg):
     """Return a list of error strings ([] == valid)."""
     errs = []
@@ -247,9 +394,6 @@ def validate(cfg):
     if not isinstance(runner, dict):
         errs.append("runner block missing or not an object")
     else:
-        for key in ("model", "effort"):
-            if not isinstance(runner.get(key, ""), str) or not runner.get(key):
-                errs.append(f"runner.{key} must be a non-empty string")
         for key in ("interval", "max_turns", "retry_delay_minutes"):
             v = runner.get(key)
             if not isinstance(v, int) or isinstance(v, bool) or v <= 0:
@@ -257,16 +401,7 @@ def validate(cfg):
         tools = runner.get("allowed_tools")
         if not isinstance(tools, list) or not all(isinstance(t, str) for t in tools):
             errs.append("runner.allowed_tools must be a list of strings")
-        models = runner.get("models", {})
-        if not isinstance(models, dict):
-            errs.append("runner.models must be an object (role -> model string)")
-        else:
-            for role, m in models.items():
-                if role not in ("implement", "review", "merge"):
-                    errs.append(f"runner.models has unknown role '{role}' "
-                                "(expected implement | review | merge)")
-                if not isinstance(m, str) or not m:
-                    errs.append(f"runner.models['{role}'] must be a non-empty string")
+        errs.extend(_validate_agents(runner.get("agents")))
 
     # review / qa are OPTIONAL blocks — absent = use defaults (back-compat with
     # configs written before they existed). Validate only when present.
@@ -463,6 +598,20 @@ def _render_git(git):
 # --------------------------------------------------------------------------- #
 def main(argv):
     cmd = argv[0] if argv else "show"
+    if cmd == "list-models":
+        provider = argv[1] if len(argv) > 1 else ""
+        config_dir = argv[2] if len(argv) > 2 else None
+        if provider not in AGENT_PROVIDERS:
+            print(f"usage: config.py list-models <{' | '.join(AGENT_PROVIDERS)}> "
+                  "[config_dir]", file=sys.stderr)
+            return 2
+        models = list_models(provider, config_dir)
+        if provider == "codex" and not models:
+            print("WARNING: no Codex models found "
+                  "(no models_cache.json, or none visible)", file=sys.stderr)
+        for m in models:
+            print(m)
+        return 0
     if cmd == "init":
         try:
             p = config_path()
@@ -498,7 +647,8 @@ def main(argv):
     if cmd in ("render-claude", "render"):
         sys.stdout.write(render_claude(cfg))
         return 0
-    print(f"unknown: {cmd}  (show | validate | render-claude | init)", file=sys.stderr)
+    print(f"unknown: {cmd}  (show | validate | render-claude | init | list-models)",
+          file=sys.stderr)
     return 2
 
 

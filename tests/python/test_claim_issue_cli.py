@@ -121,6 +121,32 @@ def test_nothing_ready_is_normal_no_claim(tmp_path):
     }
 
 
+def test_peek_is_readonly_and_reports_type_difficulty(tmp_path):
+    r = _json_repo(
+        tmp_path,
+        {
+            "I-1": _issue(type="feature", difficulty="easy"),
+            "I-2": _issue(type="qa", difficulty="hard", depends_on=["I-1"]),
+        },
+        {"T-1": _ticket()},
+    )
+    before = (r.pm / "issues.json").read_text(encoding="utf-8")
+
+    auto = r.core("claim_issue.py", "--peek")
+    assert auto.returncode == 0, auto.stderr
+    payload = json.loads(auto.stdout)
+    assert payload == {"peek": True, "issue_id": "I-1",
+                       "type": "feature", "difficulty": "easy"}
+
+    # specific id peek surfaces that issue's type/difficulty
+    targeted = r.core("claim_issue.py", "I-2", "--peek")
+    assert json.loads(targeted.stdout) == {"peek": True, "issue_id": "I-2",
+                                           "type": "qa", "difficulty": "hard"}
+
+    # read-only: nothing claimed, file byte-identical
+    assert (r.pm / "issues.json").read_text(encoding="utf-8") == before
+
+
 def test_sprint_scope_current_and_spill_cli(tmp_path):
     issues = {
         "I-CURRENT": _issue(ticket="T-CURRENT"),

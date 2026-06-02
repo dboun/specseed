@@ -203,7 +203,7 @@ AGENTS.md                       # one line: "Read ./CLAUDE.md. In dirs you work 
 
 # ---- .specseed/scripts/ ----
 scripts/
-├── agents_runner.py            # human-run entry — start/kill the always-on orchestrator loop (+ --write-shim). Top-level on purpose. Runs the work step + (if review on) a per-loop review step; per-role models via config.runner.models
+├── agents_runner.py            # human-run entry — start/kill the always-on orchestrator loop (+ --write-shim). Top-level on purpose. Runs the work step + (if review on) a per-loop review step; per-function/difficulty agent (claude|codex) via config.runner.agents
 ├── add_work.py                 # human-run entry — add a MANUAL work item (ticket + issue) out of band; high-priority → current sprint, else backlog; NO sprint replan
 ├── core/                       # agent-invoked plumbing + analysis seams (humans don't run these directly)
 │   ├── requirements_generate_json.py   # parses SRS table rows → reqs.json

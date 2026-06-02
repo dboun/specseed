@@ -1,5 +1,7 @@
 """config.py — schema validation, back-compat accessors, render-claude."""
 
+import json
+
 import config
 
 
@@ -7,13 +9,12 @@ def test_default_config_valid():
     assert config.validate(config.default_config()) == []
 
 
-def test_old_config_without_new_blocks_still_valid():
-    """Back-compat: a config.json written before review/qa/runner.models existed
-    must still validate (the blocks are optional; readers fill defaults)."""
+def test_old_config_without_optional_blocks_still_valid():
+    """Back-compat: a config.json without the optional review/qa blocks still
+    validates (readers fill defaults)."""
     old = config.default_config()
     del old["review"]
     del old["qa"]
-    old["runner"].pop("models", None)
     assert config.validate(old) == []
 
 
@@ -39,23 +40,68 @@ def test_qa_config_defaults():
     assert qc["enabled"] is True
 
 
-def test_runner_model_role_fallback():
-    cfg = {"runner": {"model": "opus", "models": {"review": "sonnet"}}}
-    assert config.runner_model(cfg, "implement") == "opus"   # falls back
-    assert config.runner_model(cfg, "review") == "sonnet"    # override
-    assert config.runner_model(cfg, "merge") == "opus"       # falls back
-    assert config.runner_model({}, "review") == "opus"       # ultimate default
+def test_agent_chain_and_main_defaults():
+    cfg = config.default_config()
+    # default matrix: implement/hard = opus/high, implement/easy = sonnet/medium
+    assert config.agent_main(cfg, "implement", "hard")["model"] == "opus"
+    assert config.agent_main(cfg, "implement", "easy")["model"] == "sonnet"
+    # missing difficulty buckets to hard (conservative)
+    assert config.agent_main(cfg, "implement", None)["model"] == "opus"
+    assert config.agent_main(cfg, "qa", "hard")["effort"] == "high"
+
+
+def test_agent_chain_fills_from_defaults_when_block_absent():
+    # empty/partial config still yields a usable chain
+    assert config.agent_chain({}, "review", "hard")[0]["provider"] == "claude"
+    partial = {"runner": {"agents": {"implement": {}}}}
+    assert config.agent_chain(partial, "implement", "easy")[0]["model"] == "sonnet"
+
+
+def test_agent_chain_returns_configured_fallback_list():
+    cfg = config.default_config()
+    chain = [{"provider": "codex", "config_dir": None, "model": "gpt-5.5", "effort": "high"},
+             {"provider": "claude", "config_dir": None, "model": "opus", "effort": "high"}]
+    cfg["runner"]["agents"]["implement"]["hard"] = chain
+    assert config.validate(cfg) == []
+    assert [s["provider"] for s in config.agent_chain(cfg, "implement", "hard")] == \
+        ["codex", "claude"]
 
 
 def test_validate_catches_bad_values():
     bad = config.default_config()
     bad["review"]["scope"] = "weird"
     bad["qa"]["mode"] = "nope"
-    bad["runner"]["models"] = {"unknown_role": "x"}
+    bad["runner"]["agents"]["implement"]["easy"][0]["provider"] = "gpt"
     errs = config.validate(bad)
     assert any("review.scope" in e for e in errs)
     assert any("qa.mode" in e for e in errs)
-    assert any("unknown role" in e for e in errs)
+    assert any("provider must be one of" in e for e in errs)
+
+
+def test_validate_catches_agents_structure_errors():
+    bad = config.default_config()
+    bad["runner"]["agents"]["qa"]["hard"] = []          # empty chain
+    del bad["runner"]["agents"]["review"]               # missing function
+    bad["runner"]["agents"]["implement"]["hard"][0]["model"] = ""  # empty model
+    errs = config.validate(bad)
+    assert any("['qa']['hard'] must be a non-empty list" in e for e in errs)
+    assert any("missing function 'review'" in e for e in errs)
+    assert any("['implement']['hard'][0].model" in e for e in errs)
+
+
+def test_list_codex_models_reads_cache(tmp_path):
+    cache = {"models": [
+        {"slug": "gpt-5.5", "visibility": "list",
+         "supported_reasoning_levels": ["low", "medium", "high"]},
+        {"slug": "hidden-x", "visibility": "hidden"},
+        {"slug": "gpt-5.5", "visibility": "list"},        # dup → de-duped
+    ]}
+    (tmp_path / "models_cache.json").write_text(json.dumps(cache), encoding="utf-8")
+    assert config.list_codex_models(str(tmp_path)) == ["gpt-5.5"]
+    assert config.codex_reasoning_levels("gpt-5.5", str(tmp_path)) == ["low", "medium", "high"]
+    # missing cache dir → empty, no raise
+    assert config.list_codex_models(str(tmp_path / "nope")) == []
+    assert config.list_models("claude") == ["opus", "sonnet", "haiku"]
 
 
 def test_validate_min_confidence_range():
