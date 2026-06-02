@@ -616,7 +616,7 @@ visibility, sprint membership, and priority — the issue is its execution unit.
 
 - **`high`** priority → assigned to the current `in_progress` sprint, so it's claimable
   now and jumps to the top via the priority sort key.
-- **`normal`/`low`** → left in backlog (`sprint: null`); picked up at the **next** sprint
+- **`medium`/`low`** → left in backlog (`sprint: null`); picked up at the **next** sprint
   planning.
 - **No sprint replan** is triggered — manual items slot in without re-solving the schedule.
   `add_work.py` re-runs the assemble chain + ROADMAP/TIMELINE renders only.

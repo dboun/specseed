@@ -487,7 +487,7 @@ Read ./CLAUDE.md. In dirs you work on, read corresponding CLAUDE.md files in the
 
 ---
 
-## Stage 13.5: Runner shim + (optional) remote mirror init
+## Stage 13.5: Runner shim + remote mirror init (if configured)
 
 **Always — write the runner shim (both backends).** Now that the work layer exists,
 write the runner entry so the user can start the loop:
@@ -505,8 +505,8 @@ here. Read `config.backend.enabled` in `.specseed/memory/config.json` (the per-r
 
 - **`backend.enabled: false`** (or no `remote.json`) → local-only. Shim above is enough; write nothing remote.
 - **`backend.enabled: true` and `remote.json` not yet `initialized`** → create the mirror programmatically
-  (prefer scripts — don't hand-create issues):
-  1. `python .specseed/scripts/remote/remote_sync.py init` — 4 dashboards (pin ROADMAP/TIMELINE/CONTROL), seed labels, push current work.
+  (prefer scripts — don't hand-create issues). This is a required step, not optional:
+  1. `python .specseed/scripts/remote/remote_sync.py init` — 4 dashboards (pin ROADMAP/TIMELINE/CONTROL), seed labels, project host issue templates (if enabled), push current work. If your environment can't reach the remote, say so and hand the user this exact command to run; do not silently skip it.
   2. Add the optional **Remote mirror** block to `CLAUDE.md` (see `templates/CLAUDE_template.md`).
   3. Set `initialized: true` in `remote.json`; point the user at the CONTROL-issue verbs (also in `.specseed/README.md`).
 - **`backend.enabled: true` and `remote.json` already `initialized`** (re-run) → just `remote_sync.py reconcile` to push the latest work.

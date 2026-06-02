@@ -93,7 +93,7 @@ ends it. If a run hits a usage or session limit, the runner backs off for a cool
 
 ### Add an out-of-band item (bug / urgent fix / chore)
 
-To inject work that isn't in the plan, use `add_work.py` — it scaffolds a ticket + one
+To inject work that isn't in the plan, use `add_work.py`. It scaffolds a ticket + one
 issue and slots it in without re-solving the schedule:
 
 ```bash
@@ -105,7 +105,7 @@ python .specseed/scripts/add_work.py --title "Login 500 on empty password" \
 
 A **high**-priority item lands in the current sprint and jumps to the top of the queue;
 **medium/low** go to the backlog for the next sprint. Either way the runner picks it up
-on its next pass — no replan needed.
+on its next pass; no replan needed.
 
 <!-- MIRROR-ONLY -->
 From your phone, comment a verb on the pinned **CONTROL** issue instead (the runner
@@ -149,7 +149,7 @@ say `/specseed approve` (walk every pending one), or resolve one directly:
 <!-- MIRROR-ONLY -->
 From your phone, comment on the CONTROL issue: `approvals` (list pending),
 `approve <APR-NNNN> [opt]`, `reject <APR-NNNN> <note>`, `hold <APR-NNNN>`. Or resolve a
-gate right on the work issue carrying the `🔔` — comment `approve` / `reject <note>` /
+gate right on the work issue carrying the `🔔`: comment `approve` / `reject <note>` /
 `hold` there (the `APR-NNNN` is optional when that issue has only one open gate).
 <!-- /MIRROR-ONLY -->
 
@@ -159,12 +159,12 @@ separate actor on purpose, so a gate is a real gate.
 <!-- MIRROR-ONLY -->
 ### Talk to an issue
 
-Any comment on a work issue that ISN'T a verb is treated as a free-form note — an
+Any comment on a work issue that ISN'T a verb is treated as a free-form note: an
 instruction ("add more comments", "don't do it that way") or a question ("why did you
 handle X like that?"). The agent reads the issue and the real code, then replies on that
 issue. It works within the issue's existing scope; if your note actually wants a
 spec/scope change it points you to a `change-request`, and brand-new work to `add_work`.
-Decisions still go through the `approve`/`reject`/`hold` verbs — the free-form note is for
+Decisions still go through the `approve`/`reject`/`hold` verbs; the free-form note is for
 asks and questions, not sign-off.
 <!-- /MIRROR-ONLY -->
 
@@ -225,7 +225,7 @@ change would invalidate work already done, it stops and asks rather than guessin
 <!-- /CR-ONLY -->
 
 **Reusing your setup across repos.** `.specseed/memory/config.json` holds only "how you
-work" (gates, git workflow, backend choice, runner knobs) — no project-specific data — so
+work" (gates, git workflow, backend choice, runner knobs) with no project-specific data, so
 you can copy it into another repo's `.specseed/memory/` to start from your usual setup
 (then `/specseed configure` to fill in repo-specific bits). Do **not** copy `remote.json`:
 it is per-repo state (the target repo, issue map, cursors) and is recreated per project.

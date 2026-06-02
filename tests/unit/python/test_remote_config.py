@@ -114,3 +114,44 @@ def test_remote_constructs_and_normalizes_without_network():
     assert norm["state"] == "open"
     assert norm["labels"] == ["bug"]
     assert norm["assignees"] == ["bob"]
+
+
+class _FakeGitlabModule:
+    """Records the events query and returns canned project events. No network."""
+
+    def __init__(self, events):
+        self._events = events
+        self.calls = []
+
+    def list_project_events(self, action=None, after=None, target_type=None, repo=None):
+        self.calls.append({"action": action, "after": after,
+                           "target_type": target_type, "repo": repo})
+        return list(self._events)
+
+
+def test_comments_since_gitlab_uses_note_target_and_noteable_iid():
+    # An issue comment is a `note` event; the lowercase enum is what GitLab accepts
+    # (capitalized "Issue" 400s) and the owning issue is note.noteable_iid.
+    events = [
+        {"author": {"username": "alice"}, "created_at": "2026-06-02T11:00:00Z",
+         "note": {"id": 1, "body": "on the issue", "noteable_type": "Issue",
+                  "noteable_iid": 42}},
+        {"author": {"username": "bob"}, "created_at": "2026-06-02T11:30:00Z",
+         "note": {"id": 2, "body": "on a merge request", "noteable_type": "MergeRequest",
+                  "noteable_iid": 7}},
+        {"author": {"username": "carol"}, "created_at": "2026-06-02T09:00:00Z",
+         "note": {"id": 3, "body": "too old", "noteable_type": "Issue",
+                  "noteable_iid": 42}},
+    ]
+    gl = rc.Remote({"provider": "gitlab", "repo": "group/project"})
+    gl.m = _FakeGitlabModule(events)
+
+    out = gl.comments_since("2026-06-02T10:00:00Z")
+
+    assert gl.m.calls[0]["target_type"] == "note"     # NOT "Issue"
+    assert gl.m.calls[0]["after"] == "2026-06-02"      # date-only filter
+    # only the Issue note newer than the cursor survives; MR note + old note dropped
+    assert out == [{
+        "issue_number": 42, "author": "alice", "body": "on the issue",
+        "id": 1, "created_at": "2026-06-02T11:00:00Z",
+    }]

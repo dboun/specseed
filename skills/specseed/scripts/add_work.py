@@ -43,7 +43,13 @@ def now_iso():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def prompt(label, default=None, choices=None):
+def prompt(label, default=None, choices=None, flag=None):
+    if not sys.stdin.isatty():
+        if default is not None:
+            return default
+        name = flag or f"--{label.lower()}"
+        print(f"ERROR: {name} required (non-interactive)", file=sys.stderr)
+        sys.exit(2)
     suffix = f" [{default}]" if default is not None else ""
     if choices:
         suffix = f" ({'/'.join(choices)})" + suffix
@@ -139,7 +145,7 @@ def main():
         print(f"ERROR: {pm} not found — is this a specseed repo with work?", file=sys.stderr)
         return 2
 
-    title = args.title or prompt("Title")
+    title = args.title or prompt("Title", flag="--title")
     itype = args.type or prompt("Type", default="bug", choices=list(TYPE_PREFIX))
     priority = args.priority or prompt("Priority", default="high", choices=list(PRIORITIES))
     component = args.component or prompt("Component", default="general")

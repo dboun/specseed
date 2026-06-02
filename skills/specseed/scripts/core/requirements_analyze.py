@@ -85,8 +85,13 @@ if __name__ == "__main__":
     # Usage:
     #   python3 requirements_analyze.py <reqs.json> [tickets.json]
     #   cat reqs.json | python3 requirements_analyze.py
+    usage = "Usage: python3 requirements_analyze.py <reqs.json> [tickets.json]  (or pipe reqs via stdin)"
     if len(sys.argv) == 1 and not sys.stdin.isatty():
-        reqs = json.load(sys.stdin)
+        text = sys.stdin.read()
+        if not text.strip():
+            print(usage, file=sys.stderr)
+            sys.exit(2)
+        reqs = json.loads(text)
         tickets = None
     elif len(sys.argv) == 2:
         reqs = json.load(open(sys.argv[1]))
@@ -95,8 +100,7 @@ if __name__ == "__main__":
         reqs = json.load(open(sys.argv[1]))
         tickets = json.load(open(sys.argv[2]))
     else:
-        print("Usage: python3 requirements_analyze.py <reqs.json> [tickets.json]  (or pipe reqs via stdin)",
-              file=sys.stderr)
+        print(usage, file=sys.stderr)
         sys.exit(2)
 
     result = analyze(reqs, tickets)

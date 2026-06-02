@@ -67,6 +67,19 @@ def test_next_link_csv_and_stringify():
     assert gl._stringify(None) is None
 
 
+def test_coerce_list_accepts_json_and_bare_scalar():
+    # valid JSON list still parses as before
+    assert gl._coerce('["a", "b"]', list) == ["a", "b"]
+    # bare scalar (e.g. `--labels draft`) falls back to a single-element list
+    assert gl._coerce("draft", list) == ["draft"]
+
+
+def test_coerce_dict_still_requires_valid_json():
+    assert gl._coerce('{"k": 1}', dict) == {"k": 1}
+    with pytest.raises(Exception):
+        gl._coerce("not-json", dict)
+
+
 def test_load_dotenv_reads_local_file_without_overriding_env(tmp_path, monkeypatch):
     write(tmp_path / ".env", "GITLAB_PAT=from-file\nGITLAB_REPO=group/proj\n")
     monkeypatch.chdir(tmp_path)

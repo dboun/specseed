@@ -266,10 +266,15 @@ class Remote:
                             "created_at": c.get("created_at")})
         else:
             after = (since_iso or "")[:10] or None  # GitLab events filter is date-only
+            # GitLab's events filter wants lowercase enum values; a comment is a `note`
+            # event (capitalized "Issue" is rejected with a 400). The issue the note
+            # belongs to is the note's `noteable_iid`, not the event's `target_iid`.
             for e in self.m.list_project_events(action="commented", after=after,
-                                                target_type="Issue", repo=self.repo):
+                                                target_type="note", repo=self.repo):
                 note = e.get("note") or {}
-                out.append({"issue_number": e.get("target_iid"),
+                if note.get("noteable_type") != "Issue":
+                    continue
+                out.append({"issue_number": note.get("noteable_iid"),
                             "author": (e.get("author") or {}).get("username"),
                             "body": note.get("body") or "", "id": note.get("id"),
                             "created_at": e.get("created_at")})

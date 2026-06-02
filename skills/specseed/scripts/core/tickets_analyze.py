@@ -106,13 +106,17 @@ def analyze(tickets: dict) -> dict:
 
 if __name__ == "__main__":
     # Usage: `python3 tickets_analyze.py tickets.json` OR pipe JSON to stdin.
+    usage = "Usage: python3 tickets_analyze.py <tickets.json>  (or pipe JSON via stdin)"
     if len(sys.argv) == 1 and not sys.stdin.isatty():
-        data = json.load(sys.stdin)
+        text = sys.stdin.read()
+        if not text.strip():
+            print(usage, file=sys.stderr)
+            sys.exit(2)
+        data = json.loads(text)
     elif len(sys.argv) == 2:
         data = json.load(open(sys.argv[1]))
     else:
-        print("Usage: python3 tickets_analyze.py <tickets.json>  (or pipe JSON via stdin)",
-              file=sys.stderr)
+        print(usage, file=sys.stderr)
         sys.exit(2)
 
     try:

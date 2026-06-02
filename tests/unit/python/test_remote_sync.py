@@ -311,6 +311,58 @@ def test_ingest_cr_issue_creates_local_cr_and_maps_it(tmp_path):
     assert rs.is_bot_comment(remote.posted[0][1])  # filing note is bot-tagged
 
 
+def test_project_entity_templates_publishes_when_enabled(tmp_path):
+    root = _cr_root(tmp_path)
+    write(root / ".specseed" / "memory" / "config.json", json.dumps({
+        "backend": {"enabled": True, "provider": "github",
+                    "entity_templates": {"enabled": True}},
+    }))
+    rs._project_entity_templates(root, log=lambda m: None)
+
+    host = root / ".github" / "ISSUE_TEMPLATE"
+    assert host.is_dir()
+    assert list(host.glob("*.md")), "expected user-facing templates projected to host dir"
+
+
+def test_project_entity_templates_noop_when_disabled(tmp_path):
+    root = _cr_root(tmp_path)
+    write(root / ".specseed" / "memory" / "config.json", json.dumps({
+        "backend": {"enabled": True, "provider": "github",
+                    "entity_templates": {"enabled": False}},
+    }))
+    rs._project_entity_templates(root, log=lambda m: None)
+
+    # canonical templates still land under .specseed/, but nothing is projected to host
+    assert not (root / ".github").exists()
+
+
+def test_sync_pull_ingests_bug_and_assembles_it_into_issues_json(tmp_path):
+    # A brand-new (non-CR) remote issue becomes a draft bug AND is assembled into
+    # issues.json so claim_issue.py can pick it up — otherwise it's stranded.
+    root = _pm_root(tmp_path)
+    cfg = {"map": {}, "permanent": {}, "pull_cursor": None}
+    remote = FakeRemote(issues=[{
+        "number": 15, "title": "list crashes on empty ledger", "labels": ["bug"],
+        "body": "Steps: run list with no entries.", "state": "open",
+        "raw": {"created_at": "2026-06-02T08:00:00Z"},
+    }])
+    seen = []
+
+    ingested = rs.sync_pull(root, cfg, remote, log=seen.append)
+
+    assert ingested == [(15, "PROJ-0001")]
+    pm = root / ".specseed" / "project_management"
+    # folders written
+    assert (pm / "tickets" / "PROJ-0001" / "PROJ-0001.md").exists()
+    assert (pm / "issues" / "BUG-0001" / "BUG-0001.md").exists()
+    # AND assembled, so the bug is now claimable
+    issues = json.loads((pm / "issues.json").read_text())
+    assert "BUG-0001" in issues
+    assert issues["BUG-0001"]["ticket"] == "PROJ-0001"
+    tickets = json.loads((pm / "tickets.json").read_text())
+    assert "PROJ-0001" in tickets
+
+
 def test_sync_cr_comments_stashes_comment_and_flips_turn(tmp_path):
     root = _cr_root(tmp_path)
     cr_id = crmod.create_cr(root, "Title", "the request", remote_issue=42)

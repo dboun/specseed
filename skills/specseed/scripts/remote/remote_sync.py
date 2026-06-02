@@ -22,13 +22,15 @@ import argparse
 import hashlib
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
 import remote_config as rc
 
 # the CR entity lives in core/; reuse its pure I/O (folders = truth)
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "core"))
+CORE = Path(__file__).resolve().parent.parent / "core"
+sys.path.insert(0, str(CORE))
 import change_requests as crmod  # noqa: E402
 
 PM = lambda root: rc.find_root(root) / ".specseed" / "project_management"
@@ -312,10 +314,46 @@ def ignored_by_label(iss, cfg=None):
     return bool(labels & ignore)
 
 
+def _assemble_local(root, log=print):
+    """Re-run the assemble chain so a freshly-ingested bug lands in issues.json /
+    tickets.json and becomes claimable. Folders are ground truth; sync_push reads
+    them directly, but `claim_issue.py` reads the assembled JSON. Best-effort — a
+    failure is logged, not fatal (a later pass retries)."""
+    base = rc.find_root(root)
+    scripts = ["issues_assemble.py", "tickets_assemble.py"]
+    if (PM(root) / "sprints").exists():
+        scripts.append("sprints_assemble.py")
+    for s in scripts:
+        try:
+            r = subprocess.run([sys.executable, str(CORE / s)],
+                               cwd=str(base), capture_output=True, text=True)
+            if r.returncode != 0:
+                log(f"assemble {s} failed: {(r.stderr or '').strip()}")
+                return
+        except Exception as e:
+            log(f"assemble {s} error: {e}")
+            return
+
+
+def _project_entity_templates(root, log=print):
+    """Write the user-facing issue templates to the provider's host dir
+    (`.github/ISSUE_TEMPLATE/` or `.gitlab/issue_templates/`). entity_templates.sync
+    self-gates on `backend.entity_templates.enabled` + provider, so a bare call is a
+    no-op publish when templates are off. Best-effort — never block init."""
+    try:
+        import entity_templates                       # core/ is already on sys.path
+        for r in entity_templates.sync(rc.find_root(root)):
+            if r["kind"] != "canonical":
+                log(f"template {r['status']}: {r['path']}")
+    except Exception as e:
+        log(f"entity template projection skipped: {e}")
+
+
 def sync_pull(root, cfg, remote, dry=False, log=print):
     known = _known_numbers(cfg)
     cursor = cfg.get("pull_cursor")
     ingested = []
+    bugs_ingested = False
     for iss in remote.list_open_issues():
         n = iss["number"]
         if n in known:
@@ -346,9 +384,12 @@ def sync_pull(root, cfg, remote, dry=False, log=print):
         remote.comment(n, f"Ingested as **{ticket_id}** (draft `{issue_id}`). The agent "
                           f"will refine + slot it into the plan. Track it via the pinned "
                           f"ROADMAP / CONTROL issues.")
+        bugs_ingested = True
         ingested.append((n, ticket_id))
     if ingested and not dry:
         cfg["pull_cursor"] = rc.now_iso()
+    if bugs_ingested and not dry:               # make the new bug claimable this pass
+        _assemble_local(root, log)
     return ingested
 
 
@@ -656,6 +697,8 @@ def ensure_labels(remote, dry, log, extra_labels=None):
 def init(root, cfg, remote, dry=False, log=print):
     ensure_labels(remote, dry, log, cfg.get("ignore_labels"))
     cfg["labels_seeded"] = True
+    if not dry:                       # project user-facing issue templates to .github/.gitlab
+        _project_entity_templates(root, log)
     specs = {
         "roadmap": ("📍 ROADMAP", _read_text(PM(root) / "ROADMAP.md")),
         "timeline": ("🗓️ TIMELINE", _read_text(PM(root) / "TIMELINE.md")),

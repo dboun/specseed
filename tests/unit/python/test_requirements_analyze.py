@@ -93,3 +93,31 @@ def test_cli_outputs_analysis_json(tmp_path):
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["ok"] is True
 
+
+def _run_stdin(text):
+    import subprocess
+    return subprocess.run(
+        [sys.executable, str(Path(CORE) / "requirements_analyze.py")],
+        input=text, capture_output=True, text=True,
+    )
+
+
+def test_empty_stdin_prints_usage_no_traceback():
+    res = _run_stdin("")
+    assert res.returncode == 2
+    assert "Usage:" in res.stderr
+    assert "Traceback" not in res.stderr
+
+
+def test_blank_stdin_prints_usage_no_traceback():
+    res = _run_stdin("   \n  \t\n")
+    assert res.returncode == 2
+    assert "Usage:" in res.stderr
+    assert "Traceback" not in res.stderr
+
+
+def test_real_json_via_stdin_still_works():
+    res = _run_stdin(json.dumps({"SRS-A": _req()}))
+    assert res.returncode == 0, res.stderr
+    assert json.loads(res.stdout)["ok"] is True
+

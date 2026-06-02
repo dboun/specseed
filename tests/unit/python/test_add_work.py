@@ -51,6 +51,26 @@ def test_high_priority_lands_in_active_sprint(repo_with_sprint):
     assert claim["claimed"] and claim["issue_id"] == "BUG-0001"
 
 
+def test_missing_title_non_interactive_exits_clean(repo_with_sprint):
+    r = repo_with_sprint
+    # no --title, non-tty stdin (subprocess pipe) → clean exit 2, no traceback
+    res = run_scripts("add_work.py", "--no-render", cwd=r.root)
+    assert res.returncode == 2
+    assert "--title required (non-interactive)" in res.stderr
+    assert "Traceback" not in res.stderr
+
+
+def test_omitted_desc_defaults_to_title_non_interactive(repo_with_sprint):
+    r = repo_with_sprint
+    # --desc omitted → prompt() returns its default (the title) non-interactively
+    res = run_scripts("add_work.py", "--title", "Quick fix", "--type", "bug",
+                      "--priority", "high", "--component", "api", "--effort", "0.5",
+                      "--no-render", cwd=r.root)
+    assert res.returncode == 0, res.stderr
+    body = (r.pm / "issues" / "BUG-0001" / "BUG-0001.md").read_text()
+    assert "Quick fix" in body
+
+
 def test_normal_priority_goes_to_backlog(repo_with_sprint):
     r = repo_with_sprint
     res = run_scripts("add_work.py", "--title", "Later chore", "--type", "chore",

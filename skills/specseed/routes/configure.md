@@ -20,6 +20,10 @@ ends it fast.
 Not fired for plan-next / adapt / tweak (the repo's already configured; use the
 explicit command to change).
 
+**First thing, before validating anything: provision the scripts tree** (`.specseed/scripts/`) per `SKILL.md` "Provisioning the scripts tree" — configure itself runs `.specseed/scripts/core/config.py`, so the copy has to happen first.
+
+**Honor what the user states.** When the prompt already specifies technical choices (provider, runner model/effort, template publishing, gate policy), apply those over the defaults rather than falling back to defaults. Echo the resulting config back in one short summary so a wrong assumption is visible.
+
 ## What it writes
 
 The split is **PORTABLE config** vs **per-repo state**. `config.json` is the one file
@@ -227,7 +231,7 @@ ride the coding (implement) agent.
 
 ### 2d. Mirror options (mirror only; skip if local-only or user says "defaults")
 
-**1. Command allowlist.** github/gitlab usernames whose CONTROL-issue comments are allowed to run. Default: **PAT owner only**. → `remote.json` `allowlist` (per-repo state — usernames vary per project, so NOT in the portable config).
+**1. Command allowlist.** github/gitlab usernames whose CONTROL-issue comments are allowed to run. Default: **PAT owner only** — get the exact username from `python .specseed/scripts/remote/remote_config.py ping` (it returns the authenticated identity), don't infer it from the repo path. On a GitLab PAT this is often a bot name like `project_NNN_bot_…`; using the wrong name silently drops every command. Add any extra usernames the user names. → `remote.json` `allowlist` (per-repo state — usernames vary per project, so NOT in the portable config).
 
 **2. Publish host issue templates?** Default **no**. Canonical templates are ALWAYS
 written under `.specseed/entity_templates/` for agents. If yes, also write only the

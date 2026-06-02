@@ -17,7 +17,7 @@ Agent-agnostic — works in Claude Code, Codex, or any agent harness with filesy
 **Doc writing — two axes, both apply:**
 
 - **Density (caveman *spirit*)** — `references_ext/caveman.md`. Lean, signal-dense, no filler, fragments OK where unambiguous, technical terms exact. Prefer lean clarity over maximum compression (agents + humans read these later without the skill loaded).
-- **Naturalness (humanizer)** — `references_ext/humanizer.md`. Spec prose must not read as AI-generated. **Before finalizing any human-readable prose doc, run a humanizer pass**: cut significance/legacy inflation, promotional language, `-ing` padding, rule-of-three, vague attributions, copula avoidance (use *is/are/has*), elegant variation, false ranges, filler, hedging, signposting, generic upbeat conclusions, diff-anchored phrasing; drop the boldface/emoji/title-case/curly-quote tells; and **remove every em/en dash** (`—` / `–` — the strongest single tell), replacing each with a period, comma, colon, or parentheses. Use the lightweight scan (look for *clusters* of tells + the hard em-dash check), not humanizer's full standalone draft→audit→final deliverable.
+- **Naturalness (humanizer)** — `references_ext/humanizer.md`. Spec prose must not read as AI-generated. **Before finalizing any human-readable prose doc, run a humanizer pass**: cut significance/legacy inflation, promotional language, `-ing` padding, rule-of-three, vague attributions, copula avoidance (use *is/are/has*), elegant variation, false ranges, filler, hedging, signposting, generic upbeat conclusions, diff-anchored phrasing; drop the boldface/emoji/title-case/curly-quote tells; and **remove every em/en dash** (`—` / `–` — the strongest single tell), replacing each with a period, comma, colon, or parentheses. Use the lightweight scan (look for *clusters* of tells + the hard em-dash check), not humanizer's full standalone draft→audit→final deliverable. The em-dash check has a deterministic backstop: `python .specseed/scripts/core/prose_check.py` greps the produced spec prose + root README/CLAUDE for em/en dashes — run it after writing prose and fix anything it flags.
 
 **Scope + precedence:**
 - Humanize the **human-readable prose**: `vision.md`, `README.md`, SAD/SDD prose sections, epic/ticket/issue prose (story, description, acceptance criteria), ADR justifications. Do NOT humanize machine artifacts (frontmatter, `*.json`, SRS requirement-table rows) or the agent-runtime `CLAUDE.md` — those follow fixed formats.
@@ -145,6 +145,15 @@ Detect at session start:
 - Tell user what was written, not the file contents
 - **Inform the user, early (first message of repo-mode session) and again at session end:** all spec artifacts live under `.specseed/` and their existing `spec/`/`docs/` (if any) is left untouched; the only files placed in the main repo are `README.md`, `CLAUDE.md` (root + per-component), and `AGENTS.md`
 
+**Provisioning the scripts tree (one-time, before any `.specseed/scripts/...` call).** The skill's scripts are **copied verbatim** from the installed skill, never hand-written. Resolve the skill's own dir (the one holding this `SKILL.md`, e.g. `~/.claude/skills/specseed` or `~/.agents/skills/specseed`) and copy its `scripts/` into the repo:
+
+```bash
+cp -R "<skill_dir>/scripts/." "<repo_root>/.specseed/scripts/"
+python "<repo_root>/.specseed/scripts/agents_runner.py" --write-shim <repo_name>   # writes <repo_name>_agents_runner.py at the repo root
+```
+
+Do this in the configure preamble (so later stages can run `.specseed/scripts/core/*.py`); re-run the copy after a version bump. `agents_runner.py` and everything under `core/`+`remote/` are shipped files — do NOT author a placeholder/stub runner. If a route on an existing tree finds `.specseed/scripts/` missing, copy it in the same way before proceeding.
+
 **Chat mode (no repo / no filesystem):**
 - Deliver files as chat artifacts
 - **Bundle protocol:** once 2+ files exist OR the folder structure matters, also deliver a zip artifact named `specseed-bundle.zip` with the full canonical tree (`.specseed/...` plus root entry files). Refresh the zip at coherent checkpoints (major stage end, after work breakdown, session end), not after every tiny edit. In each round, attach individual artifacts only for files created/changed in that round; the zip is the complete handoff.
@@ -253,6 +262,7 @@ scripts/
 │   ├── config.py                       # PORTABLE config: load/validate config.json (hitl + git + backend + runner + review + qa); render-claude → CLAUDE.md block (incl. review/QA completion-gate contract)
 │   ├── entity_templates.py             # writes .specseed/entity_templates and optional GitHub/GitLab issue-template projection
 │   ├── approvals_render.py             # scan issues/*/approval.md → APPROVALS.md + approvals.json (pending HITL gates)
+│   ├── prose_check.py                  # deterministic em/en-dash gate for produced prose (Step 0 backstop)
 │   └── inbox.py                        # per-issue instruction inbox: pure I/O for inbox.md + the processed cursor (parse/append/cursor); the runner's inbox_step does the thinking
 └── remote/                     # OPTIONAL mirror cluster (only present/used if the user opts in — see references/remote.md)
     ├── github_functions.py             # stdlib GitHub REST wrapper (+ GraphQL pin)

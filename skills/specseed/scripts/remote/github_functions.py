@@ -532,7 +532,13 @@ def _print_commands():
 
 def _coerce(value, annotation):
     if annotation in (list, dict):
-        return json.loads(value)
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            if annotation is list:
+                # bare scalar (e.g. `--labels draft`) → single-element list
+                return [value]
+            raise
     if annotation is int:
         return int(value)
     if annotation is bool:
