@@ -37,6 +37,8 @@ def test_build_codex_cmd_argv_and_env():
     assert argv[:2] == ["codex", "exec"]
     assert argv[argv.index("--model") + 1] == "gpt-5.5"
     assert 'model_reasoning_effort="high"' in argv
+    assert 'approval_policy="never"' in argv        # non-interactive: set via -c, not --ask-for-approval
+    assert "--ask-for-approval" not in argv         # not a valid `codex exec` flag
     assert argv[-1] == "-"                         # prompt piped on stdin
     assert "--max-turns" not in argv               # Claude-only knob ignored
     assert env == {}                               # no config_dir → no override
@@ -569,6 +571,8 @@ def test_build_relay_cmd_codex_resume_subcommand():
     argv, env = agents_runner.build_relay_cmd(spec, runner, session_id=None)
     assert argv[:2] == ["codex", "exec"]
     assert "resume" not in argv
+    assert 'approval_policy="never"' in argv
+    assert "--ask-for-approval" not in argv
     assert "--json" in argv
     assert argv[-1] == "-"                       # prompt piped on stdin
     assert env == {}

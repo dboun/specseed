@@ -83,7 +83,7 @@ def build_codex_cmd(spec, runner):
             "--model", str(spec["model"]),
             "-c", f'model_reasoning_effort="{spec["effort"]}"',
             "--sandbox", "workspace-write",
-            "--ask-for-approval", "never",
+            "-c", 'approval_policy="never"',
             "-"]
     env = {"CODEX_HOME": str(spec["config_dir"])} if spec.get("config_dir") else {}
     return argv, env
@@ -864,7 +864,7 @@ def build_relay_cmd(spec, runner, session_id=None):
         argv += ["--model", str(spec["model"]),
                  "-c", f'model_reasoning_effort="{spec["effort"]}"',
                  "--sandbox", "workspace-write",
-                 "--ask-for-approval", "never",
+                 "-c", 'approval_policy="never"',
                  "--json", "-"]
         env = {"CODEX_HOME": str(spec["config_dir"])} if spec.get("config_dir") else {}
         return argv, env
