@@ -856,14 +856,16 @@ def build_relay_cmd(spec, runner, session_id=None):
                needs skill/CLAUDE.md auto-discovery.)
       codex  — `codex exec resume <thread_id> …` when known, else `codex exec …`, always
                with `--json` so thread.started can be read. Prompt is piped on stdin (the
-               trailing '-')."""
+               trailing '-'). Sandbox is set via `-c sandbox_mode=…` (not the `--sandbox`
+               flag) because the `resume` subcommand rejects `--sandbox`; the config form
+               works on both the fresh and resumed invocations."""
     if spec.get("provider") == "codex":
         argv = ["codex", "exec"]
         if session_id:
             argv += ["resume", str(session_id)]
         argv += ["--model", str(spec["model"]),
                  "-c", f'model_reasoning_effort="{spec["effort"]}"',
-                 "--sandbox", "workspace-write",
+                 "-c", 'sandbox_mode="workspace-write"',
                  "-c", 'approval_policy="never"',
                  "--json", "-"]
         env = {"CODEX_HOME": str(spec["config_dir"])} if spec.get("config_dir") else {}

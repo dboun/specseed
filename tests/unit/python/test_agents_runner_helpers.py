@@ -574,12 +574,18 @@ def test_build_relay_cmd_codex_resume_subcommand():
     assert 'approval_policy="never"' in argv
     assert "--ask-for-approval" not in argv
     assert "--json" in argv
+    # sandbox set via -c (not the --sandbox flag), so the same argv shape works
+    # for both fresh and resume (`codex exec resume` rejects --sandbox).
+    assert "--sandbox" not in argv
+    assert 'sandbox_mode="workspace-write"' in argv
     assert argv[-1] == "-"                       # prompt piped on stdin
     assert env == {}
 
     argv2, _ = agents_runner.build_relay_cmd(spec, runner, session_id="thr-9")
     assert argv2[:4] == ["codex", "exec", "resume", "thr-9"]
     assert "--json" in argv2
+    assert "--sandbox" not in argv2              # resume subcommand rejects --sandbox
+    assert 'sandbox_mode="workspace-write"' in argv2
     assert argv2[-1] == "-"
 
 
