@@ -272,8 +272,8 @@ def test_path_helpers_and_status_snapshot(tmp_path):
 # CR respec mode — pure decision helpers (no git, no claude shell-out).
 # --------------------------------------------------------------------------- #
 def _cr(**over):
-    base = {"id": "CR-0001", "status": "open", "turn": "agent", "branch": None,
-            "session_id": None, "created_at": "2026-06-02T10:00:00Z"}
+    base = {"id": "CR-0001", "kind": "change", "status": "open", "turn": "agent",
+            "branch": None, "session_id": None, "created_at": "2026-06-02T10:00:00Z"}
     base.update(over)
     return base
 
@@ -294,6 +294,43 @@ def test_cr_next_action_state_table():
     assert f(_cr(status="rejected", branch=None)) == "none"
     # terminal / unknown → none
     assert f(_cr(status="done", branch=None)) == "none"
+
+
+def test_cr_finalize_lands_spec_and_flips_initialized(tmp_path):
+    import change_requests as crmod
+    root = _specseed_root(tmp_path)
+    crmod.create_cr(root, "Build it", "a CLI", kind="bootstrap")
+    cr = crmod.load_cr(root, "CR-0001")
+    cfg = {"permanent": {"control": 3}}        # a real (scaffolded) mirror
+    agents_runner.cr_finalize(root, cfg, cr, remote=object(), log=lambda *a: None)
+    assert cfg["initialized"] is True
+    landed = crmod.load_cr(root, "CR-0001")
+    assert landed["status"] == "done"
+    assert landed["turn"] is None
+
+
+def test_cr_finalize_local_only_does_not_touch_initialized(tmp_path):
+    import change_requests as crmod
+    root = _specseed_root(tmp_path)
+    crmod.create_cr(root, "Build it", "a CLI", kind="bootstrap")
+    cr = crmod.load_cr(root, "CR-0001")
+    cfg = {}
+    agents_runner.cr_finalize(root, cfg, cr, remote=None, log=lambda *a: None)
+    assert "initialized" not in cfg          # local-only: no mirror bookkeeping
+    assert crmod.load_cr(root, "CR-0001")["status"] == "done"
+
+
+def test_cr_next_action_bootstrap_kind_is_branchless():
+    f = agents_runner.cr_next_action
+    # bootstrap NEVER enters a branch (no settled spec to isolate) — straight to relay/wait
+    assert f(_cr(kind="bootstrap", status="open", branch=None, turn="agent")) == "relay"
+    assert f(_cr(kind="bootstrap", status="open", branch=None, turn="human")) == "wait"
+    assert f(_cr(kind="bootstrap", status="open", branch=None, turn=None)) == "wait"
+    # conductor wrote the tree → finalize (land it), not merge
+    assert f(_cr(kind="bootstrap", status="respec_complete", branch=None)) == "finalize"
+    # rejected/done → nothing left (no branch to drop)
+    assert f(_cr(kind="bootstrap", status="rejected", branch=None)) == "none"
+    assert f(_cr(kind="bootstrap", status="done", branch=None)) == "none"
 
 
 def test_select_active_cr_is_fifo_and_serial():
@@ -324,6 +361,16 @@ def test_relay_prompt_embeds_cr_id_and_comment():
     assert "CR-0007" in p1
     assert "please also bump the timeout" in p1
     assert "New message from the user" in p1
+
+
+def test_relay_prompt_bootstrap_kind_runs_bootstrap_mode():
+    p = agents_runner.relay_prompt("CR-0003", kind="bootstrap")
+    assert "CR-0003" in p
+    assert "bootstrap" in p.lower()
+    assert "/specseed" not in p                 # natural language, not a slash command
+    # the comment still threads through for bootstrap kind
+    p2 = agents_runner.relay_prompt("CR-0003", comment="make it a Rust CLI", kind="bootstrap")
+    assert "make it a Rust CLI" in p2
 
 
 def test_control_prompt_is_natural_language_not_slash():

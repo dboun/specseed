@@ -38,7 +38,7 @@ CORE_DIR = SCRIPT_DIR.parent / "core"
 # `provider` injected from config.json, or `retry_delay_minutes`) is dropped on save.
 STATE_KEYS = ("repo", "allowlist", "permanent", "map",
               "cli_cursor", "cli_cursor_ids", "pull_cursor", "labels_seeded",
-              "initialized")
+              "scaffolded", "initialized")
 
 STATUS_STATES = ["todo", "in_progress", "blocked", "in_review",
                  "awaiting_approval", "done", "wont_do", "deprecated"]
@@ -58,6 +58,8 @@ LABEL_COLORS = {
     # change-request intake + status labels (CRs are not work entities)
     "change-request": "8250df", "cr:open": "1d76db",
     "cr:done": "0e8a16", "cr:rejected": "555555",
+    # cold-start (kind:bootstrap) intake — label an issue with this on an unspecced repo
+    "bootstrap": "5319e7",
 }
 
 
@@ -99,7 +101,7 @@ def default_state(repo=None, allowlist=None):
         "allowlist": allowlist or [],   # github/gitlab usernames whose command/inbox comments run; [] = owner-only
         "permanent": {"roadmap": None, "timeline": None, "control": None, "sprint": None},
         "map": {}, "cli_cursor": None, "cli_cursor_ids": [], "pull_cursor": None,
-        "labels_seeded": False, "initialized": False,
+        "labels_seeded": False, "scaffolded": False, "initialized": False,
     }
 
 

@@ -144,10 +144,12 @@ Assume the user does NOT hand-edit mirrored github issues. On each runner wake:
 1. **Pull new work (allowed action a).** Scan for github issues NOT in `map` and not
    one of the four permanent ones, created after `pull_cursor`. If the issue has any
    configured `backend.ignore_labels`, skip it without ingesting (draft / review /
-   non-actionable bucket). Otherwise each issue → a new local **BUG** (or feature)
-   ticket+issue skeleton (title/body from the github issue), `status: todo`, flagged
-   for the agent to flesh + slot into the DAG. Add to `map`, advance `pull_cursor`,
-   comment back the assigned local ID.
+   non-actionable bucket). Then classify by label: `change-request` → a `kind:change`
+   `CR-NNNN` (feeds adapt); `bootstrap` on an unspecced repo (`initialized:false`) → a
+   `kind:bootstrap` `CR-NNNN` (cold-start, feeds bootstrap — see "Cold-start from the
+   mirror"); otherwise → a new local **BUG** (or feature) ticket+issue skeleton (title/body
+   from the github issue), `status: todo`, flagged for the agent to flesh + slot into the
+   DAG. Add to `map`, advance `pull_cursor`, comment back the assigned local ID.
 2. **Process command comments (allowed actions b/c).** See "Command channel".
 3. **Detect drift on mapped issues.** For each mapped github issue, compare against
    local:
@@ -409,30 +411,61 @@ All stdlib-only, reusing `github_functions.py` / `gitlab_functions.py` for trans
 
 ---
 
-## Onboarding (configure → init, two phases)
+## Onboarding (configure → scaffold → init, three phases)
 
-The opt-in is split so the technical decisions happen EARLY and the heavy mirror
-creation happens LATE (once work exists):
+The opt-in is split so the technical decisions happen EARLY, an EMPTY remote stands up
+early (so the user can drive the first spec from it), and the heavy work-push happens
+once a spec exists:
 
 **Phase 1 — configure (early).** `routes/configure.md` captures the technical prefs:
 the portable bits into `config.json` (`backend{enabled,provider,ignore_labels}`,
 `runner.retry_delay_minutes`)
-and the per-repo bits into `remote.json` (`repo`, `allowlist`, `initialized:false`) —
-verifying the PAT, explaining the limitations — but does NOT touch the remote. Runs as a
-first-run preamble before bootstrap/adopt, or via `/specseed configure`.
+and the per-repo bits into `remote.json` (`repo`, `allowlist`, `scaffolded:false`,
+`initialized:false`) — verifying the PAT, explaining the limitations. Runs as a first-run
+preamble before bootstrap/adopt, or via `/specseed configure`.
 
-**Phase 2 — init (late).** At the end of bootstrap (stage 13.5) / adopt (9.5), if
-`config.backend.enabled` is true and `remote.json` is not yet `initialized`, the mirror
-is created with NO further questions:
-1. `python .specseed/scripts/remote/remote_sync.py init` — creates the 4 dashboards, pins
-   the 3, seeds labels, pushes the current work.
-2. Add the "Remote mirror" block to `CLAUDE.md` (runtime contract — see
-   `CLAUDE_template.md`).
+**Phase 2 — scaffold (early, EMPTY remote).** Still in configure's Persist, MIRROR ONLY +
+ASK FIRST (creating remote issues is outward-facing): `remote_sync.py scaffold` creates the
+4 dashboards (pin 3) + labels + templates, with "uninitialized — open a `bootstrap` issue
+to start" bodies. Leaves `initialized:false`, sets `scaffolded:true`. NO work is pushed
+(none exists). This is what lets the user **cold-start the first spec from the mirror**: see
+"Cold-start from the mirror" below.
+
+**Phase 3 — init (late, real work).** At the end of bootstrap (stage 13.5) / adopt (9.5),
+if `config.backend.enabled` and `remote.json` is not yet `initialized`, the full mirror is
+created/filled with NO further questions:
+1. `python .specseed/scripts/remote/remote_sync.py init` — creates any missing dashboards
+   (idempotent against the scaffold — skips existing permanent issues), seeds labels, pushes
+   the current work.
+2. Add the "Remote mirror" block to `CLAUDE.md` (runtime contract — see `CLAUDE_template.md`).
 3. Flip `initialized:true`; tell the user the start command
    (`python .specseed/scripts/agents_runner.py &`) + the pause/stop story.
 
-If configure chose **local-only** (`backend.enabled:false`) → init is skipped; the
-feature is invisible.
+(When the first spec was driven from the mirror via a `bootstrap` request, init is NOT run —
+the conductor's **finalize** step flips `initialized` and the ordinary reconcile fills the
+dashboards. See below.)
+
+If configure chose **local-only** (`backend.enabled:false`) → scaffold + init are skipped;
+the feature is invisible.
 
 This is **prefer-programmatic**: the agent calls the scripts, it does not hand-create
 github issues one by one.
+
+## Cold-start from the mirror (kind:bootstrap)
+
+Spec requests (`CR-NNNN`, `change_requests.py`) carry a **`kind`**: `change` (the default —
+change/extend a settled spec, drives adapt, branch-isolated) or `bootstrap` (cold-start the
+FIRST spec on an unspecced repo, drives bootstrap, NO branch). Both ride the same async relay
+rails (resumable session, comment-per-turn conversation, explicit-approval gate).
+
+After Phase 2, the remote is empty and says "uninitialized". To start:
+1. The user opens a NEW issue labeled **`bootstrap`** describing what to build.
+2. `sync_pull` ingests it as a `kind:bootstrap` `CR-NNNN` mapped to that issue (only while
+   the repo is unspecced — `initialized:false`; once specced the label falls through to
+   normal bug intake).
+3. The runner relays the conversation on that thread (clarify → propose vision + depth →
+   GATE on **I approve** → run bootstrap's stages onto the working branch, no branch
+   isolation). See `routes/change-request.md` (kinds) + `routes/bootstrap.md` (remote-driven
+   variant).
+4. On `respec_complete` the runner **finalizes**: flips the request `done` + `initialized:true`;
+   the next reconcile mirrors the produced work + fills the dashboards. No merge, no `init`.

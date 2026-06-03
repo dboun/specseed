@@ -23,10 +23,14 @@ import config as cfgmod  # noqa: E402
 
 STATUSES = ("open", "respec_complete", "done", "rejected")
 TURNS = ("agent", "human", None)
+# A spec request is one of two KINDS, same envelope + relay machinery:
+#   change    — change/extend a settled spec (drives adapt; branch-isolated). DEFAULT.
+#   bootstrap — cold-start the first spec on a fresh repo (drives bootstrap; NO branch).
+KINDS = ("change", "bootstrap")
 
 # frontmatter field order (the body — Request / Log — follows the closing ---).
 _FM_FIELDS = (
-    "id", "title", "status", "turn", "priority", "created_at",
+    "id", "title", "kind", "status", "turn", "priority", "created_at",
     "session_id", "branch", "remote_issue", "comment_cursor",
 )
 
@@ -117,6 +121,7 @@ def _deserialize(text):
         i += 1
     cr["request"] = "\n".join(body["Request"]).strip("\n")
     cr["log"] = "\n".join(body["Log"]).strip("\n")
+    cr.setdefault("kind", "change")   # back-compat: records written before `kind` existed
     return cr
 
 
@@ -144,14 +149,17 @@ def _cr_file(root, cr_id):
     return cr_dir(root) / cr_id / "cr.md"
 
 
-def create_cr(root, title, request, priority="urgent", remote_issue=None):
+def create_cr(root, title, request, priority="urgent", remote_issue=None, kind="change"):
     """Scaffold a new CR folder. Returns the new id (CR-NNNN). status=open, turn=agent
-    (a fresh request is queued for the agent)."""
+    (a fresh request is queued for the agent). `kind` is change (default) or bootstrap."""
+    if kind not in KINDS:
+        raise ValueError(f"invalid CR kind {kind!r} (expected one of {', '.join(KINDS)})")
     crd = cr_dir(root)
     cr_id = next_cr_id(crd)
     cr = {
         "id": cr_id,
         "title": title,
+        "kind": kind,
         "status": "open",
         "turn": "agent",
         "priority": priority,
@@ -186,7 +194,7 @@ def save_cr(root, cr):
 
 
 def list_crs(root):
-    """All CRs as slim dicts (id, title, status, turn, priority, created_at,
+    """All CRs as slim dicts (id, title, kind, status, turn, priority, created_at,
     remote_issue, branch, session_id, comment_cursor), FIFO by created_at. This is what
     the runner loop + the `status` roll-up consume."""
     crd = cr_dir(root)
@@ -196,7 +204,7 @@ def list_crs(root):
             if child.is_dir() and child.name.startswith("CR-") and (child / "cr.md").exists():
                 cr = load_cr(root, child.name)
                 out.append({k: cr.get(k) for k in (
-                    "id", "title", "status", "turn", "priority", "created_at",
+                    "id", "title", "kind", "status", "turn", "priority", "created_at",
                     "remote_issue", "branch", "session_id", "comment_cursor")})
     out.sort(key=lambda c: (c.get("created_at") or "", c.get("id") or ""))
     return out

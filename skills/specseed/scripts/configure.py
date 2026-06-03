@@ -52,7 +52,7 @@ def _remote_default_state(repo=None, allowlist=None):
             "allowlist": allowlist or [],
             "permanent": {"roadmap": None, "timeline": None, "control": None, "sprint": None},
             "map": {}, "cli_cursor": None, "cli_cursor_ids": [], "pull_cursor": None,
-            "labels_seeded": False, "initialized": False,
+            "labels_seeded": False, "scaffolded": False, "initialized": False,
         }
 
 

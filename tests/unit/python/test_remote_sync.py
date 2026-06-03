@@ -158,7 +158,8 @@ def test_write_md_and_read_text_round_trip(tmp_path):
     assert 'items: ["a"]' in text
     assert "ok: true" in text
     assert text.endswith("Body\n")
-    assert rs._read_text(tmp_path / "missing.md") == "_not generated yet_"
+    assert rs._read_text(tmp_path / "missing.md") == rs.SCAFFOLD_PLACEHOLDER
+    assert "bootstrap" in rs.SCAFFOLD_PLACEHOLDER.lower()
 
 
 # --------------------------------------------------------------------------- #
@@ -179,6 +180,24 @@ class FakeRemote:
         self.labels_ensured = []   # seeded label names
         self.closed = []          # (number, planned)
         self.reopened = []        # number
+        self.created = []         # (title, body)
+        self.pinned = []          # number
+        self._next_num = max([0, *self._issues.keys()]) + 1
+
+    def create_issue(self, title, body=None, labels=None):
+        n = self._next_num
+        self._next_num += 1
+        iss = {"number": n, "title": title, "body": body or "",
+               "labels": list(labels or []), "state": "open"}
+        self._issues[n] = iss
+        self.created.append((title, body))
+        return iss
+
+    def pin(self, n):
+        self.pinned.append(n)
+
+    def update_issue(self, n, **kw):
+        self._issues.setdefault(n, {"number": n}).update(kw)
 
     def comments_since(self, since):
         return list(self._comments)
@@ -218,6 +237,69 @@ def test_is_cr_issue_label_routing():
     assert rs.is_cr_issue({"labels": ["bug"]}) is False
     assert rs.is_cr_issue({"labels": []}) is False
     assert rs.is_cr_issue({}) is False
+
+
+def test_is_bootstrap_issue_label_routing():
+    assert rs.is_bootstrap_issue({"labels": ["bootstrap"]}) is True
+    assert rs.is_bootstrap_issue({"labels": ["bug"]}) is False
+    assert rs.is_bootstrap_issue({}) is False
+
+
+def test_scaffold_creates_empty_remote_but_leaves_uninitialized(tmp_path):
+    root = _cr_root(tmp_path)
+    cfg = {"map": {}, "permanent": {}, "pull_cursor": None,
+           "cli_cursor": None, "cli_cursor_ids": []}
+    remote = FakeRemote()
+    rs.scaffold(root, cfg, remote, log=lambda *a: None)
+    # 4 permanent dashboards created + the 3 pinned; NOT initialized; scaffolded flagged
+    assert set(cfg["permanent"]) == {"roadmap", "timeline", "control", "sprint"}
+    assert len(remote.created) == 4
+    assert len(remote.pinned) == 3
+    assert cfg.get("initialized") is not True
+    assert cfg["scaffolded"] is True
+    # the ROADMAP/TIMELINE bodies carry the "open a bootstrap issue" hint
+    bodies = [b for _, b in remote.created]
+    assert any("bootstrap" in (b or "").lower() for b in bodies)
+
+
+def test_bootstrap_label_ingests_as_kind_bootstrap_when_unspecced(tmp_path):
+    import change_requests as crmod
+    root = _cr_root(tmp_path)
+    cfg = {"map": {}, "permanent": {}, "pull_cursor": None}   # not initialized
+    remote = FakeRemote(issues=[{
+        "number": 5, "title": "Build a todo CLI", "labels": ["bootstrap"],
+        "body": "rust, single binary", "state": "open",
+        "raw": {"created_at": "2026-06-02T08:00:00Z"},
+    }])
+    rs.sync_pull(root, cfg, remote, log=lambda *a: None)
+    crs = crmod.list_crs(root)
+    assert len(crs) == 1 and crs[0]["kind"] == "bootstrap"
+
+
+def test_reflect_cr_state_uses_kind_intake_label(tmp_path):
+    import change_requests as crmod
+    root = _cr_root(tmp_path)
+    crmod.create_cr(root, "Build it", "a CLI", remote_issue=5, kind="bootstrap")
+    remote = FakeRemote(issues=[{"number": 5, "title": "Build it", "labels": [],
+                                 "body": "", "state": "open"}])
+    rs.reflect_cr_state(root, {}, remote, log=lambda *a: None)
+    # a bootstrap request keeps the `bootstrap` intake label, NOT `change-request`
+    assert "bootstrap" in remote.labels[5]
+    assert "change-request" not in remote.labels[5]
+
+
+def test_bootstrap_label_falls_through_once_initialized(tmp_path):
+    import change_requests as crmod
+    root = _cr_root(tmp_path)
+    cfg = {"map": {}, "permanent": {}, "pull_cursor": None, "initialized": True}
+    remote = FakeRemote(issues=[{
+        "number": 5, "title": "Build a todo CLI", "labels": ["bootstrap"],
+        "body": "rust", "state": "open",
+        "raw": {"created_at": "2026-06-02T08:00:00Z"},
+    }])
+    rs.sync_pull(root, cfg, remote, log=lambda *a: None)
+    # already specced → not a cold-start request; falls through to normal bug intake
+    assert crmod.list_crs(root) == []
 
 
 def test_ignored_by_label_uses_defaults_and_config_override():

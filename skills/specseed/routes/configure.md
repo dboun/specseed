@@ -152,10 +152,29 @@ the mechanical setup the script does NOT do:
    and `CLAUDE.md` already exists, **replace that block in place**. If `CLAUDE.md` is being
    created here, the merge protocol (SKILL.md) applies.
 
-**Do NOT run `remote_sync.py init` here** — there's no work to push yet. It runs
-automatically at the end of bootstrap/adopt (see bootstrap stage 13.5). If a re-run
-changed mirror structural fields (`backend.provider` / `remote.json` `repo`), re-running
-`remote_sync.py init` later is idempotent / self-healing.
+7. **Scaffold the empty remote — MIRROR ONLY, ASK FIRST.** If `backend.enabled` and
+   `remote.json` is not yet `scaffolded`, offer to stand up the empty remote NOW so the
+   user can drive the first spec from their phone (creating remote issues is
+   outward-facing — get a yes):
+   > Want me to set up the remote now (empty dashboards + CONTROL issue, labels)? It'll say
+   > "uninitialized" until a spec lands — then you can kick off bootstrap from a `bootstrap`
+   > issue on the mirror instead of here.
+
+   On yes: `python .specseed/scripts/remote/remote_sync.py scaffold` (creates the 4
+   dashboards, pins 3, seeds labels, projects templates; leaves `initialized:false`, sets
+   `scaffolded:true`). Verify the PAT first if not already (`remote_config.py ping`). On
+   no / unreachable: skip — the full mirror still gets created later at bootstrap/adopt end.
+
+   Driving the FIRST spec from a `bootstrap` issue needs the async conductor, i.e.
+   `config.cr.enabled` (the interactive `configure.py` defaults it ON for a mirror). If the
+   user took all-`--defaults` (cr off) but wants phone-driven cold-start, point them at
+   `configure.py --set cr.enabled=true`.
+
+**Do NOT run `remote_sync.py init` here** — there's no work to push yet (init pushes the
+work layer). `scaffold` (step 7) is the early, empty-remote step; the full `init` runs
+automatically at the end of bootstrap/adopt (see bootstrap stage 13.5) and is idempotent
+against the scaffold. If a re-run changed mirror structural fields (`backend.provider` /
+`remote.json` `repo`), re-running `scaffold` / `init` later is idempotent / self-healing.
 
 ## End message (template — phrase naturally)
 
@@ -171,5 +190,15 @@ changed mirror structural fields (`backend.provider` / `remote.json` `repo`), re
 >
 > Or just describe the goal and I'll route it.
 
-When fired as the **auto-preamble**, skip the route menu — confirm config saved in one
-line and continue straight into the bootstrap/adopt first-message.
+**If a mirror was just scaffolded (step 7),** add the two-path branch instead of the plain
+menu — the user can stay or leave:
+
+> Remote is set up (empty for now — it says "uninitialized"). Two ways to go:
+> - **Stay here** and I'll spec it locally now (`/specseed bootstrap`).
+> - **Drive it from the mirror:** start the runner (`python .specseed/scripts/agents_runner.py &`),
+>   then open an issue labeled **`bootstrap`** on the remote describing what to build — I'll
+>   converse on that thread and spec it. Good for phone-driven / come-back-later.
+
+When fired as the **auto-preamble**, skip the route menu — confirm config saved (+ the
+two-path branch if a mirror was scaffolded) and continue straight into the bootstrap/adopt
+first-message.

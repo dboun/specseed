@@ -39,7 +39,8 @@ SPEC = lambda root: rc.find_root(root) / ".specseed" / "spec"
 # --------------------------------------------------------------------------- #
 # change-request (CR) intake + relay constants
 # --------------------------------------------------------------------------- #
-CR_LABEL = "change-request"           # the intake label a CR issue carries
+CR_LABEL = "change-request"           # the intake label a CHANGE request issue carries
+BOOTSTRAP_LABEL = "bootstrap"         # the intake label a COLD-START (no spec yet) request carries
 # Bot comments on a CR issue are tagged with this (invisible) marker so the
 # comment-ingest never feeds the agent's own replies back as a user turn — the PAT
 # owner is usually allowlisted, so an author check alone would not catch them.
@@ -304,6 +305,13 @@ def is_cr_issue(iss):
     return CR_LABEL in (iss.get("labels") or [])
 
 
+def is_bootstrap_issue(iss):
+    """A brand-new issue is a COLD-START (kind:bootstrap) request iff it carries the
+    `bootstrap` intake label. Only honored while the repo is unspecced (see sync_pull);
+    pure — `iss` is a normalized issue dict."""
+    return BOOTSTRAP_LABEL in (iss.get("labels") or [])
+
+
 def ignored_by_label(iss, cfg=None):
     """True when an unknown remote issue carries a draft/ignore label. Applied before
     bug/feature/CR intake so phone drafts stay remote-only until the label is removed."""
@@ -375,6 +383,14 @@ def sync_pull(root, cfg, remote, dry=False, log=print):
             if cr_id:
                 ingested.append((n, cr_id))
             continue
+        # cold-start: a `bootstrap`-labeled issue on a not-yet-specced repo becomes a
+        # kind:bootstrap request (drives bootstrap, no branch). Ignored once initialized
+        # (a spec already exists) — then it falls through to normal bug/feature intake.
+        if is_bootstrap_issue(iss) and not cfg.get("initialized"):
+            cr_id = _ingest_cr_issue(root, cfg, remote, iss, dry, log, kind="bootstrap")
+            if cr_id:
+                ingested.append((n, cr_id))
+            continue
         ticket_id, issue_id = _next_id(root, "PROJ"), _next_id(root, "BUG")
         log(f"ingest #{n} -> {ticket_id} / {issue_id} (draft)")
         if dry:
@@ -393,22 +409,30 @@ def sync_pull(root, cfg, remote, dry=False, log=print):
     return ingested
 
 
-def _ingest_cr_issue(root, cfg, remote, iss, dry, log):
-    """A new `change-request`-labeled issue → a local CR-NNNN (ground truth) mapped to
-    this issue. NO ticket/issue is created — an approved CR drives `adapt`. Returns the
-    new CR id (None on dry-run)."""
+def _ingest_cr_issue(root, cfg, remote, iss, dry, log, kind="change"):
+    """A new `change-request`- (kind:change) or `bootstrap`- (kind:bootstrap) labeled
+    issue → a local CR-NNNN (ground truth) mapped to this issue. NO ticket/issue is
+    created — an approved request drives `adapt` (change) or `bootstrap` (cold-start).
+    Returns the new CR id (None on dry-run)."""
     n = iss["number"]
     title = re.sub(r"^\[[^\]]+\]\s*", "", iss["title"] or "Untitled")
     body = (iss.get("body") or "").strip()
-    log(f"ingest #{n} -> change request (label `{CR_LABEL}`)")
+    label = BOOTSTRAP_LABEL if kind == "bootstrap" else CR_LABEL
+    log(f"ingest #{n} -> {kind} request (label `{label}`)")
     if dry:
         return None
-    cr_id = crmod.create_cr(root, title, body, remote_issue=n)
+    cr_id = crmod.create_cr(root, title, body, remote_issue=n, kind=kind)
     crmod.advance_cursor(root, cr_id, rc.now_iso())   # ignore comments predating intake
     _set_map(cfg, cr_id, n, None)                      # so reconcile never re-ingests it
-    remote.comment(n, _bot(
-        f"Filed as **{cr_id}**. Sprint work pauses while we work this. Reply here with "
-        f"answers; comment **I approve** to regenerate the spec, or **reject** to drop it."))
+    if kind == "bootstrap":
+        remote.comment(n, _bot(
+            f"Filed as **{cr_id}** (cold-start). I'll spec this project from here: reply "
+            f"with answers as I ask, comment **I approve** when the plan looks right, or "
+            f"**reject** to drop it."))
+    else:
+        remote.comment(n, _bot(
+            f"Filed as **{cr_id}**. Sprint work pauses while we work this. Reply here with "
+            f"answers; comment **I approve** to regenerate the spec, or **reject** to drop it."))
     return cr_id
 
 
@@ -566,7 +590,8 @@ def reflect_cr_state(root, cfg, remote, dry=False, log=print):
         cur = remote.get_issue(n)
         if cur is None:
             continue
-        want_labels = sorted({CR_LABEL, cr_status_label(status)})
+        intake_label = BOOTSTRAP_LABEL if slim.get("kind") == "bootstrap" else CR_LABEL
+        want_labels = sorted({intake_label, cr_status_label(status)})
         if sorted(cur.get("labels") or []) != want_labels:
             try:
                 remote.set_labels(n, want_labels)
@@ -620,6 +645,10 @@ Comment one of these verbs (allowlisted users only). The agent replies here.
 | `hold <APR-NNNN>` | defer a gate (parks it `blocked`) |
 | `crs` | list open spec-change requests + their state |
 
+**Getting started (no spec yet?):** open a NEW issue labeled `bootstrap` describing what
+you want built. The agent files it, converses on THAT thread to spec the project, and on
+your **I approve** writes the spec + first sprint. The dashboards fill in once it lands.
+
 **Spec changes:** open a NEW issue labeled `change-request` to file one. The agent files
 it as `CR-NNNN`, pauses sprint work, and converses on THAT issue's thread — answer there,
 comment **I approve** to regenerate the spec, or **reject** to drop it.
@@ -640,8 +669,15 @@ don't close it.
 """
 
 
+SCAFFOLD_PLACEHOLDER = (
+    "_Not specced yet._\n\n"
+    "To start, open a new issue labeled **`bootstrap`** describing what you want built. "
+    "I'll converse on that thread (clarify, propose a plan), and once you approve I'll "
+    "write the spec and break it into work. This dashboard fills in then.")
+
+
 def _read_text(p):
-    return p.read_text(encoding="utf-8") if p.exists() else "_not generated yet_"
+    return p.read_text(encoding="utf-8") if p.exists() else SCAFFOLD_PLACEHOLDER
 
 
 def render_sprint_dashboard(root):
@@ -694,7 +730,10 @@ def ensure_labels(remote, dry, log, extra_labels=None):
             remote.ensure_label(name)
 
 
-def init(root, cfg, remote, dry=False, log=print):
+def _create_permanent(root, cfg, remote, dry, log):
+    """Seed labels + the 4 permanent dashboards + pin the 3 + reset cursors. Shared by
+    `scaffold` (early, empty remote) and `init` (full). Idempotent: skips any permanent
+    issue already recorded, so calling init after scaffold never duplicates them."""
     ensure_labels(remote, dry, log, cfg.get("ignore_labels"))
     cfg["labels_seeded"] = True
     if not dry:                       # project user-facing issue templates to .github/.gitlab
@@ -726,8 +765,26 @@ def init(root, cfg, remote, dry=False, log=print):
         cfg["pull_cursor"] = rc.now_iso()
         cfg["cli_cursor"] = rc.now_iso()
         cfg["cli_cursor_ids"] = []
+
+
+def scaffold(root, cfg, remote, dry=False, log=print):
+    """EARLY remote setup, run right after configure (before any spec exists): create the
+    empty dashboards + CONTROL + labels so the user can drive the first spec from a
+    `bootstrap`-labeled issue. Leaves `initialized` FALSE (no real work yet); marks
+    `scaffolded` so the configure flow knows not to repeat it. No `sync_push` — there is
+    nothing to mirror until a spec lands."""
+    _create_permanent(root, cfg, remote, dry, log)
+    if not dry:
+        cfg["scaffolded"] = True
+    log("scaffolded empty remote (uninitialized; open a `bootstrap` issue to start)")
+    return cfg
+
+
+def init(root, cfg, remote, dry=False, log=print):
+    _create_permanent(root, cfg, remote, dry, log)
     sync_push(root, cfg, remote, dry=dry, log=log)
     if not dry:
+        cfg["scaffolded"] = True
         cfg["initialized"] = True
     return cfg
 
@@ -737,7 +794,8 @@ def init(root, cfg, remote, dry=False, log=print):
 # --------------------------------------------------------------------------- #
 def main(argv):
     ap = argparse.ArgumentParser(description="local<->remote mirror engine")
-    ap.add_argument("command", choices=["init", "reconcile", "push", "dashboards"])
+    ap.add_argument("command",
+                    choices=["scaffold", "init", "reconcile", "push", "dashboards"])
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
 
@@ -749,7 +807,9 @@ def main(argv):
     remote = rc.Remote(cfg)
     log = print
 
-    if args.command == "init":
+    if args.command == "scaffold":
+        scaffold(root, cfg, remote, dry=args.dry_run, log=log)
+    elif args.command == "init":
         init(root, cfg, remote, dry=args.dry_run, log=log)
     elif args.command == "push":
         sync_push(root, cfg, remote, dry=args.dry_run, log=log)

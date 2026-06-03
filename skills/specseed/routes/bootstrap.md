@@ -6,6 +6,27 @@ Greenfield. No prior spec. Produce full `.specseed/spec/` tree (or chat artifact
 
 Load `references/question-protocol.md` before any user-facing round.
 
+**Remote-driven (headless relay) variant.** Bootstrap can also be driven from a mirror,
+async, when the user has no laptop in front of them: they open a `bootstrap`-labeled issue
+on the github/gitlab mirror describing what to build, and the runner relays the
+conversation one comment-turn at a time (same machinery as the change-request conductor —
+see `routes/change-request.md`). When invoked this way:
+- You are headless. Each turn is ONE comment in → ONE reply out, resuming the SAME session.
+  Run the stages below over multiple turns: clarify (question-protocol), propose vision +
+  depth, GATE on an explicit **I approve**, THEN write the tree.
+- **No branch, no interactive `.gitignore`/merge prompts.** Write the `.specseed/` tree onto
+  the working branch; pick sensible defaults for the small choices and note them in the
+  reply (the user refines later via adapt). Lean toward the depth the brief implies.
+- The request record is `.specseed/change_requests/<CR-ID>/cr.md` (`kind:bootstrap`). On
+  completion set its `status: respec_complete`; the runner flips it `done` + the mirror's
+  `initialized`, and the ordinary reconcile mirrors the new work + fills the (previously
+  "uninitialized") dashboards. Do NOT run `remote_sync.py init` yourself.
+- Skip Stage 13.5's init below — the mirror was already SCAFFOLDED at configure time; the
+  finalize step covers `initialized`.
+
+Everything else (the stages, depth dial, artifacts) is identical. The rest of this file is
+written for the interactive laptop flow; apply it turn-by-turn when relayed.
+
 **Depth dial.** Bootstrap is not one-size. After vision + component-split (where real signal exists) it picks a **depth tier** — `lite` / `standard` / `incremental` — auto-suggested, user overrides (Stage 3.5). The tier never drops artifacts or scripts; it right-sizes **how much the user must answer and review at once**. specseed sells *better*, not faster — `lite` is not corner-cut, it's matched to a small project's real information content; `incremental` keeps full depth but only for the first increment, deferring the rest to `plan-next` mode so the user never specs 3 hours upfront. Machinery (assemble/validate/CP/sprints) is identical across tiers — only interaction load + breakdown horizon change.
 
 ## Flow overview
@@ -505,7 +526,7 @@ here. Read `config.backend.enabled` in `.specseed/memory/config.json` (the per-r
 - **`backend.enabled: false`** (or no `remote.json`) → local-only. The runner above is enough; write nothing remote.
 - **`backend.enabled: true` and `remote.json` not yet `initialized`** → create the mirror programmatically
   (prefer scripts — don't hand-create issues). This is a required step, not optional:
-  1. `python .specseed/scripts/remote/remote_sync.py init` — 4 dashboards (pin ROADMAP/TIMELINE/CONTROL), seed labels, project host issue templates (if enabled), push current work. If your environment can't reach the remote, say so and hand the user this exact command to run; do not silently skip it.
+  1. `python .specseed/scripts/remote/remote_sync.py init` — 4 dashboards (pin ROADMAP/TIMELINE/CONTROL), seed labels, project host issue templates (if enabled), push current work. **`init` is idempotent against an earlier `scaffold`** (configure may have already created the permanent issues + labels — init skips existing ones and just pushes the now-real work). If your environment can't reach the remote, say so and hand the user this exact command to run; do not silently skip it.
   2. Add the optional **Remote mirror** block to `CLAUDE.md` (see `templates/CLAUDE_template.md`).
   3. Set `initialized: true` in `remote.json`; point the user at the CONTROL-issue verbs (also in `.specseed/README.md`).
 - **`backend.enabled: true` and `remote.json` already `initialized`** (re-run) → just `remote_sync.py reconcile` to push the latest work.

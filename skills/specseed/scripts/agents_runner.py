@@ -763,6 +763,18 @@ RELAY_PROMPT = (
     "Use the specseed skill to handle spec-change request {cr_id}. The CR record is at "
     ".specseed/change_requests/{cr_id}/cr.md. {body}")
 
+# bootstrap-kind (cold-start) relay: same async conductor conventions, but the skill
+# runs bootstrap mode (no prior spec) instead of adapt. No branch — write onto the tree.
+BOOTSTRAP_RELAY_PROMPT = (
+    "Use the specseed skill in bootstrap mode, driven async as a headless relay (the "
+    "change-request conductor conventions in routes/change-request.md). This is a "
+    "cold-start spec request: the repo has NO spec yet and the user wants the first one "
+    "built. The request record is at .specseed/change_requests/{cr_id}/cr.md. Converse "
+    "one comment-turn at a time (clarify, then propose a plan/depth), wait for explicit "
+    "approval, then run bootstrap's stages to produce the full .specseed/ tree on the "
+    "working branch (do NOT create or switch branches). When the spec + first sprint are "
+    "in place, set the request status to respec_complete. {body}")
+
 
 def cr_enabled(pcfg):
     """Whether the CR/respec mode is turned on (config.cr.enabled; default OFF)."""
@@ -796,16 +808,25 @@ def respec_chain(pcfg):
 
 
 def cr_next_action(cr):
-    """Pure state→action map for one CR. Returns one of:
-      branch — open + no branch yet → enter respec mode (create cr/<id>)
-      relay  — open + branch + turn==agent → run a conversation turn
-      wait   — open + branch + turn human/null → waiting on the user, do nothing
-      merge  — respec_complete → merge the branch into the integration branch
-      drop   — rejected + branch still present → delete the branch (clean abort)
-      none   — done, or rejected with no branch left, or unknown → nothing to do
+    """Pure state→action map for one spec request. Branch-isolated for `kind:change`
+    (the default); branchless for `kind:bootstrap` (a fresh repo has no settled spec to
+    protect, so the cold-start conductor writes straight onto the working tree). Returns:
+      branch   — change, open, no branch yet → enter respec mode (create cr/<id>)
+      relay    — open + turn==agent → run a conversation turn
+      wait     — open + turn human/null → waiting on the user, do nothing
+      merge    — change, respec_complete → merge the branch into the integration branch
+      finalize — bootstrap, respec_complete → land the spec (flip done + remote initialized)
+      drop     — change, rejected + branch still present → delete the branch (clean abort)
+      none     — done, or rejected with nothing left, or unknown → nothing to do
     """
     status = cr.get("status")
     branch = cr.get("branch")
+    if cr.get("kind") == "bootstrap":
+        if status == "open":
+            return "relay" if cr.get("turn") == "agent" else "wait"
+        if status == "respec_complete":
+            return "finalize"
+        return "none"                         # done / rejected → nothing (no branch)
     if status == "open":
         if not branch:
             return "branch"
@@ -854,16 +875,18 @@ def build_relay_cmd(spec, runner, session_id=None):
     return argv, env
 
 
-def relay_prompt(cr_id, comment=None):
-    """Natural-language prompt that auto-triggers the specseed skill's CR conductor.
-    NOT a `/specseed …` slash command — in `claude -p` mode user-invoked slash commands
-    are unavailable, so the relay must describe the task instead."""
+def relay_prompt(cr_id, comment=None, kind="change"):
+    """Natural-language prompt that auto-triggers the specseed skill's conductor for one
+    relay turn. NOT a `/specseed …` slash command — in `claude -p` mode user-invoked slash
+    commands are unavailable, so the relay must describe the task instead. `kind` picks the
+    conductor: change → the CR/adapt conductor; bootstrap → the cold-start bootstrap one."""
     if comment:
         body = f"New message from the user:\n{comment}"
     else:
         body = ("Read the request and respond: ask any clarifying questions or draft a "
                 "plan. Do NOT regenerate the spec until the user has explicitly approved.")
-    return RELAY_PROMPT.format(cr_id=cr_id, body=body)
+    template = BOOTSTRAP_RELAY_PROMPT if kind == "bootstrap" else RELAY_PROMPT
+    return template.format(cr_id=cr_id, body=body)
 
 
 def parse_session_id(output, provider="claude"):
@@ -1066,7 +1089,7 @@ def cr_relay(root, cfg, pcfg, cr, remote, log):
         log(f"CR {cr_id}: relay in cooldown (~{int(rem // 60)}m); will retry")
         return
     pending = change_requests.read_pending_comment(root, cr_id)   # peek; clear on success
-    prompt = relay_prompt(cr_id, comment=pending)
+    prompt = relay_prompt(cr_id, comment=pending, kind=cr.get("kind", "change"))
     for i, spec in enumerate(chain):
         argv, env = build_relay_cmd(spec, RUNNER, session_id)
         if i:
@@ -1126,16 +1149,31 @@ def cr_drop(root, pcfg, cr, log):
     log(f"CR {cr_id}: rejected — branch deleted, claiming resumes")
 
 
+def cr_finalize(root, cfg, cr, remote, log):
+    """Bootstrap-kind terminal: the conductor already wrote the spec onto the working
+    tree (no branch), so there is nothing to merge. Flip the request `done` and, on a
+    mirror, flip `initialized` so the scaffolded-but-empty remote counts as live (the
+    normal reconcile already mirrors the freshly produced work + dashboards)."""
+    cr_id = cr["id"]
+    change_requests.set_status(root, cr_id, "done", turn=None)
+    if remote is not None and cfg.get("permanent"):
+        cfg["initialized"] = True
+    change_requests.append_log(root, cr_id, "spec landed (bootstrap); request done")
+    log(f"CR {cr_id}: bootstrap finalized -> done")
+
+
 def handle_cr(root, cfg, pcfg, cr, remote, log):
     """Perform the single action cr_next_action(cr) dictates for the active CR."""
     action = cr_next_action(cr)
-    log(f"CR {cr['id']}: {cr.get('status')}/{cr.get('turn')} -> {action}")
+    log(f"CR {cr['id']}: {cr.get('kind', 'change')} {cr.get('status')}/{cr.get('turn')} -> {action}")
     if action == "branch":
         cr_enter_branch(root, pcfg, cr["id"], log)
     elif action == "relay":
         cr_relay(root, cfg, pcfg, cr, remote, log)
     elif action == "merge":
         cr_merge(root, cfg, pcfg, cr, log)
+    elif action == "finalize":
+        cr_finalize(root, cfg, cr, remote, log)
     elif action == "drop":
         cr_drop(root, pcfg, cr, log)
     # wait / none: nothing this pass

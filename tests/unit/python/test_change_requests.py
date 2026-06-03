@@ -75,6 +75,42 @@ def test_request_body_with_markdown_headers_survives(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# kind (change vs bootstrap)
+# --------------------------------------------------------------------------- #
+def test_kind_defaults_to_change(tmp_path):
+    root = _mk_root(tmp_path)
+    cr.create_cr(root, "T", "b")
+    assert cr.load_cr(root, "CR-0001")["kind"] == "change"
+
+
+def test_kind_bootstrap_round_trips(tmp_path):
+    root = _mk_root(tmp_path)
+    cr.create_cr(root, "Build the thing", "a CLI todo app", kind="bootstrap")
+    loaded = cr.load_cr(root, "CR-0001")
+    assert loaded["kind"] == "bootstrap"
+    assert cr.list_crs(root)[0]["kind"] == "bootstrap"
+
+
+def test_bad_kind_rejected(tmp_path):
+    root = _mk_root(tmp_path)
+    with pytest.raises(ValueError):
+        cr.create_cr(root, "T", "b", kind="sideways")
+
+
+def test_legacy_record_without_kind_loads_as_change(tmp_path):
+    # a cr.md written before `kind` existed (no kind: line) must still load.
+    root = _mk_root(tmp_path)
+    d = cr.cr_dir(root) / "CR-0001"
+    d.mkdir(parents=True)
+    (d / "cr.md").write_text(
+        "---\nid: CR-0001\ntitle: Legacy\nstatus: open\nturn: agent\n"
+        "priority: urgent\ncreated_at: 2026-01-01T00:00:00Z\nsession_id: null\n"
+        "branch: null\nremote_issue: null\ncomment_cursor: null\n---\n"
+        "## Request\nold body\n\n## Log\n", encoding="utf-8")
+    assert cr.load_cr(root, "CR-0001")["kind"] == "change"
+
+
+# --------------------------------------------------------------------------- #
 # field setters
 # --------------------------------------------------------------------------- #
 def test_set_status_mutates_only_its_field(tmp_path):

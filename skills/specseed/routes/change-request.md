@@ -5,10 +5,23 @@ runner invokes it per relay turn; no interactive human in the loop. Input arrive
 comments on the CR's remote issue, relayed one turn at a time. Output is this turn's text;
 the runner posts it back as a comment.
 
-**This is the async, approval-gated, branch-isolated wrapper that DRIVES adapt.** It does
-NOT reimplement adapt and does NOT modify it. On approval it runs adapt's existing stages
-by reference. A human at the laptop still uses `/specseed adapt` directly (unchanged) — see
-"Boundary" at the end.
+**This is the async, approval-gated wrapper that DRIVES a spec operation.** It does NOT
+reimplement that operation and does NOT modify it. A human at the laptop still uses
+`/specseed adapt` directly (unchanged) — see "Boundary" at the end.
+
+**Two kinds, same rails.** A spec request (`CR-NNNN`) carries a `kind`:
+- **`kind:change`** (default — what this route has always done): change/extend a SETTLED
+  spec. Branch-isolated on `cr/<CR-ID>`; on approval runs **adapt's** stages by reference;
+  terminal = `respec_complete` → the runner MERGES the branch.
+- **`kind:bootstrap`**: COLD-START — no spec exists yet (a `bootstrap`-labeled remote issue
+  on an unspecced repo). **No branch** (nothing settled to isolate); on approval runs
+  **bootstrap's** stages (see `routes/bootstrap.md` "Remote-driven variant") to write the
+  first `.specseed/` tree straight onto the working branch; terminal = `respec_complete` →
+  the runner FINALIZES (flips done + the mirror's `initialized`; no merge).
+
+The conversation mechanics below (resume the session, clarify, plan, GATE on explicit
+approval, `turn: human` between turns) are identical for both kinds. Where a step says
+"adapt", read "adapt for change, bootstrap for cold-start". Read `cr.kind` on entry.
 
 Load `references/question-protocol.md` before any user-facing turn. CR scope is adapt-grade,
 so apply **anti-max-bias hard** (same posture as adapt).
@@ -27,9 +40,12 @@ Treat the slash form as the name of the flow, not the wire format.
 On entry:
 - Read the CR: `python .specseed/scripts/core/change_requests.py show <CR-ID>` → its
   `status`, `turn`, `request`, `log`, `branch`, `session_id`.
-- The runner already created + checked out `cr/<CR-ID>` off `dev` and switched to respec mode
-  BEFORE invoking (Phase 3). Work on the already-checked-out branch. Do NOT create branches,
-  switch branches, merge, or reset — the runner owns all git mode/branch transitions.
+- **`kind:change`:** the runner already created + checked out `cr/<CR-ID>` off `dev` and
+  switched to respec mode BEFORE invoking (Phase 3). Work on the already-checked-out branch.
+  Do NOT create branches, switch branches, merge, or reset — the runner owns all git
+  mode/branch transitions.
+- **`kind:bootstrap`:** NO branch — you write onto the current working branch. Still do NOT
+  create/switch branches or merge; just produce the `.specseed/` tree in place.
 - Only ever touch THIS CR and the spec/work-layer files its change implies. Never claim
   issues, never run the normal work loop.
 
@@ -75,7 +91,13 @@ Every non-terminal turn ends the same way:
 On ANY blocker, uncertainty, or in-flight conflict (see stage 5) — STOP and ask, never guess
 through a spec change. `turn: human` is the universal "waiting" signal.
 
-## 5. On approval → regenerate (run adapt's machinery)
+## 5. On approval → regenerate (run the operation's machinery)
+
+**`kind:bootstrap`:** run **bootstrap's** stages instead — see `routes/bootstrap.md`
+"Remote-driven (headless relay) variant". Produce the full `.specseed/` tree (spec + first
+sprint) on the working branch, append a completion note, set CR `status: respec_complete`,
+`turn: null`, STOP. The runner finalizes (flips `done` + the mirror's `initialized`); no
+merge. The rest of this section is the `kind:change` path.
 
 Only after a clear approval. Run adapt's existing stages BY REFERENCE — `routes/adapt.md`
 stages 3-8. Do not duplicate their text; follow them:
