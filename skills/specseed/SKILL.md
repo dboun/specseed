@@ -47,7 +47,7 @@ After the first message, default to caveman-spirit terse comm (no filler, fragme
 
 This probe is the safety net for misrouting — it is evidence, not a guess. When it and the user's words disagree, surface the conflict and ask; do not let intent words override disk state.
 
-**Configure preamble (first run only).** When the probe lands on **bootstrap** (case 6) or **adopt** (case 5) AND there is **no `.specseed/memory/config.json`** yet, run **configure mode** first (technical setup — `routes/configure.md`): ≤2 rounds, heavy defaults (local-only + default git/gates is one keystroke), then continue into bootstrap/adopt. This gets the plumbing + autonomy decisions out of the way up front. The `.specseed/memory/config.json` (always — the portable "how-you-work" file) and `remote.json` (per-repo mirror state, only if a mirror) it leaves behind are **config only** — NOT a spec, and do NOT affect the routing above (mode still keys off `.specseed/spec/`). `/specseed configure` re-runs it anytime to change settings.
+**Configure preamble (first run only).** When the probe lands on **bootstrap** (case 6) or **adopt** (case 5) AND there is **no `.specseed/memory/config.json`** yet, enter **configure mode** (`routes/configure.md`). Do NOT interview the user — point them at the interactive setup script (`python3 <skill_dir>/scripts/configure.py`; Enter-through for all-local defaults), wait for them to come back, then finish provisioning and continue into bootstrap/adopt. The `.specseed/memory/config.json` (always — the portable "how-you-work" file) and `remote.json` (per-repo mirror state, only if a mirror) the script leaves behind are **config only** — NOT a spec, and do NOT affect the routing above (mode still keys off `.specseed/spec/`). `/specseed configure` re-runs the script anytime to change settings.
 
 ## Mode detection
 
@@ -55,7 +55,7 @@ Read user message + conversation, **constrained by the reconnaissance above** (a
 
 | Mode | Trigger | Route |
 |------|---------|-------|
-| **configure** | TECHNICAL setup only — local vs github/gitlab mirror, credentials, runner opts (NOT spec content). `/specseed configure`, or the auto-preamble on a repo's first bootstrap/adopt. Editable anytime | `routes/configure.md` |
+| **configure** | TECHNICAL setup only — local vs github/gitlab mirror, credentials, runner opts (NOT spec content). The Q&A runs in an interactive script (`scripts/configure.py`); the route hands off + provisions. `/specseed configure`, or the auto-preamble on a repo's first bootstrap/adopt. Editable anytime | `routes/configure.md` |
 | **bootstrap** | New project, no prior spec, user wants full spec from scratch | `routes/bootstrap.md` |
 | **adopt** | Existing CODE, no `.specseed/`. Recover the spec from the codebase (+ import any docs already present) into `.specseed/`. Reverse-bootstrap; specseed never edits code | `routes/adopt.md` |
 | **plan-next** | Existing `incremental`-bootstrapped spec; user wants to spec + break down the NEXT roadmap slice (`/specseed plan-next`, "plan the next sprint/phase"). Roadmap has un-detailed ticket titles (no folders). Append-only forward — no settled-doc changes | `routes/plan-next.md` |
@@ -97,7 +97,7 @@ Then route to mode file.
 - `references/question-protocol.md` — question round format, action prompts, no-noise rule, anti-max-bias, memory cadence, auto-skip rule for obvious Qs
 - `references/component-questions.md` — per-component probing subroutine
 - `references/work-breakdown.md` — roadmap + epic/ticket/issue formation: INVEST, vertical slices, critical path (ticket tier), spike post-completion, sizing heuristics
-- `routes/configure.md` — technical setup route (local vs github/gitlab mirror, credentials, runner opts). Runs as a first-run preamble before bootstrap/adopt, or on `/specseed configure`. Writes the portable `.specseed/memory/config.json` (always) + per-repo `remote.json` (mirror only) — config, not spec
+- `routes/configure.md` — technical setup route (local vs github/gitlab mirror, credentials, runner opts). The Q&A is an interactive script (`scripts/configure.py`, pure python) the human runs; the route just hands off + provisions. Runs as a first-run preamble before bootstrap/adopt, or on `/specseed configure`. The script writes the portable `.specseed/memory/config.json` (always) + per-repo `remote.json` (mirror only) — config, not spec
 - `references/remote.md` — OPTIONAL, opt-in github/gitlab mirror (single-dev phone-driven workflow). Local stays ground truth; the remote is a mirror + bug-inbox + CONTROL command channel driven by an always-on `agents_runner.py`. Offered once at onboarding (bootstrap stage 13.5 / adopt 9.5); entirely off unless the user opts in
 - `routes/approve.md` — the `approve` route: walk + resolve pending HITL gates (`approval.md` requests the impl agent parked). Local human channel; also what the mirror's CONTROL `approve`/`reject` verbs invoke
 - `routes/change-request.md` — the `change-request` route: the headless conductor the runner invokes per relay turn to drive ONE filed `CR-NNNN` (async conversation → approval → regenerate via adapt's stages, on an isolated `cr/` branch). NOT detected from disk — invoked explicitly by the runner; do not add it to session-start reconnaissance
@@ -240,6 +240,7 @@ AGENTS.md                       # one line: "Read ./CLAUDE.md. In dirs you work 
 # ---- .specseed/scripts/ ----
 scripts/
 ├── agents_runner.py            # human-run entry — start/kill the always-on orchestrator loop (+ --write-shim). Top-level on purpose. Runs the work step + (if review on) a per-loop review step; per-function/difficulty agent (claude|codex) via config.runner.agents
+├── configure.py                # human-run entry — interactive technical setup (pure python, stdlib, zero tokens); writes config.json (+remote.json for a mirror). --defaults / --set k=v / --show for non-interactive use
 ├── add_work.py                 # human-run entry — add a MANUAL work item (ticket + issue) out of band; high-priority → current sprint, else backlog; NO sprint replan
 ├── core/                       # agent-invoked plumbing + analysis seams (humans don't run these directly)
 │   ├── requirements_generate_json.py   # parses SRS table rows → reqs.json

@@ -125,6 +125,19 @@ def test_list_codex_models_reads_cache(tmp_path):
     assert config.list_models("claude") == ["opus", "sonnet", "haiku"]
 
 
+def test_codex_reasoning_levels_object_form(tmp_path):
+    # newer caches store levels as {effort, description} objects, not bare strings
+    cache = {"models": [
+        {"slug": "gpt-5.5", "visibility": "list", "supported_reasoning_levels": [
+            {"effort": "low", "description": "fast"},
+            {"effort": "high", "description": "deep"},
+            {"effort": "xhigh", "description": "deeper"},
+        ]},
+    ]}
+    (tmp_path / "models_cache.json").write_text(json.dumps(cache), encoding="utf-8")
+    assert config.codex_reasoning_levels("gpt-5.5", str(tmp_path)) == ["low", "high", "xhigh"]
+
+
 def test_validate_min_confidence_range():
     bad = config.default_config()
     bad["review"]["auto_approve"]["min_confidence"] = 150

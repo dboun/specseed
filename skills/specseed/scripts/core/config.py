@@ -323,12 +323,22 @@ def list_codex_models(config_dir=None):
 
 
 def codex_reasoning_levels(slug, config_dir=None):
-    """Supported reasoning (effort) levels for a Codex model slug, [] if unknown."""
+    """Supported reasoning (effort) levels for a Codex model slug, [] if unknown.
+
+    Cache entries may be plain strings (`"low"`) or objects (`{"effort": "low",
+    "description": ...}`); normalize both to the bare effort string."""
     payload = _load_codex_cache(config_dir)
     for model in (payload or {}).get("models") or []:
         if isinstance(model, dict) and model.get("slug") == slug:
             levels = model.get("supported_reasoning_levels")
-            return [str(x) for x in levels] if isinstance(levels, list) else []
+            if not isinstance(levels, list):
+                return []
+            out = []
+            for x in levels:
+                eff = x.get("effort") if isinstance(x, dict) else x
+                if isinstance(eff, str) and eff:
+                    out.append(eff)
+            return out
     return []
 
 
