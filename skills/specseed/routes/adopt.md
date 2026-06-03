@@ -153,7 +153,7 @@ The gap reqs (stage 5c) are the real work. Break them down exactly as bootstrap 
 - `lite` / `standard` — all forward gaps → tickets + issues + at least one sprint (`lite` defaults to one lightweight sprint; `standard` may create as many as needed). Run the full assemble → validate → `tickets_analyze` → `sprint_plan` → `sprints_validate` → `timeline_render` → `roadmap_render` chain.
 - `incremental` — first forward slice only → 1 sprint; rest stays roadmap titles for `plan-next`.
 
-If recon + imports identify **no forward gaps**, say so plainly: the recovered spec maps what already exists, but there is no claimable implementation work yet. Skip forward ticket/issue formation, sprint planning, and the risk-detection pass unless the user opts into done-tickets for verification coverage. Still write the entry files and runner shim; tell the user the runner will idle until work exists. Next step options: file manual work with `add_work.py`, run `/specseed adapt` to add/change planned scope, or `/specseed plan-next` only if there are deferred roadmap titles.
+If recon + imports identify **no forward gaps**, say so plainly: the recovered spec maps what already exists, but there is no claimable implementation work yet. Skip forward ticket/issue formation, sprint planning, and the risk-detection pass unless the user opts into done-tickets for verification coverage. Still write the entry files + provision the scripts tree; tell the user the runner (`python .specseed/scripts/agents_runner.py &`) will idle until work exists. Next step options: file manual work with `add_work.py`, run `/specseed adapt` to add/change planned scope, or `/specseed plan-next` only if there are deferred roadmap titles.
 
 Forward tickets' `satisfies_reqs` reference gap reqs; their `depends_on` DAG covers only forward work (built work is already done). If a forward ticket genuinely needs a built capability the user wanted in the graph, that's the opt-in done-ticket case above.
 
@@ -176,9 +176,9 @@ If the user had docs under `spec/`/`docs/` that we imported + reconciled, offer 
 
 ---
 
-## Stage 9.5: Runner shim + remote mirror init (if configured)
+## Stage 9.5: Remote mirror init (if configured)
 
-Same as bootstrap **stage 13.5**. **Always** write the runner shim (`python .specseed/scripts/agents_runner.py --write-shim <repo_name>`) — the runner works local-only too, not just for the mirror. **Then** the mirror choice (already made in **configure mode**, don't re-ask): read `config.backend.enabled` in `.specseed/memory/config.json` — `false`/no `remote.json` → local-only, shim is enough; `true` and `remote.json` not `initialized` → run `remote_sync.py init` + the CLAUDE mirror block, set `initialized:true`. Full model in `references/remote.md`.
+Same as bootstrap **stage 13.5**. **Always** point the user at the runner (`python .specseed/scripts/agents_runner.py &`, no repo-root shim) — it works local-only too, not just for the mirror. **Then** the mirror choice (already made in **configure mode**, don't re-ask): read `config.backend.enabled` in `.specseed/memory/config.json` — `false`/no `remote.json` → local-only, the runner is enough; `true` and `remote.json` not `initialized` → run `remote_sync.py init` + the CLAUDE mirror block, set `initialized:true`. Full model in `references/remote.md`.
 
 ---
 
@@ -186,7 +186,7 @@ Same as bootstrap **stage 13.5**. **Always** write the runner shim (`python .spe
 
 - Summary: spec recovered for <components>, <N> built capabilities mapped in ROADMAP Phase 0, <M> forward gaps broken into sprint(s).
 - If forward gaps exist: tell user the runtime contract is live (`CLAUDE.md` written) → an impl agent can claim forward issues now.
-- If no forward gaps exist: tell user the runtime contract is live, but no claimable work was identified; the runner shim exists and will idle until new work is added.
+- If no forward gaps exist: tell user the runtime contract is live, but no claimable work was identified; the runner (`python .specseed/scripts/agents_runner.py &`) will idle until new work is added.
 - `incremental` handoff: `/specseed plan-next` for the next forward slice (same as bootstrap's incremental handoff).
 - Delete `session_state.md` (keep `sprint_planning.md`). Future spec changes → adapt / tweak; future forward slices → plan-next.
 

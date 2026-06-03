@@ -281,17 +281,16 @@ retried next pass — it is never silently lost.
 
 ---
 
-## The runner — `<repo>_agents_runner.py`
+## The runner — `.specseed/scripts/agents_runner.py`
 
-A thin shim the skill writes at the repo root; logic lives in the shared
-`agents_runner.py` under `.specseed/scripts/`. It loads `config.json` (the portable
-config) on startup and **fails fast if it's missing or invalid**. **The same runner
-serves local-only** (`config.backend.enabled:false`): it runs the work loop + file-based
-control below, and skips steps 2–3 (reconcile + CONTROL). The mirror loop described here
-is the `backend.enabled:true` superset.
+The shipped runner, run directly from `.specseed/scripts/` (no repo-root shim). It loads
+`config.json` (the portable config) on startup and **fails fast if it's missing or
+invalid**. **The same runner serves local-only** (`config.backend.enabled:false`): it runs
+the work loop + file-based control below, and skips steps 2–3 (reconcile + CONTROL). The
+mirror loop described here is the `backend.enabled:true` superset.
 
 ```bash
-python <repo>_agents_runner.py &        # start (background)
+python .specseed/scripts/agents_runner.py &        # start (background)
 ```
 
 Loop, every ~30–60s:
@@ -398,8 +397,8 @@ handled reply isn't reprocessed, including same-second comments already marked b
 - `remote_control.py` — poll + authorize + dispatch CONTROL verbs (incl. `approvals`
   inline, `approve`/`reject`/`hold` as work/gate verbs); appends a work issue's free-form
   comment to its instruction inbox.
-- `agents_runner.py` — the loop; `<repo>_agents_runner.py` shim calls its `main()`.
-  Posts the gate surface comment, runs the deterministic gate resolver, and runs
+- `agents_runner.py` — the loop, run directly from `.specseed/scripts/` (no repo-root
+  shim). Posts the gate surface comment, runs the deterministic gate resolver, and runs
   `inbox_step` (fresh-context processing of a work issue's instruction inbox).
 - `approvals_render.py` (core, not remote-only) — keeps `approvals.json` current; the
   surface step + `approvals` verb read it.
@@ -425,12 +424,12 @@ first-run preamble before bootstrap/adopt, or via `/specseed configure`.
 **Phase 2 — init (late).** At the end of bootstrap (stage 13.5) / adopt (9.5), if
 `config.backend.enabled` is true and `remote.json` is not yet `initialized`, the mirror
 is created with NO further questions:
-1. Write the `<repo>_agents_runner.py` shim at repo root.
-2. `python .specseed/scripts/remote/remote_sync.py init` — creates the 4 dashboards, pins
+1. `python .specseed/scripts/remote/remote_sync.py init` — creates the 4 dashboards, pins
    the 3, seeds labels, pushes the current work.
-3. Add the "Remote mirror" block to `CLAUDE.md` (runtime contract — see
+2. Add the "Remote mirror" block to `CLAUDE.md` (runtime contract — see
    `CLAUDE_template.md`).
-4. Flip `initialized:true`; tell the user the start command + the pause/stop story.
+3. Flip `initialized:true`; tell the user the start command
+   (`python .specseed/scripts/agents_runner.py &`) + the pause/stop story.
 
 If configure chose **local-only** (`backend.enabled:false`) → init is skipped; the
 feature is invisible.

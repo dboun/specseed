@@ -487,23 +487,22 @@ Read ./CLAUDE.md. In dirs you work on, read corresponding CLAUDE.md files in the
 
 ---
 
-## Stage 13.5: Runner shim + remote mirror init (if configured)
+## Stage 13.5: Remote mirror init (if configured)
 
-**Always — write the runner shim (both backends).** Now that the work layer exists,
-write the runner entry so the user can start the loop:
-- `python .specseed/scripts/agents_runner.py --write-shim <repo_name>` — writes
-  `<repo_name>_agents_runner.py` at the repo root. The runner works **local-only** too
-  (claims + runs the next ready issue in a loop); the mirror just adds reconcile + the
-  CONTROL channel. Tell the user the start command (`python <repo_name>_agents_runner.py &`)
-  and the file-based control (`echo pause|run|stop > .specseed/memory/runner.ctl`, or
-  Ctrl-C). The full how-to is in `.specseed/README.md` (written at configure time).
+**Always — point the user at the runner (both backends).** Now that the work layer
+exists, tell the user how to start the loop. There is **no repo-root shim**; they run
+the shipped runner directly:
+- `python .specseed/scripts/agents_runner.py &` — start. The runner works **local-only**
+  too (claims + runs the next ready issue in a loop); the mirror just adds reconcile +
+  the CONTROL channel. File-based control: `echo pause|run|stop > .specseed/memory/runner.ctl`
+  (or Ctrl-C). The full how-to is in `.specseed/README.md` (written at configure time).
 
 **Then — mirror init only if configured.** The mirror choice was already made in
 **configure mode** (the first-run preamble or `/specseed configure`) — do NOT re-ask
 here. Read `config.backend.enabled` in `.specseed/memory/config.json` (the per-repo
 `remote.json` carries `initialized`):
 
-- **`backend.enabled: false`** (or no `remote.json`) → local-only. Shim above is enough; write nothing remote.
+- **`backend.enabled: false`** (or no `remote.json`) → local-only. The runner above is enough; write nothing remote.
 - **`backend.enabled: true` and `remote.json` not yet `initialized`** → create the mirror programmatically
   (prefer scripts — don't hand-create issues). This is a required step, not optional:
   1. `python .specseed/scripts/remote/remote_sync.py init` — 4 dashboards (pin ROADMAP/TIMELINE/CONTROL), seed labels, project host issue templates (if enabled), push current work. If your environment can't reach the remote, say so and hand the user this exact command to run; do not silently skip it.

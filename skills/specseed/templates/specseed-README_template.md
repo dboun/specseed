@@ -4,7 +4,6 @@ specseed README template. Written to `<repo>/.specseed/README.md` at first setup
 
 FILL the {{PLACEHOLDERS}}:
   {{PROJECT}}              project name
-  {{RUNNER}}               the runner shim filename = "<repo>_agents_runner.py"
   {{BACKEND}}              "local only" | "GitHub mirror" | "GitLab mirror"
   {{INTEGRATION_BRANCH}}   config.json git.integration_branch (default: dev)
 
@@ -63,7 +62,7 @@ issue, runs it via your local Claude Code CLI (no API key needed), and repeats. 
 to `.specseed/memory/runner.log`. One machine, single writer: keep exactly one running.
 
 ```bash
-python {{RUNNER}} &        # start in the background
+python .specseed/scripts/agents_runner.py &        # start in the background
 ```
 
 <!-- MIRROR-ONLY -->
@@ -81,7 +80,7 @@ Control the runner with no daemon, through a control file the loop checks every 
 
 | want | how |
 |------|-----|
-| **start** | `python {{RUNNER}} &` |
+| **start** | `python .specseed/scripts/agents_runner.py &` |
 | **pause** (finish current issue, then idle) | `echo pause > .specseed/memory/runner.ctl` |
 | **resume** | `echo run > .specseed/memory/runner.ctl` |
 | **stop** (graceful: finish current, then exit) | `echo stop > .specseed/memory/runner.ctl` |

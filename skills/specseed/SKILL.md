@@ -149,10 +149,9 @@ Detect at session start:
 
 ```bash
 cp -R "<skill_dir>/scripts/." "<repo_root>/.specseed/scripts/"
-python "<repo_root>/.specseed/scripts/agents_runner.py" --write-shim <repo_name>   # writes <repo_name>_agents_runner.py at the repo root
 ```
 
-Do this in the configure preamble (so later stages can run `.specseed/scripts/core/*.py`); re-run the copy after a version bump. `agents_runner.py` and everything under `core/`+`remote/` are shipped files — do NOT author a placeholder/stub runner. If a route on an existing tree finds `.specseed/scripts/` missing, copy it in the same way before proceeding.
+Do this in the configure preamble (so later stages can run `.specseed/scripts/core/*.py`); re-run the copy after a version bump. `agents_runner.py` and everything under `core/`+`remote/` are shipped files — do NOT author a placeholder/stub runner. No repo-root shim is written; the user runs the shipped `python .specseed/scripts/agents_runner.py &` directly. If a route on an existing tree finds `.specseed/scripts/` missing, copy it in the same way before proceeding.
 
 **Chat mode (no repo / no filesystem):**
 - Deliver files as chat artifacts
@@ -239,7 +238,7 @@ AGENTS.md                       # one line: "Read ./CLAUDE.md. In dirs you work 
 
 # ---- .specseed/scripts/ ----
 scripts/
-├── agents_runner.py            # human-run entry — start/kill the always-on orchestrator loop (+ --write-shim). Top-level on purpose. Runs the work step + (if review on) a per-loop review step; per-function/difficulty agent (claude|codex) via config.runner.agents
+├── agents_runner.py            # human-run entry — start/kill the always-on orchestrator loop (run it directly: `python .specseed/scripts/agents_runner.py &`; no repo-root shim). Top-level on purpose. Runs the work step + (if review on) a per-loop review step; per-function/difficulty agent (claude|codex) via config.runner.agents
 ├── configure.py                # human-run entry — interactive technical setup (pure python, stdlib, zero tokens); writes config.json (+remote.json for a mirror). --defaults / --set k=v / --show for non-interactive use
 ├── add_work.py                 # human-run entry — add a MANUAL work item (ticket + issue) out of band; high-priority → current sprint, else backlog; NO sprint replan
 ├── core/                       # agent-invoked plumbing + analysis seams (humans don't run these directly)

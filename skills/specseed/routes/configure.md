@@ -120,7 +120,7 @@ bootstrap/adopt — NOT here. Local-only writes no `remote.json`.
   (a) create new issues (bugs / requests), (b) comment commands on the CONTROL issue.
 - **GitHub pins max 3 issues** (ROADMAP / TIMELINE / CONTROL). **GitLab can't pin** at all.
 - Keep a remote issue as a note/draft by adding any configured ignore label.
-- You start the runner yourself (`python <repo>_agents_runner.py &`); sync lag ~30–60s.
+- You start the runner yourself (`python .specseed/scripts/agents_runner.py &`); sync lag ~30–60s.
 - Credentials: `GITHUB_PAT` / `GITLAB_PAT` in the env or a `.env`. **No Anthropic key
   needed** — the runner drives your local Claude Code CLI. Verify once (after the script
   has written `remote.json`) with `python .specseed/scripts/remote/remote_config.py ping`.
@@ -131,7 +131,8 @@ The script wrote + validated `config.json` (+ `remote.json` if a mirror). Now fi
 the mechanical setup the script does NOT do:
 
 1. **Provision the scripts tree** — copy the skill's `scripts/` into
-   `.specseed/scripts/` per `SKILL.md` "Provisioning the scripts tree" (+ `--write-shim`).
+   `.specseed/scripts/` per `SKILL.md` "Provisioning the scripts tree". No repo-root
+   shim is written; the user runs `python .specseed/scripts/agents_runner.py &` directly.
    The script ran from the skill dir, so the target's `.specseed/scripts/` may not exist
    yet; do this before any `.specseed/scripts/...` call.
 2. **Re-validate** from the target tree: `python .specseed/scripts/core/config.py validate`.
@@ -142,10 +143,10 @@ the mechanical setup the script does NOT do:
    (writes `epic`/`ticket`/`issue`/`bug`/`feature`/`change-request`; also projects the
    user-facing ones if `backend.entity_templates.enabled`).
 5. **`.specseed/README.md`** — FIRST SETUP ONLY (or re-prune on a backend change). Write
-   from `templates/specseed-README_template.md`: fill `{{PROJECT}}`, `{{RUNNER}}`
-   (= `<repo>_agents_runner.py`), `{{BACKEND}}`, `{{INTEGRATION_BRANCH}}`; keep the
-   `LOCAL-ONLY` blocks + delete `MIRROR-ONLY` (or vice-versa); delete the leading
-   authoring HTML comment. Don't clobber an existing README on a no-op re-run.
+   from `templates/specseed-README_template.md`: fill `{{PROJECT}}`, `{{BACKEND}}`,
+   `{{INTEGRATION_BRANCH}}`; keep the `LOCAL-ONLY` blocks + delete `MIRROR-ONLY` (or
+   vice-versa); delete the leading authoring HTML comment. Don't clobber an existing
+   README on a no-op re-run.
 6. **CLAUDE.md operating-policy block** — render with `config.py render-claude` and put
    it at the top of the repo's `CLAUDE.md`. On a re-run that changed hitl/git/review/qa/cr
    and `CLAUDE.md` already exists, **replace that block in place**. If `CLAUDE.md` is being

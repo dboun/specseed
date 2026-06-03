@@ -233,7 +233,7 @@ If it flags drift in areas your issue touches (missing test files, stale settled
 > The skill writes this section ONLY when the user opted into the github/gitlab mirror.
 
 This repo mirrors its work layer to github/gitlab issues, driven by an always-on
-`<repo>_agents_runner.py` loop. **You don't touch github issues directly** — the
+`.specseed/scripts/agents_runner.py` loop. **You don't touch github issues directly** — the
 runner projects status onto labels and posts `done`/`blocked` comments for you. Just
 do your normal issue work; finishing an issue (status `done`/`blocked` in
 `issues.json`) is what the runner mirrors.
