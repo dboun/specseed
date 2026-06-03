@@ -311,7 +311,7 @@ def process(root, cfg, remote, log=print):
         if since and ts == since and (not cid or cid in since_ids):
             continue
         body = c.get("body") or ""
-        if body.startswith(BOT_PREFIXES):          # our own bot replies
+        if body.startswith(BOT_PREFIXES) or rs.is_bot_comment(body):  # our own bot replies
             marks.append(_mark(ts, cid))
             continue
         cnum, author = c.get("issue_number"), c.get("author")
@@ -319,7 +319,9 @@ def process(root, cfg, remote, log=print):
             handled = _dispatch_control(root, cfg, remote, author, body, actions, ts, cid, log)
         else:
             iid = rs._iid(cfg, cnum)
-            if iid is None:                        # ROADMAP / CR / unmapped — not ours
+            # CR issues are the CR relay's domain (remote_sync), NOT the work-issue control
+            # channel — they're mapped only so reconcile won't re-ingest them. Skip here.
+            if iid is None or str(iid).startswith("CR-"):   # ROADMAP / CR / unmapped — not ours
                 marks.append(_mark(ts, cid))
                 continue
             handled = _dispatch_work(root, cfg, remote, cnum, iid, author, body, actions, ts, cid)

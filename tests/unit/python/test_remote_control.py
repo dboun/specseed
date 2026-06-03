@@ -9,6 +9,7 @@ REMOTE = REPO_ROOT / "skills" / "specseed" / "scripts" / "remote"
 sys.path.insert(0, str(REMOTE))
 
 import remote_control as ctl
+import remote_sync as rs
 
 
 class FakeRemote:
@@ -323,6 +324,36 @@ def test_process_unmapped_issue_ignored(tmp_path):
     actions, cfg = ctl.process(root, cfg, remote)
     assert actions == []
     assert remote.posted == []                       # silently skipped (ROADMAP/CR/etc)
+    assert cfg["cli_cursor"] == "t2"
+
+
+def test_process_skips_cr_mapped_issue(tmp_path):
+    # A CR is mapped only so reconcile won't re-ingest it; its comments belong to the CR
+    # relay (remote_sync), not the work-issue control channel. The control poll must NOT
+    # append them to an inbox or post a 📝 ack.
+    import inbox
+    root = _root(tmp_path)
+    cfg = _cfg(mapping={"CR-0001": {"n": 7}}, allow=["alice"])
+    remote = ProcessRemote([_comment(7, "here are my answers", author="alice", ts="t2")])
+
+    actions, cfg = ctl.process(root, cfg, remote)
+    assert actions == []
+    assert remote.posted == []                       # no 📝 queued ack
+    assert inbox.unprocessed(root / ".specseed" / "project_management", "CR-0001") == []
+    assert cfg["cli_cursor"] == "t2"                 # marked handled → cursor advances
+
+
+def test_process_skips_cr_bot_marker_comment(tmp_path):
+    # The CR relay's own replies carry the <!-- specseed:cr --> marker (not in BOT_PREFIXES);
+    # the control poll must recognize them as bot-authored and skip them.
+    root = _root(tmp_path)
+    cfg = _cfg(mapping={"CR-0001": {"n": 7}})
+    body = rs._bot("Filed as **CR-0001** (cold-start). Reply with answers…")
+    remote = ProcessRemote([_comment(7, body, ts="t2")])
+
+    actions, cfg = ctl.process(root, cfg, remote)
+    assert actions == []
+    assert remote.posted == []
     assert cfg["cli_cursor"] == "t2"
 
 
