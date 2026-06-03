@@ -42,6 +42,7 @@ import re
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -1022,7 +1023,15 @@ def git_drop_cr(root, branch, integ, log):
 def run_relay_agent(root, prompt, log, argv, env=None):
     """Like run_agent but CAPTURES stdout (the agent's JSON result) so the caller can
     parse the session/thread id. Honors the kill flag. Returns (returncode, stdout);
-    returncode is None if killed. UNTESTED (shells out to the coding agent)."""
+    returncode is None if killed. UNTESTED (shells out to the coding agent).
+
+    stdout is drained LINE-BY-LINE on a background thread and streamed live to both the
+    console and runner.log, for two reasons: (1) the coding agent's `--json` stream can be
+    large (codex command_execution events carry full command output), so reading it only
+    after the process exits would fill the OS pipe buffer and deadlock the child mid-run
+    while we poll the kill flag; (2) a relay turn can run for many minutes, and buffering
+    until exit means the operator sees nothing until it finishes (or is killed). Each line
+    is also accumulated so the caller can still parse the session/thread id + reply."""
     kf = _kill_flag(root)
     if kf.exists():
         kf.unlink()
@@ -1034,6 +1043,24 @@ def run_relay_agent(root, prompt, log, argv, env=None):
     proc = subprocess.Popen(argv, cwd=str(rc.find_root(root)),
                             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True, env=run_env)
+    chunks = []
+    logp = rc.find_root(root) / ".specseed" / "memory" / "runner.log"
+
+    def _drain():
+        try:
+            with open(logp, "a", encoding="utf-8") as lf:
+                for line in proc.stdout:          # blocks per line until EOF (process exit)
+                    chunks.append(line)
+                    sys.stdout.write(line)        # live echo to the foreground console
+                    sys.stdout.flush()
+                    lf.write(line)                # live tail in runner.log
+                    lf.flush()
+        except Exception:
+            pass
+
+    reader = threading.Thread(target=_drain)
+    reader.daemon = True
+    reader.start()
     try:
         proc.stdin.write(prompt)
         proc.stdin.close()
@@ -1053,14 +1080,8 @@ def run_relay_agent(root, prompt, log, argv, env=None):
             log("relay agent terminated (kill/stop)")
             break
         time.sleep(1)
-    out = ""
-    try:
-        out = proc.stdout.read() or ""
-    except Exception:
-        pass
-    with open(rc.find_root(root) / ".specseed" / "memory" / "runner.log",
-              "a", encoding="utf-8") as f:
-        f.write(out)
+    reader.join(timeout=10)
+    out = "".join(chunks)
     return (None, out) if killed else (proc.returncode, out)
 
 
