@@ -243,5 +243,73 @@ def _load(ctx, eid):
     return load_entity(ctx, str(eid))
 
 
+class RelationshipsParseTest(unittest.TestCase):
+    def test_parent_links(self) -> None:
+        from src.target_facing.specseed_target_src.executing import relationships as r
+        self.assertEqual(r.parent_id("## Links\nTicket: #41\nDepends on: #9", "ticket"), "41")
+        self.assertEqual(r.parent_id("Epic: #12  Issues: #1", "epic"), "12")
+        self.assertIsNone(r.parent_id("no links here", "epic"))
+
+    def test_child_links_inline(self) -> None:
+        from src.target_facing.specseed_target_src.executing import relationships as r
+        self.assertEqual(r.child_ids("Issues: #8, #9, #10", "issues"), ["8", "9", "10"])
+
+    def test_child_links_section(self) -> None:
+        from src.target_facing.specseed_target_src.executing import relationships as r
+        body = "# Epic\n\n## Tickets\n#7\n#8\n\n## Goal\nstuff #99"
+        self.assertEqual(r.child_ids(body, "tickets"), ["7", "8"])
+
+    def test_depends_on_not_mistaken_for_children(self) -> None:
+        from src.target_facing.specseed_target_src.executing import relationships as r
+        self.assertEqual(r.child_ids("Ticket: #2\nDepends on: #5", "issues"), [])
+
+
+class RollUpTest(_Base):
+    """An epic -> ticket -> two issues tree; finishing the last issue closes up."""
+
+    def _tree(self, *, issue_b_status="issue:status:todo"):
+        # Create on both trackers in the same order so ids line up (1..4).
+        specs = [
+            ("Epic", ["epic", "epic:status:todo"], "# Epic\n\n## Tickets\n#2\n"),
+            ("Ticket", ["ticket", "ticket:status:todo"], "Epic: #1\nIssues: #3, #4\n"),
+            ("Issue A", ["issue", "issue:status:done"], "Ticket: #2\n"),
+            ("Issue B", ["issue", issue_b_status], "Ticket: #2\n"),
+        ]
+        for tracker in (self.local, self.remote):
+            for title, labels, body in specs:
+                for label in labels:
+                    tracker.create_label(label)
+                tracker.add_entry(title, body=body, labels=labels)
+        # Issue A is already finished on the remote (source of truth for roll-up).
+        self.remote.set_entry_closed(3)
+
+    def test_finishing_last_issue_closes_ticket_and_epic(self) -> None:
+        self._tree()
+        ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True, returncode=0)))
+        out = dispatch(ctx, {"action": "handle_label_added", "post_id": "4", "payload": {}})
+        self.assertTrue(out.success)
+        self.assertIn("issue:status:done", self._remote_labels(4))
+        # ticket #2 and epic #1 rolled up to done + closed
+        self.assertIn("ticket:status:done", self._remote_labels(2))
+        self.assertFalse(self._remote_details(2).is_open)
+        self.assertIn("epic:status:done", self._remote_labels(1))
+        self.assertFalse(self._remote_details(1).is_open)
+        self.assertIn("rolled up", out.detail)
+
+    def test_open_sibling_keeps_parents_open(self) -> None:
+        # Issue A is NOT finished -> finishing B must not close the ticket/epic.
+        self._tree()
+        self.remote.set_entry_open(3)
+        self.remote.remove_entry_label(3, "issue:status:done")
+        self.remote.add_entry_label(3, "issue:status:in_progress")
+        ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True, returncode=0)))
+        out = dispatch(ctx, {"action": "handle_label_added", "post_id": "4", "payload": {}})
+        self.assertTrue(out.success)
+        self.assertIn("issue:status:done", self._remote_labels(4))
+        self.assertIn("ticket:status:todo", self._remote_labels(2))
+        self.assertTrue(self._remote_details(2).is_open)
+        self.assertIn("epic:status:todo", self._remote_labels(1))
+
+
 if __name__ == "__main__":
     unittest.main()

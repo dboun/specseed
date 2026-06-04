@@ -74,14 +74,39 @@ class DispatchTestBase(unittest.TestCase):
 
 
 class DecideIntentTest(DispatchTestBase):
-    def _intent_for(self, labels):
+    def _intent_for(self, labels, action="handle_label_added"):
         entity = Entity.for_labels(post_id="1", labels=labels, title="t")
         sr = evaluate_entity_state(entity, self.config, [])
-        return entity, decide_intent(entity, sr, {"action": "handle_label_added"})
+        return entity, decide_intent(entity, sr, {"action": action})
 
     def test_spec_change_label_to_spec_change(self) -> None:
         _, intent = self._intent_for(["spec-change:adopt"])
         self.assertEqual(intent, AgentIntent.SPEC_CHANGE)
+
+    def test_spec_change_open_status_is_actionable(self) -> None:
+        _, intent = self._intent_for(["spec-change:adapt", "spec-change:status:open"])
+        self.assertEqual(intent, AgentIntent.SPEC_CHANGE)
+
+    def test_spec_change_done_status_is_not_rerun(self) -> None:
+        # A finished request must never re-run the worker, however it is poked.
+        for action in ("handle_entry_updated", "handle_label_added", "handle_comment_added"):
+            _, intent = self._intent_for(
+                ["spec-change:adapt", "spec-change:status:done"], action=action
+            )
+            self.assertEqual(intent, AgentIntent.NONE, action)
+
+    def test_spec_change_rejected_status_is_not_rerun(self) -> None:
+        _, intent = self._intent_for(
+            ["spec-change:adapt", "spec-change:status:rejected"], action="handle_entry_updated"
+        )
+        self.assertEqual(intent, AgentIntent.NONE)
+
+    def test_spec_change_awaiting_approval_only_wakes_on_comment(self) -> None:
+        labels = ["spec-change:adapt", "spec-change:status:awaiting_approval"]
+        _, churn = self._intent_for(labels, action="handle_entry_updated")
+        self.assertEqual(churn, AgentIntent.NONE)
+        _, reply = self._intent_for(labels, action="handle_comment_added")
+        self.assertEqual(reply, AgentIntent.SPEC_CHANGE)
 
     def test_spec_change_status_label_ignored(self) -> None:
         # A spec-change:status:* label is not a route.
@@ -192,6 +217,26 @@ class DispatchRoutingTest(DispatchTestBase):
         self.assertTrue(out.success)
         self.assertEqual(len(self.runner.calls), 1)
         self.assertIn("adapt", self.runner.calls[0]["prompt"])
+
+    def test_spec_change_skipped_when_apply_already_queued(self) -> None:
+        # A prior run already wrote+enqueued apply.py; a second trigger for the
+        # same request must not re-run the (expensive) worker.
+        from src.target_facing.specseed_target_src.scheduling.spec_change import (
+            enqueue_spec_change_run,
+        )
+
+        eid = self._seed_local_entry("Adapt request", ["spec-change:adapt"])
+        script = self.root / "apply.py"
+        script.write_text("print('noop')\n", encoding="utf-8")
+        enqueue_spec_change_run(script, request_id=str(eid), route="adapt", db=self.db)
+
+        out = dispatch(
+            self.ctx,
+            {"action": "handle_label_removed", "post_id": str(eid), "payload": {"label": "draft"}},
+        )
+        self.assertTrue(out.success)
+        self.assertEqual(self.runner.calls, [])
+        self.assertIn("already queued", out.detail)
 
     def test_comment_only_is_none_noop(self) -> None:
         # An in_progress issue receives a comment -> no actionable intent.

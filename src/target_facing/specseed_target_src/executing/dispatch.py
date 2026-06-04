@@ -47,6 +47,16 @@ CLEANUP_ACTION = "cleanup"
 _SPEC_CHANGE_LABEL_PREFIX = "spec-change:"
 _SPEC_CHANGE_STATUS_PREFIX = "spec-change:status:"
 
+# Spec-change request statuses that still want a worker run. ``done``/``rejected``
+# are terminal: the request is settled and must never re-run the agent. The route
+# label (``spec-change:adapt`` etc.) never goes away, so without this gate every
+# later edit / label churn on a finished request re-ran the whole worker.
+_SPEC_CHANGE_TERMINAL_STATUSES = {"done", "rejected"}
+# ``awaiting_approval`` means the worker asked the human a question and is parked.
+# Only a fresh comment (the human's answer) should wake it; an ``updated_at`` bump
+# or a status-label swap must not.
+_SPEC_CHANGE_WAKE_ACTIONS = {"handle_comment_added", "handle_comment_updated"}
+
 
 @dataclass
 class HandlerOutcome:
@@ -85,6 +95,49 @@ def _spec_change_route(entity: Any) -> Optional[str]:
     return None
 
 
+def _spec_change_status(entity: Any) -> Optional[str]:
+    """Return the ``spec-change:status:<state>`` suffix on the entity, if any."""
+    for label in getattr(entity, "labels", []) or []:
+        name = str(label)
+        if name.startswith(_SPEC_CHANGE_STATUS_PREFIX):
+            return name[len(_SPEC_CHANGE_STATUS_PREFIX):]
+    return None
+
+
+def _spec_change_actionable(status: Optional[str], action: Optional[str]) -> bool:
+    """Whether a spec-change event should (re)run the worker.
+
+    A request only runs while it is open/approved (or has no status yet). A
+    terminal request never runs again. A request parked ``awaiting_approval`` runs
+    only when woken by a new comment (the human's answer).
+    """
+    if status in _SPEC_CHANGE_TERMINAL_STATUSES:
+        return False
+    if status == "awaiting_approval":
+        return action in _SPEC_CHANGE_WAKE_ACTIONS
+    return True
+
+
+def _has_pending_spec_change_run(ctx: "ExecutionContext", post_id: Any) -> bool:
+    """True if an apply.py for this request is already queued to run.
+
+    Several distinct events (the body edit, the ``draft`` label removal) can each
+    decide SPEC_CHANGE for one request before its apply.py executes. The first run
+    already wrote+enqueued the script, so any later trigger should wait for it
+    rather than re-running the (expensive) worker over the same request.
+    """
+    if post_id in (None, ""):
+        return False
+    try:
+        rows = ctx.db.tasks_for(post_id)
+    except Exception:
+        return False
+    for row in rows or []:
+        if row.get("status") == "pending" and row.get("action") == SPEC_CHANGE_ACTION:
+            return True
+    return False
+
+
 def decide_intent(entity: Any, state_result: Any, task: Any) -> str:
     """Decide which agent intent (if any) a work event implies.
 
@@ -102,7 +155,10 @@ def decide_intent(entity: Any, state_result: Any, task: Any) -> str:
 
     route = _spec_change_route(entity)
     if route is not None:
-        return AgentIntent.SPEC_CHANGE
+        action = task.get("action") if isinstance(task, dict) else getattr(task, "action", None)
+        if _spec_change_actionable(_spec_change_status(entity), action):
+            return AgentIntent.SPEC_CHANGE
+        return AgentIntent.NONE
 
     tier = getattr(entity, "tier", None)
     status = getattr(entity, "status", None)
@@ -362,6 +418,17 @@ def _run_work(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
             detail="stale {0} event; remote already advanced past {1}".format(
                 intent, getattr(entity, "status", None)
             ),
+        )
+
+    if intent == AgentIntent.SPEC_CHANGE and _has_pending_spec_change_run(ctx, post_id):
+        platform_log.log_event(
+            "spec_change_run_pending_skip",
+            task_id=task.get("task_id"),
+            post_id=post_id,
+        )
+        return HandlerOutcome(
+            success=True,
+            detail="apply.py already queued for request {0}; skipping re-run".format(post_id),
         )
 
     if intent == AgentIntent.SPEC_CHANGE:

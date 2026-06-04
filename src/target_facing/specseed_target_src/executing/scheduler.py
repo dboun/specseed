@@ -36,6 +36,7 @@ from specseed_target_src.tracking.resolve_remote import (
     resolve_remote,
 )
 from specseed_target_src.executing import cancellation
+from specseed_target_src.executing import dashboards as dashboards_mod
 from specseed_target_src.executing import platform_log
 from specseed_target_src.executing.agent_runner import (
     AgentRunner,
@@ -112,6 +113,14 @@ class Scheduler:
         self._last_sync: Optional[dict[str, Any]] = None
         self._current_task_id: Optional[int] = None
         self._next_poll_at = 0.0  # monotonic; 0 forces an immediate first sync
+
+        dashboards_cfg = self.config.get("dashboards")
+        self._dashboards_enabled = (
+            bool(dashboards_cfg.get("auto_refresh", True))
+            if isinstance(dashboards_cfg, dict)
+            else True
+        )
+        self._last_work_sig: Optional[str] = None
 
     # ------------------------------------------------------------------ #
     # lifecycle
@@ -314,6 +323,24 @@ class Scheduler:
         self._last_sync = summary
         self._last_poll_at = _now_iso()
         platform_log.log_event("sync_complete", summary=summary)
+        self._refresh_dashboards()
+
+    def _refresh_dashboards(self) -> None:
+        """Re-render ROADMAP / Current sprint when the work tree changed.
+
+        Cheap signature gate first so the per-post body reads only happen after a
+        real change. Never lets a dashboard hiccup disturb the loop.
+        """
+        if not self._dashboards_enabled or self._remote is None:
+            return
+        try:
+            signature = dashboards_mod.work_signature(self._remote)
+            if signature is None or signature == self._last_work_sig:
+                return
+            dashboards_mod.refresh_dashboards(self._remote)
+            self._last_work_sig = signature
+        except Exception as exc:  # dashboards are best-effort
+            platform_log.log_event("dashboard_refresh_error", error=repr(exc))
 
     def _make_context(self, cancel: threading.Event) -> ExecutionContext:
         self._ensure_trackers()

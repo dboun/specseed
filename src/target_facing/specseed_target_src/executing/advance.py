@@ -32,14 +32,22 @@ import re
 from typing import Any, Optional
 
 from specseed_target_src.entities.entity_base import (
+    Entity,
     STATUS_LABEL_PREFIX,
 )
+from specseed_target_src.executing import platform_log
+from specseed_target_src.executing import relationships
 
 
 # Hidden marker stamped on every review comment so attempts can be counted from
 # the conversation without a side channel.
 REVIEW_MARKER = "<!-- specseed:review-attempt -->"
 _STATUS_INFIX = ":" + STATUS_LABEL_PREFIX  # ":status:"
+
+# A parent (ticket/epic) is closed once every child is in one of these.
+TERMINAL_TIER_STATUSES = {"done", "wont_do", "deprecated"}
+# child tier -> (parent tier, the body-link kind that lists the parent's children)
+_PARENT_OF = {"issue": ("ticket", "issues"), "ticket": ("epic", "tickets")}
 
 _REVIEW_LINE_RE = re.compile(r"SPECSEED_REVIEW\b", re.IGNORECASE)
 _VERDICT_RE = re.compile(r"verdict\s*=\s*(approve|changes)", re.IGNORECASE)
@@ -189,7 +197,8 @@ def _advance_after_implement(ctx: Any, entity: Any, state_result: Any) -> str:
         return "implement done -> awaiting_approval"
     _set_status(ctx, entity, "done")
     _close(ctx, entity.post_id)
-    return "implement done -> done (closed)"
+    rolled = roll_up(ctx, entity)
+    return "implement done -> done (closed)" + ("; " + rolled if rolled else "")
 
 
 def _advance_after_review(ctx: Any, entity: Any, result: Any, conversation: Any) -> str:
@@ -220,7 +229,8 @@ def _advance_after_review(ctx: Any, entity: Any, result: Any, conversation: Any)
             return "review passed -> awaiting_approval"
         _set_status(ctx, entity, "done")
         _close(ctx, entity.post_id)
-        return "review passed -> done (closed)"
+        rolled = roll_up(ctx, entity)
+        return "review passed -> done (closed)" + ("; " + rolled if rolled else "")
 
     # changes requested / low confidence
     if attempt < max_attempts:
@@ -290,7 +300,8 @@ def resolve_approval(ctx: Any, entity: Any, state_result: Any, conversation: Any
         _set_status(ctx, entity, "done")
         _close(ctx, entity.post_id)
         _comment(ctx, entity.post_id, "Approved by {0}; completing.".format(approver))
-        return "approval gate -> done (closed)"
+        rolled = roll_up(ctx, entity)
+        return "approval gate -> done (closed)" + ("; " + rolled if rolled else "")
     _set_status(ctx, entity, "todo")
     _comment(ctx, entity.post_id, "Approved by {0}; work may proceed.".format(approver))
     return "approval gate -> todo (resume work)"
@@ -303,3 +314,100 @@ def _review_summary(stdout: str, limit: int = 1500) -> str:
     if len(text) > limit:
         text = text[:limit].rstrip() + "\n…(truncated)"
     return text
+
+
+# --------------------------------------------------------------------------- #
+# parent roll-up (close a ticket/epic once its children are all terminal)
+# --------------------------------------------------------------------------- #
+def roll_up(ctx: Any, entity: Any) -> Optional[str]:
+    """Close the parent chain above a just-finished entity, when complete.
+
+    Called after an issue (or ticket) reaches a terminal state. Walks up the
+    body-link graph: an issue's ticket closes once every issue under it is
+    terminal, then that ticket's epic closes once every ticket under it is
+    terminal. Idempotent and remote-truth checked, so re-running is safe and a
+    parent already terminal is left alone. Returns a short detail string, or
+    ``None`` when nothing rolled up.
+    """
+    if not _can_write(ctx):
+        return None
+    try:
+        summaries = _entry_summaries(ctx)
+    except Exception as exc:
+        platform_log.log_event("rollup_error", post_id=getattr(entity, "post_id", None), error=repr(exc))
+        return None
+    closed = _roll_up_from(ctx, str(entity.post_id), entity.tier, summaries)
+    return "rolled up: {0}".format(", ".join(closed)) if closed else None
+
+
+def _roll_up_from(ctx: Any, child_id: str, child_tier: Optional[str], summaries: dict) -> list[str]:
+    """Recursively close parents above ``child_id``; return ids closed (top-down)."""
+    spec = _PARENT_OF.get(child_tier or "")
+    if spec is None:
+        return []
+    parent_tier, child_kind = spec
+
+    child_details = _details(ctx, child_id)
+    parent_id = relationships.parent_id(getattr(child_details, "body", None), parent_tier)
+    if parent_id is None:
+        return []
+    info = summaries.get(str(parent_id))
+    if info is None or not info.get("is_open", True) or info.get("status") in TERMINAL_TIER_STATUSES:
+        return []
+
+    parent_details = _details(ctx, parent_id)
+    siblings = relationships.child_ids(getattr(parent_details, "body", None), child_kind)
+    if not siblings:
+        return []
+
+    statuses = []
+    for sid in siblings:
+        sib = summaries.get(str(sid))
+        if sib is None:
+            return []  # a listed child is missing from the remote; do not close blindly
+        statuses.append(sib.get("status"))
+    if not all(s in TERMINAL_TIER_STATUSES for s in statuses):
+        return []
+
+    new_status = "done" if any(s == "done" for s in statuses) else "wont_do"
+    _close_parent(ctx, parent_id, parent_details, parent_tier, new_status, len(siblings))
+    # reflect locally so the recursion sees the parent as terminal, then go up.
+    summaries[str(parent_id)] = {"status": new_status, "tier": parent_tier, "is_open": False}
+    platform_log.log_event(
+        "rollup_closed", post_id=str(parent_id), tier=parent_tier, status=new_status, children=len(siblings)
+    )
+    return [str(parent_id)] + _roll_up_from(ctx, str(parent_id), parent_tier, summaries)
+
+
+def _close_parent(ctx: Any, post_id: Any, details: Any, tier: str, new_status: str, n_children: int) -> None:
+    entity = Entity.for_labels(
+        post_id=str(post_id),
+        labels=[str(getattr(lbl, "name", lbl)) for lbl in getattr(details, "labels", []) or []],
+    )
+    _set_status(ctx, entity, new_status)
+    _close(ctx, post_id)
+    _comment(
+        ctx, post_id,
+        "All {0} child {1} are finished; rolling this {2} up to `{3}` and closing.".format(
+            n_children, "issues" if tier == "ticket" else "tickets", tier, new_status
+        ),
+    )
+
+
+def _entry_summaries(ctx: Any) -> dict:
+    """One ``list_entries`` call -> ``{id: {status, tier, is_open}}`` for all posts."""
+    res = ctx.remote.list_entries(is_open=None)
+    out: dict[str, dict] = {}
+    for summary in getattr(res, "data", None) or []:
+        names = [str(getattr(lbl, "name", lbl)) for lbl in getattr(summary, "labels", []) or []]
+        out[str(summary.id)] = {
+            "status": Entity.status_from_labels(names),
+            "tier": Entity.tier_from_labels(names),
+            "is_open": bool(getattr(summary, "is_open", True)),
+        }
+    return out
+
+
+def _details(ctx: Any, post_id: Any) -> Any:
+    res = ctx.remote.get_entry(post_id)
+    return getattr(res, "data", None)
