@@ -30,20 +30,20 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from src.target_facing.specseed_target_src.scheduling.sync_to_db import sync_to_db
-from src.target_facing.specseed_target_src.tracking.resolve_remote import (
+from specseed_target_src.scheduling.sync_to_db import sync_to_db
+from specseed_target_src.tracking.resolve_remote import (
     resolve_local,
     resolve_remote,
 )
-from src.target_facing.specseed_target_src.executing import cancellation
-from src.target_facing.specseed_target_src.executing.agent_runner import (
+from specseed_target_src.executing import cancellation
+from specseed_target_src.executing.agent_runner import (
     AgentRunner,
     DEFAULT_AGENT_TIMEOUT_S,
 )
-from src.target_facing.specseed_target_src.executing.context import ExecutionContext
-from src.target_facing.specseed_target_src.executing.control import ControlChannel, render_status
-from src.target_facing.specseed_target_src.executing.dispatch import HandlerOutcome, dispatch
-from src.target_facing.specseed_target_src.executing.permissions import Permissions
+from specseed_target_src.executing.context import ExecutionContext
+from specseed_target_src.executing.control import ControlChannel, render_status
+from specseed_target_src.executing.dispatch import HandlerOutcome, dispatch
+from specseed_target_src.executing.permissions import Permissions
 
 
 RUNNING = "running"

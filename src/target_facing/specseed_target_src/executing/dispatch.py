@@ -29,12 +29,12 @@ import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from src.target_facing.specseed_target_src.executing import advance
-from src.target_facing.specseed_target_src.executing import context as context_mod
-from src.target_facing.specseed_target_src.executing.context import ExecutionContext
-from src.target_facing.specseed_target_src.executing import prompts
-from src.target_facing.specseed_target_src.scheduling.spec_change import SPEC_CHANGE_ACTION
-from src.target_facing.specseed_target_src.state_machines.base import evaluate_entity_state
+from specseed_target_src.executing import advance
+from specseed_target_src.executing import context as context_mod
+from specseed_target_src.executing.context import ExecutionContext
+from specseed_target_src.executing import prompts
+from specseed_target_src.scheduling.spec_change import SPEC_CHANGE_ACTION
+from specseed_target_src.state_machines.base import evaluate_entity_state
 
 
 # How often the spec-change subprocess wait loop checks cancel/timeout.

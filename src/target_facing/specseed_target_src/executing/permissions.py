@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.target_facing.specseed_target_src.state_machines.base import approver_usernames
+from specseed_target_src.state_machines.base import approver_usernames
 
 
 class Permissions:

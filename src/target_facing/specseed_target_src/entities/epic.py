@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import ClassVar, Optional
 
-from src.target_facing.specseed_target_src.entities.entity_base import Entity
+from specseed_target_src.entities.entity_base import Entity
 
 
 @Entity.register

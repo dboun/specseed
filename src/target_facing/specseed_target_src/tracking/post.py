@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
-from src.target_facing.specseed_target_src.tracking.comment import TrackingComment
+from specseed_target_src.tracking.comment import TrackingComment
 
 
 @dataclass(frozen=True)

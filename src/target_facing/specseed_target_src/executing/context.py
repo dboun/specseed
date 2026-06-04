@@ -15,12 +15,12 @@ from pathlib import Path
 import threading
 from typing import Any, Optional
 
-from src.target_facing.specseed_target_src.entities.entity_base import Entity
-from src.target_facing.specseed_target_src.executing.agent_runner import (
+from specseed_target_src.entities.entity_base import Entity
+from specseed_target_src.executing.agent_runner import (
     AgentRunner,
     DEFAULT_AGENT_TIMEOUT_S,
 )
-from src.target_facing.specseed_target_src.executing.permissions import Permissions
+from specseed_target_src.executing.permissions import Permissions
 
 
 @dataclass

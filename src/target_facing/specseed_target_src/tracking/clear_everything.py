@@ -13,9 +13,9 @@ import sys
 import urllib.parse
 from typing import Iterable, Optional
 
-from src.target_facing.specseed_target_src.tracking.populate_defaults import BACKENDS, make_tracker
-from src.target_facing.specseed_target_src.tracking.tracking_base import TrackingBase
-from src.target_facing.specseed_target_src.tracking.tracking_local import TrackingLocal
+from specseed_target_src.tracking.populate_defaults import BACKENDS, make_tracker
+from specseed_target_src.tracking.tracking_base import TrackingBase
+from specseed_target_src.tracking.tracking_local import TrackingLocal
 
 
 def clear_everything(

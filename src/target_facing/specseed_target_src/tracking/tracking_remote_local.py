@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from src.target_facing.specseed_target_src.tracking.tracking_local import TrackingLocal
+from specseed_target_src.tracking.tracking_local import TrackingLocal
 
 
 DEFAULT_DB_PATH = Path(__file__).with_name("tracking_remote_local.db")

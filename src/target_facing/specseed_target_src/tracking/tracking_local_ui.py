@@ -28,14 +28,17 @@ def _add_repo_root_to_path() -> None:
     current = Path(__file__).resolve()
     for parent in current.parents:
         if (parent / "src" / "target_facing").exists():
+            sys.path.insert(0, str(parent / "src" / "target_facing"))
+            return
+        if (parent / "specseed_target_src").exists():
             sys.path.insert(0, str(parent))
             return
 
 
 _add_repo_root_to_path()
 
-from src.target_facing.specseed_target_src.tracking.supported_values import SUPPORTED_REACTIONS
-from src.target_facing.specseed_target_src.tracking.tracking_local import (
+from specseed_target_src.tracking.supported_values import SUPPORTED_REACTIONS
+from specseed_target_src.tracking.tracking_local import (
     DEFAULT_DB_PATH,
     TrackingLocal,
 )

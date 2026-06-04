@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
-from src.target_facing.specseed_target_src.tracking.tracking_base import (
+from specseed_target_src.tracking.tracking_base import (
     TrackingBase,
     TrackingCommentId,
     TrackingEntryComment,
@@ -34,7 +34,7 @@ from src.target_facing.specseed_target_src.tracking.tracking_base import (
     TrackingResult,
     TrackingSyncChange,
 )
-from src.target_facing.specseed_target_src.tracking.pull_request import (
+from specseed_target_src.tracking.pull_request import (
     TrackingPullRequestDetails,
     TrackingPullRequestId,
     TrackingPullRequestOpenState,

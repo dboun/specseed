@@ -15,11 +15,11 @@ import urllib.parse
 from dataclasses import dataclass
 from typing import Iterable, Optional
 
-from src.target_facing.specseed_target_src.tracking.tracking_base import TrackingBase
-from src.target_facing.specseed_target_src.tracking.tracking_local import TrackingLocal
-from src.target_facing.specseed_target_src.tracking.tracking_remote_github import TrackingRemoteGitHub
-from src.target_facing.specseed_target_src.tracking.tracking_remote_gitlab import TrackingRemoteGitLab
-from src.target_facing.specseed_target_src.tracking.tracking_remote_local import TrackingRemoteLocal
+from specseed_target_src.tracking.tracking_base import TrackingBase
+from specseed_target_src.tracking.tracking_local import TrackingLocal
+from specseed_target_src.tracking.tracking_remote_github import TrackingRemoteGitHub
+from specseed_target_src.tracking.tracking_remote_gitlab import TrackingRemoteGitLab
+from specseed_target_src.tracking.tracking_remote_local import TrackingRemoteLocal
 
 
 BACKENDS = ("local", "remote_local", "remote_github", "remote_gitlab")

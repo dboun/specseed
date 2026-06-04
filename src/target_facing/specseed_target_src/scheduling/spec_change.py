@@ -32,8 +32,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from src.target_facing.specseed_target_src.db.database import Database
-from src.target_facing.specseed_target_src.tracking.resolve_remote import default_storage_dir
+from specseed_target_src.db.database import Database
+from specseed_target_src.tracking.resolve_remote import default_storage_dir
 
 # The queue action a spec-change run is enqueued under. The scheduler
 # (``executing/scheduler.py``) claims tasks with this action and hands them to

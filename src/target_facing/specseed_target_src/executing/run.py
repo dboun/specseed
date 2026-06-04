@@ -9,9 +9,9 @@ cleanly.
 
 Usage (run from the target repo root):
 
-    python3 -m src.target_facing.specseed_target_src.executing.run
-    python3 -m src.target_facing.specseed_target_src.executing.run --once
-    python3 -m src.target_facing.specseed_target_src.executing.run --interval 30
+    python3 -m specseed_target_src.executing.run
+    python3 -m specseed_target_src.executing.run --once
+    python3 -m specseed_target_src.executing.run --interval 30
 
 Only Python stdlib is used.
 """
@@ -26,13 +26,27 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from src.target_facing.specseed_target_src.db.database import Database
-from src.target_facing.specseed_target_src.executing.agent_runner import (
+
+def _add_package_parent_to_path() -> None:
+    current = Path(__file__).resolve()
+    for parent in current.parents:
+        if (parent / "src" / "target_facing").exists():
+            sys.path.insert(0, str(parent / "src" / "target_facing"))
+            return
+        if (parent / "specseed_target_src").exists():
+            sys.path.insert(0, str(parent))
+            return
+
+
+_add_package_parent_to_path()
+
+from specseed_target_src.db.database import Database
+from specseed_target_src.executing.agent_runner import (
     AgentRunner,
     build_runner,
 )
-from src.target_facing.specseed_target_src.executing.scheduler import Scheduler
-from src.target_facing.specseed_target_src.tracking.resolve_remote import (
+from specseed_target_src.executing.scheduler import Scheduler
+from specseed_target_src.tracking.resolve_remote import (
     default_storage_dir,
     load_config,
 )

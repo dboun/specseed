@@ -33,6 +33,7 @@ Stdlib only. Human-run (not part of the agent loop).
 import argparse
 import getpass
 import json
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -690,9 +691,12 @@ def run_interactive(storage, explicit_storage=False):
 
 def _print_start_help(storage):
     """Tell the human how to launch the scheduler now that config is written."""
+    repo_root = repo_root_from_cwd()
+    specseed_dir = _relative_to_repo(specseed_dir_from_storage(storage), repo_root)
+    run_script = specseed_dir / "specseed_target_src" / "executing" / "run.py"
     print(
         "\nNext: start the scheduler from your repo root.\n"
-        "  python3 -m src.target_facing.specseed_target_src.executing.run\n"
+        f"  python3 {shlex.quote(run_script.as_posix())}\n"
         "It polls the remote on your interval, syncs changes into the local mirror,\n"
         "and drains the work queue (running agents in a stoppable background thread).\n"
         "Useful flags:\n"

@@ -29,11 +29,11 @@ import json
 from pathlib import Path
 from typing import Optional
 
-from src.target_facing.specseed_target_src.tracking.tracking_base import TrackingBase
-from src.target_facing.specseed_target_src.tracking.tracking_local import TrackingLocal
-from src.target_facing.specseed_target_src.tracking.tracking_remote_github import TrackingRemoteGitHub
-from src.target_facing.specseed_target_src.tracking.tracking_remote_gitlab import TrackingRemoteGitLab
-from src.target_facing.specseed_target_src.tracking.tracking_remote_local import TrackingRemoteLocal
+from specseed_target_src.tracking.tracking_base import TrackingBase
+from specseed_target_src.tracking.tracking_local import TrackingLocal
+from specseed_target_src.tracking.tracking_remote_github import TrackingRemoteGitHub
+from specseed_target_src.tracking.tracking_remote_gitlab import TrackingRemoteGitLab
+from specseed_target_src.tracking.tracking_remote_local import TrackingRemoteLocal
 
 
 # storage is `../storage` relative to specseed_target_src (i.e. <specseed_dir>/storage/),

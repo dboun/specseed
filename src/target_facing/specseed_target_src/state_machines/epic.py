@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Optional
 
-from src.target_facing.specseed_target_src.entities.epic import Epic
-from src.target_facing.specseed_target_src.state_machines.base import (
+from specseed_target_src.entities.epic import Epic
+from specseed_target_src.state_machines.base import (
     StateMachineResult,
     current_state,
     evaluate_entity_state,

@@ -16,7 +16,7 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
-from src.target_facing.specseed_target_src.tracking.tracking_base import (
+from specseed_target_src.tracking.tracking_base import (
     REACTION_EYES,
     REACTION_HEART,
     REACTION_THUMBS_DOWN,
@@ -36,7 +36,7 @@ from src.target_facing.specseed_target_src.tracking.tracking_base import (
     TrackingReactionResult,
     TrackingResult,
 )
-from src.target_facing.specseed_target_src.tracking.pull_request import (
+from specseed_target_src.tracking.pull_request import (
     TrackingPullRequestDetails,
     TrackingPullRequestId,
     TrackingPullRequestOpenState,

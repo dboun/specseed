@@ -12,7 +12,7 @@ from dataclasses import asdict, dataclass, field
 import re
 from typing import Any, Iterable, Optional
 
-from src.target_facing.specseed_target_src.entities.entity_base import Entity
+from specseed_target_src.entities.entity_base import Entity
 
 
 DEFAULT_STATE = "todo"

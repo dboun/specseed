@@ -15,7 +15,7 @@ The post's title + body + comments are the instructions. Read them and the
 current work posts from the **local** tracker only.
 
 ```python
-from src.target_facing.specseed_target_src.tracking.resolve_remote import resolve_local
+from specseed_target_src.tracking.resolve_remote import resolve_local
 local = resolve_local()                      # TrackingLocal, the read cache
 post = local.get_entry(REQUEST_ID).data       # title, body, comments
 work = local.list_entries(is_open=None).data  # current epics/tickets/issues
@@ -88,7 +88,7 @@ for _root in _HERE.parents:
         sys.path.insert(0, str(_root))
         break
 
-from src.target_facing.specseed_target_src.tracking.resolve_remote import resolve_remote
+from specseed_target_src.tracking.resolve_remote import resolve_remote
 
 
 def _ok(result, what):
@@ -158,7 +158,7 @@ the post/label model.
 After writing `plan.json` and `apply.py`, enqueue the run and stop:
 
 ```python
-from src.target_facing.specseed_target_src.scheduling.spec_change import enqueue_spec_change_run
+from specseed_target_src.scheduling.spec_change import enqueue_spec_change_run
 enqueue_spec_change_run(script_path, request_id=REQUEST_ID, route=ROUTE)
 ```
 
