@@ -7,35 +7,22 @@ from it. No GitHub/GitLab is involved.
 
 from __future__ import annotations
 
-import sys
 import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from datetime import datetime, timezone
+from unittest import mock
 
-
-TRACKING_DIR = (
-    Path(__file__).resolve().parents[3]
-    / "skills"
-    / "specseed"
-    / "to_copy"
-    / "scripts"
-    / "tracking"
-)
-sys.path.insert(0, str(TRACKING_DIR))
-
-from datetime import datetime, timezone  # noqa: E402
-from unittest import mock  # noqa: E402
-
-import tracking_local  # noqa: E402
-from tracking_base import (  # noqa: E402
+from src.target.specseed_target_src.tracking import tracking_local
+from src.target.specseed_target_src.tracking.tracking_base import (
     TrackingEntryDetails,
     TrackingLabel,
     TrackingReaction,
     TrackingSyncChange,
 )
-from tracking_local import TrackingLocal  # noqa: E402
-from tracking_remote_local import TrackingRemoteLocal  # noqa: E402
+from src.target.specseed_target_src.tracking.tracking_local import TrackingLocal
+from src.target.specseed_target_src.tracking.tracking_remote_local import TrackingRemoteLocal
 
 
 class _FrozenDateTime(datetime):

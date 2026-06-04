@@ -7,26 +7,14 @@ sync_to_db and asserts on the resulting queue. No GitHub/GitLab involved.
 from __future__ import annotations
 
 import sqlite3
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-
-SCRIPTS = (
-    Path(__file__).resolve().parents[3]
-    / "skills"
-    / "specseed"
-    / "to_copy"
-    / "scripts"
-)
-for sub in ("db", "tracking", "tasks", "entities", "scheduling"):
-    sys.path.insert(0, str(SCRIPTS / sub))
-
-from database import Database  # noqa: E402
-from tracking_local import TrackingLocal  # noqa: E402
-from tracking_remote_local import TrackingRemoteLocal  # noqa: E402
-from sync_to_db import sync_to_db  # noqa: E402
+from src.target.specseed_target_src.db.database import Database
+from src.target.specseed_target_src.scheduling.sync_to_db import sync_to_db
+from src.target.specseed_target_src.tracking.tracking_local import TrackingLocal
+from src.target.specseed_target_src.tracking.tracking_remote_local import TrackingRemoteLocal
 
 
 class SyncToDbTest(unittest.TestCase):

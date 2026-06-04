@@ -1,0 +1,1 @@
+"should be runnable file with # on top. probably nuke if exist in target dir .specseed/specseed_target_src, .specseed/skills (or whatever the user specifies as the .specseed-like dir in target) if they exist and replace anew."

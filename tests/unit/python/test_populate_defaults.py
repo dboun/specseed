@@ -3,24 +3,16 @@
 from __future__ import annotations
 
 import sqlite3
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-
-TRACKING_DIR = (
-    Path(__file__).resolve().parents[3]
-    / "skills"
-    / "specseed"
-    / "to_copy"
-    / "scripts"
-    / "tracking"
+from src.target.specseed_target_src.tracking.populate_defaults import (
+    DEFAULT_POSTS,
+    DESIRED_LABELS,
+    populate_defaults,
 )
-sys.path.insert(0, str(TRACKING_DIR))
-
-from populate_defaults import DEFAULT_POSTS, DESIRED_LABELS, populate_defaults  # noqa: E402
-from tracking_remote_local import TrackingRemoteLocal  # noqa: E402
+from src.target.specseed_target_src.tracking.tracking_remote_local import TrackingRemoteLocal
 
 
 class PopulateDefaultsTest(unittest.TestCase):
