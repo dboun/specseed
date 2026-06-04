@@ -1,8 +1,8 @@
 # adopt
 
-Existing code, no spec. Reverse-bootstrap: recover the spec **from the
-codebase** into `.specseed/spec/`, then map what already exists (and the gaps)
-into the work breakdown as remote posts.
+Existing code, no spec. Recover the spec **from the codebase** into
+`<specseed_dir>/spec/`, then map what already exists (and the gaps) into the work
+breakdown as remote posts.
 
 Read `references/spec-change-protocol.md`, `references/remote-posts.md`, and
 `references/work-breakdown.md` first.
@@ -10,14 +10,14 @@ Read `references/spec-change-protocol.md`, `references/remote-posts.md`, and
 ## Fires when
 
 `spec-change:adopt` on a request post AND source code is present but
-`.specseed/spec/` has no content.
+`<specseed_dir>/spec/` has no content.
 
 ## Hard invariants
 
 1. **Never edit code.** Recon is read-only. You reconcile the *spec* to match the
    code, never the reverse.
 2. **Never edit the user's existing docs in place.** Existing `spec/`, `docs/`,
-   RFCs are reference; you translate their content INTO `.specseed/spec/`, you do
+   RFCs are reference; you translate their content INTO `<specseed_dir>/spec/`, you do
    not move or rewrite the originals.
 3. Code is ground truth. Where code and the request post disagree, code wins;
    note the discrepancy in a comment (async) if it is material.
@@ -37,10 +37,10 @@ Build the picture from disk, no writes:
 Size-gate: small repo, read broadly; large repo, infer components from structure
 first, then read one component at a time. Do not load the whole tree.
 
-## Produce the spec (`.specseed/spec/`)
+## Produce the spec (`<specseed_dir>/spec/`)
 
-Same artifacts and order as `bootstrap.md` ("Produce the spec"), but sourced from
-code + imported docs instead of a brief:
+Same artifacts and order as `adapt.md` cold start, but sourced from code +
+imported docs instead of a brief:
 
 - `vision.md` from README / the request post / inferred purpose.
 - `*-srs.md` reqs reverse-engineered from actual behavior (what the code does

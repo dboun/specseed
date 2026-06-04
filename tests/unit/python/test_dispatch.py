@@ -1,0 +1,234 @@
+"""test_dispatch.py - action -> handler routing + intent decisions.
+
+FakeAgentRunner only; TrackingRemoteLocal/TrackingLocal mirrors. No GitHub/GitLab.
+"""
+
+from __future__ import annotations
+
+import tempfile
+import threading
+import unittest
+from pathlib import Path
+
+from src.target_facing.specseed_target_src.db.database import Database
+from src.target_facing.specseed_target_src.executing.agent_runner import (
+    AgentResult,
+    FakeAgentRunner,
+)
+from src.target_facing.specseed_target_src.executing.context import ExecutionContext
+from src.target_facing.specseed_target_src.executing import dispatch as dispatch_mod
+from src.target_facing.specseed_target_src.executing.dispatch import (
+    AgentIntent,
+    HandlerOutcome,
+    decide_intent,
+    dispatch,
+)
+from src.target_facing.specseed_target_src.executing.permissions import Permissions
+from src.target_facing.specseed_target_src.entities.entity_base import Entity
+# Importing the tier modules registers Epic/Ticket/Issue in the tier registry.
+from src.target_facing.specseed_target_src.entities import issue as _issue  # noqa: F401
+from src.target_facing.specseed_target_src.state_machines.base import evaluate_entity_state
+from src.target_facing.specseed_target_src.tracking.tracking_local import TrackingLocal
+from src.target_facing.specseed_target_src.tracking.tracking_remote_local import (
+    TrackingRemoteLocal,
+)
+
+
+def _config():
+    return {
+        "specseed_dir": "seedmeta",
+        "backend": {"enabled": False, "provider": None},
+        "approvals": {"approver_usernames": ["alice"]},
+        "permissions": {"remote": {"post_issues": True}},
+    }
+
+
+class DispatchTestBase(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.remote = TrackingRemoteLocal(db_path=self.root / "remote.db", author="alice")
+        self.local = TrackingLocal(db_path=self.root / "local.db", author="agent")
+        self.db = Database(db_path=self.root / "queue.db")
+        self.config = _config()
+        self.runner = FakeAgentRunner()
+        self.ctx = ExecutionContext(
+            db=self.db,
+            local=self.local,
+            remote=self.remote,
+            config=self.config,
+            permissions=Permissions(self.config),
+            runner=self.runner,
+            repo_root=self.root,
+            storage=self.root / "storage",
+            cancel=threading.Event(),
+            agent_timeout_s=30.0,
+        )
+
+    def _seed_local_entry(self, title, labels):
+        # Put an entry into the LOCAL mirror (load_entity reads local).
+        for label in labels:
+            self.local.create_label(label)
+        return self.local.add_entry(title, labels=labels).data.id
+
+
+class DecideIntentTest(DispatchTestBase):
+    def _intent_for(self, labels):
+        entity = Entity.for_labels(post_id="1", labels=labels, title="t")
+        sr = evaluate_entity_state(entity, self.config, [])
+        return entity, decide_intent(entity, sr, {"action": "handle_label_added"})
+
+    def test_spec_change_label_to_spec_change(self) -> None:
+        _, intent = self._intent_for(["spec-change:adopt"])
+        self.assertEqual(intent, AgentIntent.SPEC_CHANGE)
+
+    def test_spec_change_status_label_ignored(self) -> None:
+        # A spec-change:status:* label is not a route.
+        _, intent = self._intent_for(["spec-change:status:awaiting_approval"])
+        self.assertEqual(intent, AgentIntent.NONE)
+
+    def test_draft_spec_change_is_ignored(self) -> None:
+        _, intent = self._intent_for(["draft", "spec-change:adapt"])
+        self.assertEqual(intent, AgentIntent.NONE)
+
+    def test_todo_issue_to_implement(self) -> None:
+        _, intent = self._intent_for(["tier:issue", "status:todo"])
+        self.assertEqual(intent, AgentIntent.IMPLEMENT)
+
+    def test_issue_no_status_to_implement(self) -> None:
+        _, intent = self._intent_for(["tier:issue"])
+        self.assertEqual(intent, AgentIntent.IMPLEMENT)
+
+    def test_in_review_to_review(self) -> None:
+        _, intent = self._intent_for(["tier:issue", "status:in_review"])
+        self.assertEqual(intent, AgentIntent.REVIEW)
+
+    def test_in_progress_issue_to_none(self) -> None:
+        _, intent = self._intent_for(["tier:issue", "status:in_progress"])
+        self.assertEqual(intent, AgentIntent.NONE)
+
+    def test_epic_todo_to_none(self) -> None:
+        # IMPLEMENT is issue-only.
+        _, intent = self._intent_for(["tier:epic", "status:todo"])
+        self.assertEqual(intent, AgentIntent.NONE)
+
+
+class DispatchRoutingTest(DispatchTestBase):
+    def test_unknown_action_fails(self) -> None:
+        out = dispatch(self.ctx, {"action": "frobnicate", "post_id": None, "payload": {}})
+        self.assertFalse(out.success)
+        self.assertIn("unknown action", out.error)
+
+    def test_cleanup_is_success_noop(self) -> None:
+        out = dispatch(
+            self.ctx,
+            {
+                "action": "cleanup",
+                "post_id": "5",
+                "payload": {"reason": "entry_state", "interrupted_task_id": 7},
+            },
+        )
+        self.assertTrue(out.success)
+        self.assertFalse(out.requeue)
+        self.assertIn("cleanup", out.detail)
+        self.assertEqual(self.runner.calls, [])
+
+    def test_missing_entity_is_success_noop(self) -> None:
+        out = dispatch(self.ctx, {"action": "handle_comment_added", "post_id": "999", "payload": {}})
+        self.assertTrue(out.success)
+        self.assertEqual(self.runner.calls, [])
+
+    def test_implement_runs_agent_with_prompt(self) -> None:
+        eid = self._seed_local_entry("Do the thing", ["tier:issue", "status:todo"])
+        out = dispatch(
+            self.ctx,
+            {"action": "handle_label_added", "post_id": str(eid), "payload": {"label": "status:todo"}},
+        )
+        self.assertTrue(out.success)
+        self.assertEqual(len(self.runner.calls), 1)
+        self.assertIn("implementing a specseed work issue", self.runner.calls[0]["prompt"])
+        self.assertEqual(self.runner.calls[0]["cwd"], str(self.root))
+
+    def test_review_runs_review_prompt(self) -> None:
+        eid = self._seed_local_entry("Review me", ["tier:issue", "status:in_review"])
+        out = dispatch(
+            self.ctx,
+            {"action": "handle_comment_added", "post_id": str(eid), "payload": {}},
+        )
+        self.assertTrue(out.success)
+        self.assertEqual(len(self.runner.calls), 1)
+        self.assertIn("reviewing completed work", self.runner.calls[0]["prompt"])
+
+    def test_spec_change_label_runs_spec_change_prompt(self) -> None:
+        eid = self._seed_local_entry("Adopt request", ["spec-change:adopt"])
+        out = dispatch(
+            self.ctx,
+            {"action": "handle_label_added", "post_id": str(eid), "payload": {"label": "spec-change:adopt"}},
+        )
+        self.assertTrue(out.success)
+        self.assertEqual(len(self.runner.calls), 1)
+        self.assertIn("adopt", self.runner.calls[0]["prompt"])
+        self.assertIn("spec-change worker", self.runner.calls[0]["prompt"])
+        self.assertIn("seedmeta/skills/specseed/SKILL.md", self.runner.calls[0]["prompt"])
+
+    def test_inject_label_runs_inject_route_prompt(self) -> None:
+        eid = self._seed_local_entry("Manual hotfix", ["spec-change:inject"])
+        out = dispatch(
+            self.ctx,
+            {"action": "handle_label_added", "post_id": str(eid), "payload": {"label": "spec-change:inject"}},
+        )
+        self.assertTrue(out.success)
+        self.assertEqual(len(self.runner.calls), 1)
+        self.assertIn("routes/inject.md", self.runner.calls[0]["prompt"])
+        self.assertIn("run the 'inject' route", self.runner.calls[0]["prompt"])
+
+    def test_draft_removed_runs_spec_change_prompt(self) -> None:
+        eid = self._seed_local_entry("Adapt request", ["spec-change:adapt"])
+        out = dispatch(
+            self.ctx,
+            {"action": "handle_label_removed", "post_id": str(eid), "payload": {"label": "draft"}},
+        )
+        self.assertTrue(out.success)
+        self.assertEqual(len(self.runner.calls), 1)
+        self.assertIn("adapt", self.runner.calls[0]["prompt"])
+
+    def test_comment_only_is_none_noop(self) -> None:
+        # An in_progress issue receives a comment -> no actionable intent.
+        eid = self._seed_local_entry("Working", ["tier:issue", "status:in_progress"])
+        out = dispatch(
+            self.ctx,
+            {"action": "handle_comment_added", "post_id": str(eid), "payload": {}},
+        )
+        self.assertTrue(out.success)
+        self.assertEqual(self.runner.calls, [])
+        self.assertIn("no actionable intent", out.detail)
+
+    def test_agent_timeout_requeues(self) -> None:
+        self.ctx.runner = FakeAgentRunner(
+            result=AgentResult(ok=False, timed_out=True, error="timed out")
+        )
+        eid = self._seed_local_entry("Slow", ["tier:issue", "status:todo"])
+        out = dispatch(
+            self.ctx,
+            {"action": "handle_entry_created", "post_id": str(eid), "payload": {}},
+        )
+        self.assertFalse(out.success)
+        self.assertTrue(out.requeue)
+
+    def test_agent_hard_failure_no_requeue(self) -> None:
+        self.ctx.runner = FakeAgentRunner(
+            result=AgentResult(ok=False, returncode=1, error="agent exited with code 1")
+        )
+        eid = self._seed_local_entry("Boom", ["tier:issue", "status:todo"])
+        out = dispatch(
+            self.ctx,
+            {"action": "handle_entry_created", "post_id": str(eid), "payload": {}},
+        )
+        self.assertFalse(out.success)
+        self.assertFalse(out.requeue)
+        self.assertIsNotNone(out.error)
+
+
+if __name__ == "__main__":
+    unittest.main()

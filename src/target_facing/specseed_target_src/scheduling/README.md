@@ -64,9 +64,11 @@ In-progress tasks are never superseded (they're being worked).
 - for any **in-progress** task, a `CleanupTask` is enqueued (referencing it) and
   `_request_interrupt()` is called.
 
-`_request_interrupt()` is a deliberate **no-op TODO**: there is no execution
-engine yet, and an in-progress row must never be edited. When a runner exists,
-it should cooperatively abort the running task before its `CleanupTask` runs.
+`_request_interrupt()` cooperatively aborts the running task: it sets the task's
+cancel Event in the `executing/cancellation.py` registry (it never edits the
+in-progress row). The agent worker thread in `executing/scheduler.py` polls that
+Event and tears its agent/subprocess down, so the `CleanupTask` runs against
+torn-down work.
 
 ## Dependencies
 

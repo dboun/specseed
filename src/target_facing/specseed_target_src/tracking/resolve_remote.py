@@ -36,10 +36,10 @@ from src.target_facing.specseed_target_src.tracking.tracking_remote_gitlab impor
 from src.target_facing.specseed_target_src.tracking.tracking_remote_local import TrackingRemoteLocal
 
 
-# storage is `../storage` relative to specseed_target_src (i.e. .specseed/storage/),
+# storage is `../storage` relative to specseed_target_src (i.e. <specseed_dir>/storage/),
 # matching configuring/configure.py:default_storage_dir().
 def default_storage_dir() -> Path:
-    # tracking/ -> specseed_target_src/ -> .specseed/  + storage/
+    # tracking/ -> specseed_target_src/ -> specseed dir + storage/
     return Path(__file__).resolve().parents[2] / "storage"
 
 

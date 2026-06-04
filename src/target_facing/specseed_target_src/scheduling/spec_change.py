@@ -1,10 +1,10 @@
 """
 spec_change.py - queue a generated spec-change script for execution.
 
-When the specseed skill finishes a spec-change route (bootstrap / adopt / adapt
-/ tweak / plan-next-sprint) it has produced two things:
+When the specseed skill finishes a spec-change route (adopt / adapt / tweak /
+inject / plan-next-sprint) it has produced two things:
 
-  1. edits to the local spec docs under ``.specseed/spec/``, and
+  1. optional edits to the local spec docs under ``<specseed_dir>/spec/``, and
   2. a self-contained Python script under
      ``storage/spec-change/<id>/apply.py`` that mutates the **remote** posts to
      match (create/update/close epics, tickets, issues; labels; comments;
@@ -20,10 +20,11 @@ of the system.
            --enqueues-->  Database task (action = run_spec_change_script)
                               |
                               v
-                     TODO: executor (NOT IMPLEMENTED)
+                     executing/ scheduler drains it
+                     (dispatch.run_spec_change_script)
 
-The conventions (action name + payload shape) are defined here so the future
-executor and the skill agree. Only Python stdlib is used.
+The conventions (action name + payload shape) are defined here so the executor
+(``executing/dispatch.py``) and the skill agree. Only Python stdlib is used.
 """
 
 from __future__ import annotations
@@ -34,13 +35,12 @@ from typing import Optional
 from src.target_facing.specseed_target_src.db.database import Database
 from src.target_facing.specseed_target_src.tracking.resolve_remote import default_storage_dir
 
-# The queue action a spec-change run is enqueued under. The (still unwritten)
-# executor claims tasks with this action, then runs payload["dir"]/payload["script"].
-#
-# TODO(executor): nothing drains this yet. `executing/` is empty. A scheduler
-# must: claim_next() these tasks, run the script (e.g. `python <dir>/<script>`)
-# with the spec-change gated by config.permissions.remote.*, and complete()/
-# requeue() the task. Until then, enqueued spec-change runs simply sit pending.
+# The queue action a spec-change run is enqueued under. The scheduler
+# (``executing/scheduler.py``) claims tasks with this action and hands them to
+# ``executing/dispatch.run_spec_change_script``, which runs
+# payload["dir"]/payload["script"] as a gated subprocess (PYTHONPATH=repo root so
+# it can import ``src.*``), honoring config.permissions.remote.* and cooperative
+# cancellation, then complete()/requeue()s the task.
 SPEC_CHANGE_ACTION = "run_spec_change_script"
 
 # Default script filename the skill writes into each spec-change dir.

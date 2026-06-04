@@ -3,9 +3,8 @@
 configure.py — interactive technical setup for specseed, run INSIDE a target repo.
 
 PURE PYTHON: stdlib only, NO agent calls, no tokens spent. A human runs this once
-on a repo (and any time they want to change settings). It writes two files into the
-co-located storage dir (`../../storage/` relative to this file, i.e.
-`.specseed/storage/`):
+on a repo (and any time they want to change settings). It writes files into the
+storage dir below the configured specseed directory:
 
   configuration.json   PORTABLE "how you work" — poll interval + the approval
                        switches (local git + remote actions). Copyable between repos.
@@ -40,14 +39,50 @@ from pathlib import Path
 
 CONFIG_VERSION = 1
 DEFAULT_POLL_INTERVAL = 45
+DEFAULT_SPECSEED_DIR = ".specseed"
 
 
 # --------------------------------------------------------------------------- #
-# paths — storage is `../../storage/` relative to THIS file (i.e. .specseed/storage/)
+# paths — storage is `../../storage/` relative to THIS file when already installed
+# under the target repo's specseed dir.
 # --------------------------------------------------------------------------- #
 def default_storage_dir():
-    # configuring/ -> specseed_target_src/ -> .specseed/  + storage/
+    # configuring/ -> specseed_target_src/ -> specseed dir + storage/
     return Path(__file__).resolve().parent.parent.parent / "storage"
+
+
+def repo_root_from_cwd():
+    """Best-effort target repo root, falling back to the current directory."""
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=str(Path.cwd()),
+            capture_output=True,
+            text=True,
+        )
+        if out.returncode == 0 and out.stdout.strip():
+            return Path(out.stdout.strip()).resolve()
+    except Exception:
+        pass
+    return Path.cwd().resolve()
+
+
+def storage_for_specseed_dir(specseed_dir):
+    return Path(specseed_dir) / "storage"
+
+
+def specseed_dir_from_storage(storage):
+    storage = Path(storage)
+    return storage.parent if storage.name == "storage" else storage
+
+
+def _relative_to_repo(path, repo_root):
+    path = Path(path).resolve()
+    repo_root = Path(repo_root).resolve()
+    try:
+        return path.relative_to(repo_root)
+    except ValueError:
+        return path
 
 
 def config_file(storage):
@@ -64,6 +99,10 @@ def token_file(storage):
 
 def gitignore_file(storage):
     return Path(storage) / ".gitignore"
+
+
+def repo_gitignore_file(repo_root):
+    return Path(repo_root) / ".gitignore"
 
 
 def load_token(storage):
@@ -98,6 +137,27 @@ def ensure_gitignored(storage, entry="token_remote.txt"):
     return p
 
 
+def ensure_repo_gitignored(repo_root, specseed_rel):
+    """Append the specseed dir to the repo .gitignore, unless already listed."""
+    entry = specseed_rel.as_posix().strip("/")
+    if not entry:
+        return None
+    entry = f"{entry}/"
+    p = repo_gitignore_file(repo_root)
+    existing = ""
+    try:
+        existing = p.read_text(encoding="utf-8")
+    except OSError:
+        pass
+    normalized = {line.strip().strip("/") for line in existing.splitlines()}
+    if entry.strip("/") in normalized:
+        return p
+    sep = "" if existing == "" or existing.endswith("\n\n") else ("\n" if existing.endswith("\n") else "\n\n")
+    with p.open("a", encoding="utf-8") as fh:
+        fh.write(f"{sep}{entry}\n")
+    return p
+
+
 def _load_json(path):
     try:
         return json.loads(Path(path).read_text(encoding="utf-8"))
@@ -118,6 +178,7 @@ def _write_json(path, data):
 def default_config():
     return {
         "version": CONFIG_VERSION,
+        "specseed_dir": DEFAULT_SPECSEED_DIR,
         "poll_interval_seconds": DEFAULT_POLL_INTERVAL,
         "backend": {"enabled": False, "provider": None},
         "approvals": {
@@ -157,6 +218,68 @@ def default_remote_state():
             "map": {},
         },
     }
+
+
+def load_config(storage):
+    """Load configuration.json with defaults backfilled for missing keys."""
+    existing = _load_json(config_file(storage))
+    cfg = default_config()
+    if not isinstance(existing, dict):
+        return cfg
+
+    for key, value in existing.items():
+        if key not in ("backend", "approvals", "permissions"):
+            cfg[key] = value
+
+    if isinstance(existing.get("backend"), dict):
+        cfg["backend"].update(existing["backend"])
+    if isinstance(existing.get("approvals"), dict):
+        cfg["approvals"].update(existing["approvals"])
+    if isinstance(existing.get("permissions"), dict):
+        permissions = existing["permissions"]
+        if isinstance(permissions.get("git"), dict):
+            cfg["permissions"]["git"].update(permissions["git"])
+        if isinstance(permissions.get("remote"), dict):
+            cfg["permissions"]["remote"].update(permissions["remote"])
+    return cfg
+
+
+def load_remote_state(storage):
+    """Load remote.json with defaults backfilled and legacy token stripped."""
+    existing = _load_json(remote_file(storage))
+    remote = default_remote_state()
+    if isinstance(existing, dict):
+        for key, value in existing.items():
+            if key != "state":
+                remote[key] = value
+        if isinstance(existing.get("state"), dict):
+            remote["state"].update(existing["state"])
+    remote.pop("token", None)
+    return remote
+
+
+def write_config_files(
+    storage,
+    cfg,
+    remote,
+    token=None,
+    repo_root=None,
+    specseed_rel=None,
+    ignore_specseed=False,
+):
+    """Persist config/remote/token files using configure.py's file policy."""
+    written = {}
+    written["config"] = _write_json(config_file(storage), cfg)
+    if ignore_specseed and repo_root is not None and specseed_rel is not None:
+        gitignore = ensure_repo_gitignored(repo_root, Path(specseed_rel))
+        if gitignore is not None:
+            written["repo_gitignore"] = gitignore
+    if cfg.get("backend", {}).get("enabled"):
+        written["remote"] = _write_json(remote_file(storage), remote)
+        if token:
+            written["token"] = write_token(storage, token)
+            written["storage_gitignore"] = ensure_gitignored(storage)
+    return written
 
 
 # --------------------------------------------------------------------------- #
@@ -270,12 +393,48 @@ GITLAB_TOKEN_HELP = """\
 # --------------------------------------------------------------------------- #
 # interactive sections — each mutates cfg / remote in place
 # --------------------------------------------------------------------------- #
+def section_specseed_dir(cfg, storage, explicit_storage=False):
+    """Choose the repo-relative specseed dir and whether to ignore it."""
+    repo_root = repo_root_from_cwd()
+    current_dir = specseed_dir_from_storage(storage)
+    configured = cfg.get("specseed_dir")
+    if configured:
+        default_rel = Path(configured)
+    elif explicit_storage:
+        default_rel = _relative_to_repo(current_dir, repo_root)
+    else:
+        default_rel = Path(DEFAULT_SPECSEED_DIR)
+
+    print("\n--- specseed directory ---")
+    print(f"Target repo: {repo_root}")
+    specseed_rel = Path(ask_str(
+        "Specseed directory under the target repo",
+        default_rel.as_posix(),
+    ))
+    if specseed_rel.is_absolute():
+        try:
+            specseed_rel = specseed_rel.resolve().relative_to(repo_root)
+        except ValueError:
+            print("  absolute path is outside the target repo; keeping the current storage dir.")
+            specseed_rel = _relative_to_repo(current_dir, repo_root)
+    specseed_value = specseed_rel.as_posix().strip("/")
+    specseed_rel = Path(specseed_value) if specseed_value else Path(DEFAULT_SPECSEED_DIR)
+
+    cfg["specseed_dir"] = specseed_rel.as_posix()
+    next_storage = storage if explicit_storage else storage_for_specseed_dir(repo_root / specseed_rel)
+    ignore = ask_yn(
+        f"Append {specseed_rel.as_posix()}/ to {repo_gitignore_file(repo_root)}?",
+        default=True,
+    )
+    return next_storage, repo_root, specseed_rel, ignore
+
+
 def _detect_origin(storage):
     """Best-effort: read origin URL from the repo we live inside."""
     try:
         out = subprocess.run(
             ["git", "remote", "get-url", "origin"],
-            cwd=str(Path(storage).resolve().parent),
+            cwd=str(Path(storage).resolve().parent.parent),
             capture_output=True,
             text=True,
         )
@@ -405,6 +564,7 @@ def section_interval(cfg):
 # --------------------------------------------------------------------------- #
 def summary_lines(cfg, remote, token):
     L = []
+    L.append(f"specseed dir: {cfg.get('specseed_dir') or DEFAULT_SPECSEED_DIR}")
     backend = cfg["backend"]
     if backend.get("enabled"):
         L.append(f"backend: {backend['provider']} mirror — repo={remote.get('repo') or '?'}, "
@@ -439,26 +599,22 @@ def print_summary(cfg, remote, token):
 # --------------------------------------------------------------------------- #
 # drivers
 # --------------------------------------------------------------------------- #
-def run_interactive(storage):
+def run_interactive(storage, explicit_storage=False):
+    initial_cfg = load_config(storage)
+    storage, repo_root, specseed_rel, ignore_specseed = section_specseed_dir(
+        initial_cfg, storage, explicit_storage=explicit_storage
+    )
+
     existing = _load_json(config_file(storage))
-    fresh = existing is None
     if existing is not None:
-        cfg = default_config()
-        cfg.update(existing)
-        # backfill nested blocks so sections always have something to edit
-        base = default_config()
-        cfg.setdefault("backend", base["backend"])
-        cfg.setdefault("approvals", base["approvals"])
-        perms = cfg.setdefault("permissions", base["permissions"])
-        perms.setdefault("git", base["permissions"]["git"])
-        perms.setdefault("remote", base["permissions"]["remote"])
+        cfg = load_config(storage)
         print(f"Reconfiguring {config_file(storage)} (current values are the defaults).")
     else:
         cfg = default_config()
+        cfg["specseed_dir"] = specseed_rel.as_posix()
         print(f"Configuring a fresh repo (storage at {Path(storage).resolve()}).")
 
-    remote = _load_json(remote_file(storage)) or default_remote_state()
-    remote.pop("token", None)  # tokens never live in remote.json (legacy cleanup)
+    remote = load_remote_state(storage)
     print("Press Enter to accept the shown default at any prompt.")
 
     token = section_backend(cfg, remote, storage)
@@ -472,18 +628,44 @@ def run_interactive(storage):
         print("Aborted — nothing written.")
         return 1
 
-    cp = _write_json(config_file(storage), cfg)
-    print(f"\nWrote {cp}")
-    if cfg["backend"].get("enabled"):
-        rp = _write_json(remote_file(storage), remote)
-        print(f"Wrote {rp}")
-        if token:
-            tp = write_token(storage, token)
-            gp = ensure_gitignored(storage)
-            print(f"Wrote {tp} (secret — added to {gp})")
+    written = write_config_files(
+        storage,
+        cfg,
+        remote,
+        token=token,
+        repo_root=repo_root,
+        specseed_rel=specseed_rel,
+        ignore_specseed=ignore_specseed,
+    )
+    print(f"\nWrote {written['config']}")
+    if "repo_gitignore" in written:
+        print(f"Updated {written['repo_gitignore']} with {specseed_rel.as_posix()}/")
+    if "remote" in written:
+        print(f"Wrote {written['remote']}")
+    if "token" in written:
+        print(f"Wrote {written['token']} (secret — added to {written['storage_gitignore']})")
 
-    # TODO: Add explanation how to start things
+    _print_start_help(storage)
     return 0
+
+
+def _print_start_help(storage):
+    """Tell the human how to launch the scheduler now that config is written."""
+    print(
+        "\nNext: start the scheduler from your repo root.\n"
+        "  python3 -m src.target_facing.specseed_target_src.executing.run\n"
+        "It polls the remote on your interval, syncs changes into the local mirror,\n"
+        "and drains the work queue (running agents in a stoppable background thread).\n"
+        "Useful flags:\n"
+        "  --once               run a single poll+drain pass and exit (good for cron)\n"
+        "  --interval SECONDS   override the poll interval\n"
+        "  --storage PATH       use a non-default storage dir\n"
+        "Control it live from the CONTROL post with: STATUS, START, PAUSE, STOP\n"
+        "The first remote population also creates a draft `spec-change:adapt` post.\n"
+        "Describe what you want there, remove the `draft` label, and save it.\n"
+        "(only the approver usernames you configured may issue commands). Stop locally\n"
+        "with Ctrl-C; the loop finishes the current step and exits cleanly."
+    )
 
 
 def run_show(storage):
@@ -508,7 +690,7 @@ def main(argv=None):
     storage = Path(args.storage) if args.storage else default_storage_dir()
     if args.show:
         return run_show(storage)
-    return run_interactive(storage)
+    return run_interactive(storage, explicit_storage=args.storage is not None)
 
 
 if __name__ == "__main__":

@@ -30,7 +30,7 @@ A small CLI may only need themes 3 + 4. A payments service needs 2, 4, 5, 7.
 For each selected theme, try to answer it from available evidence in this order:
 
 1. The spec-change post (title, body, comments).
-2. The existing spec under `.specseed/spec/`.
+2. The existing spec under `<specseed_dir>/spec/`.
 3. (adopt) the code: what it actually does is the answer.
 4. A sensible, clearly-stated default for the project's apparent size.
 

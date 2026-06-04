@@ -1,17 +1,57 @@
 # adapt
 
-A spec already exists. The request wants a non-trivial change: add/extend/revise
-requirements or design, deprecate or retire a feature. Patch `.specseed/spec/`
-and reconcile the affected work posts.
+The request wants to create or change the spec. If no spec exists yet, this route
+creates the first spec from the request. If a spec already exists, it applies a
+non-trivial change: add/extend/revise requirements or design, deprecate or retire
+a feature. Patch `<specseed_dir>/spec/` and reconcile the affected work posts.
 
 Read `references/spec-change-protocol.md`, `references/remote-posts.md`, and
 `references/work-breakdown.md` first.
 
 ## Fires when
 
-`spec-change:adapt` on a request post AND `.specseed/spec/` has content. (Tiny
-single edits are `tweak`; appending the next un-specced slice is
-`plan-next-sprint`.)
+`spec-change:adapt` on a request post. It is valid whether `<specseed_dir>/spec/`
+is empty or already populated. Tiny single edits are `tweak`; appending the next
+un-specced slice is `plan-next-sprint`.
+
+## Cold start (no spec yet)
+
+When `<specseed_dir>/spec/` is empty, treat the request post as the first project
+brief: what it is, who uses it, hard constraints, and scope. If the brief is too
+thin to spec a coherent v1, use async clarification rather than inventing a
+product.
+
+Produce the first spec in this order, scaled to the brief:
+
+1. `vision.md` - problem, users, scope IN / OUT, success signals. Prose;
+   humanize.
+2. Component split - decide functional components from the brief. One SRS+SDD
+   per component, or a single pair for a small project.
+3. `*-srs.md` (or `srs.md`) - requirement tables. IDs `SRS-<COMP>-NNN`.
+   Columns stay machine-formatted. Optional `cross-cutting-srs.md` only if
+   security/observability/i18n/a11y materially matter (`SRS-CC-NNN`).
+4. `sad.md` - architecture: components, interfaces, data flow. Prose sections
+   humanized; keep it real, not aspirational.
+5. `*-sdd.md` (or `sdd.md`) - the how, per component in scope.
+6. `adr.csv` - columns `Decision,Justification`. One row per real decision made.
+7. `reqs.json` - the machine projection of the SRS rows (ids, priority,
+   component, text, depends_on). Keep it consistent with the SRS tables.
+8. `deployment.md` - only if operations/deployment is clearly in scope.
+
+Plan the first work breakdown as remote posts:
+
+- Epics group tickets by outcome. Tickets satisfy requirements and carry
+  product-level acceptance criteria. Issues are technical, claimable units with
+  technical acceptance criteria.
+- Use the templates in `templates/entity_templates/` for post bodies. Express
+  relationships as body links (`remote-posts.md`), `satisfies_reqs` as body
+  text.
+- Label each post with its tier + `:status:todo`.
+- Compute critical path at the ticket tier and a rough first sprint; record it
+  for the dashboards.
+
+Write all of this into `plan.json` as `creates` plus dashboard edits if enabled.
+Then finish through the normal protocol.
 
 ## 1. Assess + localize
 

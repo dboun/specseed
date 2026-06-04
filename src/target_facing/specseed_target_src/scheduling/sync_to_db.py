@@ -17,7 +17,8 @@ It is deliberately the only "intelligent" piece:
   storms collapse to a single row.
 * **Teardown** - when an entry is closed or deleted, every pending task for that
   entry is dropped. If a task for it was *in progress*, we enqueue a CleanupTask
-  and (TODO) interrupt the running work - we never edit the in-progress row.
+  and interrupt the running work via the cancellation registry - we never edit
+  the in-progress row.
 
 Ordering is inherited from ``sync_from_remote`` (tier-sorted creates,
 leaf-first deletes), so tasks land in a sane order without extra work here.
@@ -163,7 +164,7 @@ def _teardown_post(db: Database, post_id: str, action: str, summary: dict[str, A
             in_progress.append(row)
 
     for row in in_progress:
-        _request_interrupt(row)  # TODO: real interruption once execution exists.
+        _request_interrupt(row)  # cancel the running task via the cancellation registry
         summary["interrupts_todo"] += 1
         CleanupTask.for_post(
             post_id, reason=f"entry_{action}", interrupted_task_id=row["task_id"]
@@ -172,11 +173,18 @@ def _teardown_post(db: Database, post_id: str, action: str, summary: dict[str, A
 
 
 def _request_interrupt(row: dict[str, Any]) -> None:
-    """Placeholder for stopping a running task.
+    """Signal the runner to abort an in-progress task.
 
-    There is no execution engine yet, so this is intentionally a no-op: we must
-    never edit an in-progress row. When a runner exists, this should signal it to
-    abort task ``row["task_id"]`` before the CleanupTask runs.
+    We must never edit the in-progress row directly; instead we set the task's
+    cancel Event in the process-wide cancellation registry. The agent worker
+    thread polls that Event and tears its agent/subprocess down, so the freshly
+    enqueued CleanupTask runs against torn-down work. If no runner has registered
+    the task (e.g. nothing is actually executing), the registry pre-arms the
+    Event so a racing claim still observes the cancellation.
+
+    Imported lazily to keep ``scheduling`` free of an import-time dependency on
+    ``executing`` (which imports ``scheduling``).
     """
-    # TODO(scheduler): wire cooperative cancellation of the running task here.
-    return None
+    from src.target_facing.specseed_target_src.executing import cancellation
+
+    cancellation.cancel(int(row["task_id"]))

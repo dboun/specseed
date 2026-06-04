@@ -1,6 +1,6 @@
 # Spec-change protocol (shared by every route)
 
-This is the spine. Each route (`bootstrap`, `adopt`, `adapt`, `tweak`,
+This is the spine. Each route (`adopt`, `adapt`, `tweak`, `inject`,
 `plan-next-sprint`) decides *what* changes; this file owns *how* the change is
 produced and handed off. Read it once; the routes only describe their own logic.
 
@@ -27,11 +27,12 @@ emit, when the executor runs it.
 
 ## The two outputs
 
-1. **Spec edits** under `.specseed/spec/` (local files). Edit them in place.
+1. **Spec edits** under `<specseed_dir>/spec/` (local files), when the route
+   calls for them. Edit them in place.
 2. **A reconcile script** + its plan, under the request dir:
 
 ```
-.specseed/storage/spec-change/<request_id>/
+<specseed_dir>/storage/spec-change/<request_id>/
 ├── plan.json     # the work-breakdown delta you decided (inspectable)
 └── apply.py      # mutates the REMOTE posts to match plan.json
 ```

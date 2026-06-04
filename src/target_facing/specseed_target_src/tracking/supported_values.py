@@ -24,10 +24,10 @@ SUPPORTED_REACTIONS = frozenset(
 
 SPEC_CHANGE_LABELS = frozenset(
     {
-        "spec-change:bootstrap",
         "spec-change:adopt",
         "spec-change:adapt",
         "spec-change:tweak",
+        "spec-change:inject",
         "spec-change:plan-next-sprint",
         "spec-change:status:open",
         "spec-change:status:awaiting_approval",

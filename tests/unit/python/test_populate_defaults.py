@@ -10,6 +10,7 @@ from pathlib import Path
 from src.target_facing.specseed_target_src.tracking.populate_defaults import (
     DEFAULT_POSTS,
     DESIRED_LABELS,
+    FIRST_ADAPT_DRAFT_TITLE,
     populate_defaults,
 )
 from src.target_facing.specseed_target_src.tracking.tracking_remote_local import TrackingRemoteLocal
@@ -59,6 +60,13 @@ class PopulateDefaultsTest(unittest.TestCase):
             {label.name for label in current_sprint.labels},
             {"current_sprint", "management"},
         )
+
+        first_adapt = self.entry(FIRST_ADAPT_DRAFT_TITLE)
+        self.assertEqual(
+            {label.name for label in first_adapt.labels},
+            {"draft", "spec-change:adapt", "spec-change:status:open"},
+        )
+        self.assertIn("remove the `draft` label", self.remote.get_entry(first_adapt.id).data.body)
 
         drafted_ids = set(summary["drafted_entries"])
         self.assertIn(unlabelled_id, drafted_ids)

@@ -33,11 +33,6 @@ class LabelSpec:
 
 LABEL_SPECS = [
     LabelSpec(
-        "spec-change:bootstrap",
-        "5319e7",
-        "Cold-start request for an unspecced repository.",
-    ),
-    LabelSpec(
         "spec-change:adopt",
         "6f42c1",
         "Recover a spec from an existing, unspecced codebase.",
@@ -51,6 +46,11 @@ LABEL_SPECS = [
         "spec-change:tweak",
         "c5def5",
         "Small, direct spec edit request.",
+    ),
+    LabelSpec(
+        "spec-change:inject",
+        "d93f0b",
+        "Add manual work and make it the current sprint.",
     ),
     LabelSpec(
         "spec-change:plan-next-sprint",
@@ -112,29 +112,60 @@ LABEL_SPECS = [
 
 DESIRED_LABELS = {label.name for label in LABEL_SPECS}
 
+TIMELINE_BODY = (
+    "# TIMELINE\n\n"
+    "Chronological log of what the specseed scheduler has done: synced changes, "
+    "claimed and finished work, and state transitions. The scheduler maintains this "
+    "post; treat it as read-only history.\n"
+)
+
+ROADMAP_BODY = (
+    "# ROADMAP\n\n"
+    "The current work breakdown: epics, their tickets, and the issues under each, "
+    "with workflow status. The scheduler keeps this in sync from the work posts; "
+    "treat it as a read-only overview. To change scope, open or edit a "
+    "`spec-change:adapt` post, not this dashboard.\n"
+)
+
+CONTROL_BODY = (
+    "# CONTROL\n\n"
+    "Operate the specseed scheduler by commenting one command here (first word of "
+    "the comment, case-insensitive):\n\n"
+    "- **STATUS** - reply with the runner state, poll interval, and queue counts.\n"
+    "- **START** - resume polling and draining work (also un-pauses).\n"
+    "- **PAUSE** - stop claiming new work; the loop stays alive and still reads commands.\n"
+    "- **STOP** - stop the scheduler; it cancels the in-flight task and exits.\n\n"
+    "Only the approver usernames configured in `configuration.json` may issue "
+    "commands; everything else here is ignored. Approvals of work gates are handled "
+    "on the work posts themselves (an approver commenting `approve <id>`), not here.\n"
+)
+
+CURRENT_SPRINT_BODY = (
+    "# Current sprint\n\n"
+    "The issues in the active sprint and their status. The scheduler keeps this in "
+    "sync; treat it as a read-only board. Plan the next sprint with a "
+    "`spec-change:plan-next-sprint` post. If you are unsure what to plan next, "
+    "open that post with a short help request.\n"
+)
+
+FIRST_ADAPT_DRAFT_TITLE = "Draft: describe what you want specseed to do"
+FIRST_ADAPT_DRAFT_BODY = (
+    "# Draft adapt request\n\n"
+    "Describe what you want to build, change, or plan next. Keep the `draft` label "
+    "while you are still editing.\n\n"
+    "When this is ready, remove the `draft` label and save the post. Specseed will "
+    "run `spec-change:adapt` from this request.\n"
+)
+
 DEFAULT_POSTS = [
+    ("TIMELINE", TIMELINE_BODY, ["management"], True),
+    ("ROADMAP", ROADMAP_BODY, ["management"], True),
+    ("CONTROL", CONTROL_BODY, ["management"], True),
+    ("Current sprint", CURRENT_SPRINT_BODY, ["management", "current_sprint"], False),
     (
-        "TIMELINE",
-        "# TIMELINE\n\nTODO: Add user instructions for how to use this timeline dashboard.\n",
-        ["management"],
-        True,
-    ),
-    (
-        "ROADMAP",
-        "# ROADMAP\n\nTODO: Add user instructions for how to use this roadmap dashboard.\n",
-        ["management"],
-        True,
-    ),
-    (
-        "CONTROL",
-        "# CONTROL\n\nTODO: Add user instructions for how to use this control dashboard.\n",
-        ["management"],
-        True,
-    ),
-    (
-        "Current sprint",
-        "# Current sprint\n\nTODO: Add user instructions for how to use this sprint dashboard.\n",
-        ["management", "current_sprint"],
+        FIRST_ADAPT_DRAFT_TITLE,
+        FIRST_ADAPT_DRAFT_BODY,
+        ["draft", "spec-change:adapt", "spec-change:status:open"],
         False,
     ),
 ]

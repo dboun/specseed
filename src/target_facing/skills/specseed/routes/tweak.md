@@ -18,7 +18,7 @@ follow `routes/adapt.md` for this request. Note the bump in `plan.json`.
 
 1. **Locate.** From the request post, find the one spec file (or the one work
    post) to touch. If ambiguous which, use async clarification.
-2. **Edit.** Apply the change in place under `.specseed/spec/`:
+2. **Edit.** Apply the change in place under `<specseed_dir>/spec/`:
    - SRS req add/change -> edit the table row; regenerate `reqs.json`.
    - priority / wording change -> edit in place, same id.
    - typo in `vision.md` / prose -> fix; re-check the em-dash ban.

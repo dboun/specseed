@@ -11,7 +11,12 @@ Read `references/spec-change-protocol.md`, `references/remote-posts.md`, and
 
 `spec-change:plan-next-sprint` on a request post AND a spec already exists with a
 roadmap whose tail has ticket titles not yet broken into posts. If everything is
-already specced and broken down, comment that there is nothing to plan and stop.
+already specced and broken down, create a draft adapt post as described below
+and stop.
+
+If the request post is asking for help choosing the next step, this route does
+not edit the spec. Treat "help", "what next", "next step", or similar wording in
+the title/body/comments as a planning-help request.
 
 ## 1. Reconstruct state (local read)
 
@@ -20,6 +25,22 @@ already specced and broken down, comment that there is nothing to plan and stop.
   in flight) versus the un-foldered tail (the pending slice).
 - Identify the **next slice**: the next coherent group of un-specced titles. The
   request post may name or re-scope it ("do the API before the worker").
+
+## Planning help / no next slice
+
+When the request asks for help, or when there is no un-specced roadmap tail left:
+
+- Do not change spec files.
+- Use the current spec, ROADMAP, Current sprint, and work posts to infer a short,
+  grounded next-focus list. Prefer 2-5 concrete focus areas. If the work really
+  looks complete, say that it looks done unless the user wants to adapt the spec.
+- In `plan.json`, create one remote post labeled `draft`,
+  `spec-change:adapt`, and `spec-change:status:open`.
+- The draft post body must briefly explain the suggested focus areas, tell the
+  user to edit it into the change they want, and remind them to remove the
+  `draft` label when done.
+- Move the `plan-next-sprint` request itself toward `done`.
+- Write `apply.py`, enqueue, and stop.
 
 ## 2. Extend the spec (append only)
 

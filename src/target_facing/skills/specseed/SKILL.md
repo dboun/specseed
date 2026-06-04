@@ -1,6 +1,6 @@
 ---
 name: specseed
-description: Non-interactive spec-change worker. Invoked by the specseed scheduler when a remote spec-change post is labeled spec-change:<route> (bootstrap, adopt, adapt, tweak, plan-next-sprint). Edits the local spec under .specseed/spec/ and emits a Python script that projects the matching work-breakdown changes onto the remote tracker posts. Not for interactive use.
+description: Non-interactive spec-change worker. Invoked by the specseed scheduler when a remote spec-change post is labeled spec-change:<route> (adopt, adapt, tweak, inject, plan-next-sprint). Edits the local spec under <specseed_dir>/spec/ and emits a Python script that projects the matching work-breakdown changes onto the remote tracker posts.
 ---
 
 # specseed (spec-change worker)
@@ -9,11 +9,11 @@ Skill not meant to run in interactive shell, but rather be interactive through
 asking questions and stopping when needed. 
 User answers through reprompting and it continues.
 It runs one spec-change route against one request and stops. 
-It does two things, every time:
+It does two things, every time, though some routes may have no spec-file edits:
 
-1. **Edits the spec** under `.specseed/spec/` (vision, SRS, SAD, SDD, `adr.csv`,
-   `reqs.json`).
-2. **Writes a Python script** under `.specseed/storage/spec-change/<id>/apply.py`
+1. **Edits the spec if the route calls for it** under `<specseed_dir>/spec/`
+   (vision, SRS, SAD, SDD, `adr.csv`, `reqs.json`).
+2. **Writes a Python script** under `<specseed_dir>/storage/spec-change/<id>/apply.py`
    that mutates the **remote** tracker posts (epics / tickets / issues, their
    labels and comments) to match the new spec, then **enqueues** that script for
    the executor.
@@ -21,11 +21,11 @@ It does two things, every time:
 It never runs the script itself, never touches git or branches, and never edits
 application code (adopt *reads* code; it never writes it).
 
-> **Path mapping.** Installed, the specseed tree lives under `<repo>/.specseed/`:
-> `.specseed/spec/`, `.specseed/storage/`, `.specseed/specseed_target_src/`,
-> `.specseed/skills/specseed/`. In this development repo those map to
+> **Path mapping.** Installed, the specseed tree lives under `<repo>/<specseed_dir>/`:
+> `<specseed_dir>/spec/`, `<specseed_dir>/storage/`, `<specseed_dir>/specseed_target_src/`,
+> `<specseed_dir>/skills/specseed/`. In this development repo those map to
 > `src/target_facing/{spec,storage,specseed_target_src,skills}`. Paths below use the
-> installed `.specseed/...` form.
+> installed `<specseed_dir>/...` form.
 
 ## What this skill is NOT
 
@@ -35,7 +35,7 @@ The old interactive specseed did far more. This worker deliberately drops it:
   spec-change post (title + body + comments), read from the **local** tracker.
   When you genuinely cannot proceed, you ask **asynchronously** (see "Async
   clarification") and stop, you do not block.
-- **No configure / migrate / change-request / approve routes.** Those are gone.
+- **No configure / migrate / change-request / approve / bootstrap routes.** Those are gone.
 - **No local `project_management/` tree, no assemble/validate/claim scripts.**
   The work breakdown lives as **remote posts**, not local folders or JSON.
 - **No branch, merge, PR, or git work.** Not this skill's job.
@@ -47,14 +47,14 @@ The scheduler invokes this skill when a remote spec-change post carries a
 
 | Label | Route | File |
 |-------|-------|------|
-| `spec-change:bootstrap` | bootstrap | `routes/bootstrap.md` |
 | `spec-change:adopt` | adopt | `routes/adopt.md` |
 | `spec-change:adapt` | adapt | `routes/adapt.md` |
 | `spec-change:tweak` | tweak | `routes/tweak.md` |
+| `spec-change:inject` | inject | `routes/inject.md` |
 | `spec-change:plan-next-sprint` | plan-next-sprint | `routes/plan-next-sprint.md` |
 
 You are told which route and which spec-change post id. The post id is the
-**request id**: it names the work dir (`.specseed/storage/spec-change/<id>/`) and
+**request id**: it names the work dir (`<specseed_dir>/storage/spec-change/<id>/`) and
 is the `post_id` on the queued task.
 
 ## The contract (every route)
@@ -64,8 +64,9 @@ Read `references/spec-change-protocol.md` first. The shape is always:
 1. **Read context — local only.** Read the spec-change post + its comments and
    the current work posts from the **local** tracker (`resolve_local()` /
    `tracking_local.db`). Never poll the remote to plan; that is what the local
-   cache is for. Read the current spec under `.specseed/spec/`.
-2. **Decide + edit the spec.** Apply the route's logic to `.specseed/spec/`.
+   cache is for. Read the current spec under `<specseed_dir>/spec/`.
+2. **Decide + edit the spec if needed.** Apply the route's logic to
+   `<specseed_dir>/spec/`.
    Persist any intermediate reasoning (the planned work-breakdown delta) as JSON
    in the request dir so the script and a human can inspect it.
 3. **Emit the reconcile script.** Write `apply.py` into the request dir. It
@@ -77,8 +78,9 @@ Read `references/spec-change-protocol.md` first. The shape is always:
    then `add_entry_label`. See the protocol for the canonical header and the
    per-provider notes (GitHub cannot hard-delete issues, so close instead).
 4. **Enqueue it.** Call `scheduling/spec_change.enqueue_spec_change_run(...)`.
-   The executor that drains the queue **does not exist yet** (clearly a TODO),
-   so the run sits pending. That is expected for now.
+   The scheduler (`specseed_target_src/executing/`) drains the queue and runs the
+   script as a permission-gated subprocess. Your job ends at the enqueue: do not
+   run the script yourself.
 
 ## Doc style (spec prose only)
 
