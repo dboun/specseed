@@ -180,11 +180,24 @@ def default_config():
         "version": CONFIG_VERSION,
         "specseed_dir": DEFAULT_SPECSEED_DIR,
         "poll_interval_seconds": DEFAULT_POLL_INTERVAL,
+        # Which coding-agent CLI the runner shells out to. provider claude|codex.
+        "runner": {"provider": "claude", "model": None, "effort": "medium"},
         "backend": {"enabled": False, "provider": None},
         "approvals": {
             # Remote approval commands are only accepted from these usernames.
             # Empty means no remote author is allowed to resolve approvals.
             "approver_usernames": [],
+        },
+        # Code-review loop. enabled also gates the in_review state on every issue.
+        # A passing review (verdict approve + confidence >= threshold) closes the
+        # issue (or routes to awaiting_approval when require_human_approval). A
+        # failing review reimplements until max_attempts, then opens a draft
+        # spec-change:adapt post for the human to discuss.
+        "review": {
+            "enabled": False,
+            "confidence_threshold": 0.75,
+            "max_attempts": 3,
+            "require_human_approval": False,
         },
         "permissions": {
             # local git. creating local branches is ALWAYS allowed when git is on
@@ -228,13 +241,17 @@ def load_config(storage):
         return cfg
 
     for key, value in existing.items():
-        if key not in ("backend", "approvals", "permissions"):
+        if key not in ("backend", "approvals", "permissions", "runner", "review"):
             cfg[key] = value
 
+    if isinstance(existing.get("runner"), dict):
+        cfg["runner"].update(existing["runner"])
     if isinstance(existing.get("backend"), dict):
         cfg["backend"].update(existing["backend"])
     if isinstance(existing.get("approvals"), dict):
         cfg["approvals"].update(existing["approvals"])
+    if isinstance(existing.get("review"), dict):
+        cfg["review"].update(existing["review"])
     if isinstance(existing.get("permissions"), dict):
         permissions = existing["permissions"]
         if isinstance(permissions.get("git"), dict):
@@ -551,6 +568,24 @@ def section_approvals(cfg):
     )
 
 
+def section_runner(cfg):
+    runner = cfg.setdefault("runner", {"provider": "claude", "model": None, "effort": "medium"})
+    print("\n--- coding agent ---")
+    runner["provider"] = ask_choice(
+        "Which coding-agent CLI should the runner drive?",
+        ("claude", "codex"),
+        runner.get("provider") or "claude",
+    )
+    default_model = runner.get("model") or ("gpt-5.4-mini" if runner["provider"] == "codex" else "claude-opus-4-8")
+    runner["model"] = ask_str("  Model", default_model) or None
+    if runner["provider"] == "codex":
+        runner["effort"] = ask_choice(
+            "  Reasoning effort",
+            ("low", "medium", "high"),
+            runner.get("effort") or "medium",
+        )
+
+
 def section_interval(cfg):
     print("\n--- runner ---")
     cfg["poll_interval_seconds"] = ask_int(
@@ -571,6 +606,9 @@ def summary_lines(cfg, remote, token):
                  f"token={'set' if token else 'MISSING'}")
     else:
         L.append("backend: local only")
+    runner = cfg.get("runner") or {}
+    L.append(f"agent: {runner.get('provider', 'claude')} "
+             f"(model={runner.get('model') or 'default'}, effort={runner.get('effort', 'medium')})")
     L.append(f"poll interval: {cfg['poll_interval_seconds']}s")
     approvers = cfg.get("approvals", {}).get("approver_usernames", [])
     L.append("approvers: " + (", ".join(approvers) if approvers else "none configured"))
@@ -618,6 +656,7 @@ def run_interactive(storage, explicit_storage=False):
     print("Press Enter to accept the shown default at any prompt.")
 
     token = section_backend(cfg, remote, storage)
+    section_runner(cfg)
     section_git_permissions(cfg)
     section_remote_permissions(cfg)
     section_approvals(cfg)

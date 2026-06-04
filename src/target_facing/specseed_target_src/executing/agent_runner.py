@@ -200,6 +200,69 @@ class ClaudeAgentRunner(SubprocessAgentRunner):
         ]
 
 
+class CodexAgentRunner(SubprocessAgentRunner):
+    """Run the authenticated ``codex exec`` CLI headless, prompt on stdin.
+
+    Mirrors :class:`ClaudeAgentRunner`: shells out to an already-authenticated
+    CLI, prompt delivered on stdin (trailing ``-``), stoppable by the cancel
+    Event + wall-clock deadline. ``max_turns``/``allowed_tools`` are Claude-only
+    and have no codex equivalent, so they are intentionally absent.
+    """
+
+    def __init__(
+        self,
+        *,
+        model: str = "gpt-5.4-mini",
+        effort: str = "medium",
+        sandbox: str = "workspace-write",
+        binary: str = "codex",
+        poll_interval: float = 0.5,
+        grace: float = 10.0,
+    ) -> None:
+        super().__init__(poll_interval=poll_interval, grace=grace)
+        self.model = model
+        self.effort = effort
+        self.sandbox = sandbox
+        self.binary = binary
+
+    def build_command(self, prompt: str, cwd: str | Path) -> list[str]:
+        return [
+            self.binary, "exec",
+            "--model", self.model,
+            "-c", f'model_reasoning_effort="{self.effort}"',
+            "--sandbox", self.sandbox,
+            "-c", 'approval_policy="never"',
+            "-",
+        ]
+
+
+def build_runner(config: Optional[dict[str, Any]] = None) -> AgentRunner:
+    """Build the agent runner the config selects (``config["runner"]``).
+
+    ``runner.provider`` picks the CLI (``claude`` default, or ``codex``);
+    ``runner.model`` / ``runner.effort`` tune it. Missing config => the Claude
+    default, matching prior hardcoded behaviour.
+    """
+    runner_cfg = (config or {}).get("runner") or {}
+    provider = str(runner_cfg.get("provider") or "claude").lower()
+    model = runner_cfg.get("model")
+    if provider == "codex":
+        kwargs: dict[str, Any] = {}
+        if model:
+            kwargs["model"] = model
+        if runner_cfg.get("effort"):
+            kwargs["effort"] = runner_cfg["effort"]
+        if runner_cfg.get("sandbox"):
+            kwargs["sandbox"] = runner_cfg["sandbox"]
+        return CodexAgentRunner(**kwargs)
+    if provider in ("claude", "claude-code"):
+        kwargs = {}
+        if model:
+            kwargs["model"] = model
+        return ClaudeAgentRunner(**kwargs)
+    raise ValueError(f"unsupported runner provider: {provider!r}")
+
+
 class FakeAgentRunner(AgentRunner):
     """Test double: records calls, returns a canned result, no subprocess.
 

@@ -26,6 +26,13 @@ from typing import ClassVar, Optional
 TIER_LABEL_PREFIX = "tier:"
 STATUS_LABEL_PREFIX = "status:"
 
+# The canonical work vocabulary actually seeded on the tracker (see
+# tracking/supported_values.py, tracking/populate_defaults.py and
+# references/remote-posts.md): a bare tier label (`epic`/`ticket`/`issue`) plus a
+# `<tier>:status:<status>` status label. The `tier:`/`status:` prefixed forms are
+# also accepted for callers/tests that use them.
+_WORK_TIERS = ("epic", "ticket", "issue")
+
 # tier -> Entity subclass, populated by Entity.register (called in epic/ticket/issue).
 _TIER_REGISTRY: dict[str, type["Entity"]] = {}
 
@@ -69,16 +76,27 @@ class Entity:
 
     @staticmethod
     def tier_from_labels(labels: list[str]) -> Optional[str]:
+        # Prefer the explicit `tier:<tier>` form, then fall back to a bare
+        # `epic`/`ticket`/`issue` label (the form actually seeded on the tracker).
         for label in labels:
             if label.startswith(TIER_LABEL_PREFIX):
                 return label[len(TIER_LABEL_PREFIX):]
+        for label in labels:
+            if label in _WORK_TIERS:
+                return label
         return None
 
     @staticmethod
     def status_from_labels(labels: list[str]) -> Optional[str]:
+        # Accept both the bare `status:<status>` form and the canonical
+        # `<tier>:status:<status>` form seeded on the tracker.
+        marker = ":" + STATUS_LABEL_PREFIX  # ":status:"
         for label in labels:
             if label.startswith(STATUS_LABEL_PREFIX):
                 return label[len(STATUS_LABEL_PREFIX):]
+            idx = label.find(marker)
+            if idx != -1:
+                return label[idx + len(marker):]
         return None
 
     # -- linking --------------------------------------------------------- #

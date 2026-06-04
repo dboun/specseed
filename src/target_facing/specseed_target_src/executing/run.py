@@ -29,7 +29,7 @@ from typing import Optional
 from src.target_facing.specseed_target_src.db.database import Database
 from src.target_facing.specseed_target_src.executing.agent_runner import (
     AgentRunner,
-    ClaudeAgentRunner,
+    build_runner,
 )
 from src.target_facing.specseed_target_src.executing.scheduler import Scheduler
 from src.target_facing.specseed_target_src.tracking.resolve_remote import (
@@ -50,7 +50,7 @@ def build_scheduler(
     config = load_config(storage_dir)
     return Scheduler(
         db=db or Database.instance(),
-        runner=runner or ClaudeAgentRunner(),
+        runner=runner or build_runner(config),
         config=config,
         storage=storage_dir,
         repo_root=Path(repo_root) if repo_root else Path.cwd(),

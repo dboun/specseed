@@ -58,6 +58,7 @@ class ConfigureUI(tk.Tk):
 
     def _build_vars(self) -> None:
         backend = self.cfg["backend"]
+        runner = self.cfg.get("runner") or {}
         approvals = self.cfg["approvals"]
         permissions = self.cfg["permissions"]
         git = permissions["git"]
@@ -79,6 +80,10 @@ class ConfigureUI(tk.Tk):
         self.push_main = tk.BooleanVar(value=remote_perms.get("push_main", False))
         self.make_prs = tk.BooleanVar(value=remote_perms.get("make_prs", False))
         self.approvers = tk.StringVar(value=", ".join(approvals.get("approver_usernames", [])))
+        self.runner_provider = tk.StringVar(value=runner.get("provider") or "claude")
+        self.runner_model = tk.StringVar(value=runner.get("model") or self._default_runner_model())
+        self.runner_effort = tk.StringVar(value=runner.get("effort") or "medium")
+        self.runner_model_was_default = self.runner_model.get() == self._default_runner_model()
         self.poll_interval = tk.StringVar(
             value=str(self.cfg.get("poll_interval_seconds", configure.DEFAULT_POLL_INTERVAL))
         )
@@ -91,8 +96,11 @@ class ConfigureUI(tk.Tk):
             self.provider,
             self.git_enabled,
             self.post_issues,
+            self.runner_provider,
         ):
             variable.trace_add("write", lambda *_args: self._sync_visibility())
+        self.runner_provider.trace_add("write", lambda *_args: self._on_runner_provider_changed())
+        self.runner_model.trace_add("write", lambda *_args: self._on_runner_model_changed())
         self.specseed_dir.trace_add("write", lambda *_args: self._update_storage_preview())
 
     def _configure_style(self) -> None:
@@ -281,9 +289,35 @@ class ConfigureUI(tk.Tk):
 
     def _build_runner_section(self) -> None:
         frame = self._card("Runner")
+        provider_box = ttk.Frame(frame)
+        ttk.Radiobutton(provider_box, text="Claude", variable=self.runner_provider, value="claude").pack(
+            side=tk.LEFT
+        )
+        ttk.Radiobutton(provider_box, text="Codex", variable=self.runner_provider, value="codex").pack(
+            side=tk.LEFT, padx=(12, 0)
+        )
+        self._row(frame, 0, "Agent CLI", provider_box)
         self._row(
             frame,
-            0,
+            1,
+            "Model",
+            ttk.Entry(frame, textvariable=self.runner_model, width=44),
+        )
+        self.effort_frame = ttk.Frame(frame)
+        for label, value in (("Low", "low"), ("Medium", "medium"), ("High", "high")):
+            ttk.Radiobutton(self.effort_frame, text=label, variable=self.runner_effort, value=value).pack(
+                side=tk.LEFT, padx=(0 if value == "low" else 12, 0)
+            )
+        self._row(frame, 2, "Reasoning effort", self.effort_frame)
+        ttk.Label(
+            frame,
+            text="Reasoning effort is used by the Codex runner.",
+            style="Muted.TLabel",
+            wraplength=620,
+        ).grid(row=3, column=1, sticky=tk.EW, padx=10, pady=(0, 10))
+        self._row(
+            frame,
+            4,
             "Poll interval",
             ttk.Entry(frame, textvariable=self.poll_interval, width=14),
             suffix="seconds",
@@ -330,6 +364,11 @@ class ConfigureUI(tk.Tk):
             self.post_children_frame.grid()
         else:
             self.post_children_frame.grid_remove()
+
+        if self.runner_provider.get() == "codex":
+            self.effort_frame.grid()
+        else:
+            self.effort_frame.grid_remove()
 
         if self.provider.get() == "github":
             self.token_help.configure(
@@ -385,6 +424,18 @@ class ConfigureUI(tk.Tk):
             return
         self.storage_preview.set(f"storage: {storage}")
 
+    def _default_runner_model(self) -> str:
+        provider = self.runner_provider.get() if hasattr(self, "runner_provider") else "claude"
+        return "gpt-5.4-mini" if provider == "codex" else "claude-opus-4-8"
+
+    def _on_runner_provider_changed(self) -> None:
+        if self.runner_model_was_default or not self.runner_model.get().strip():
+            self.runner_model.set(self._default_runner_model())
+            self.runner_model_was_default = True
+
+    def _on_runner_model_changed(self) -> None:
+        self.runner_model_was_default = self.runner_model.get().strip() == self._default_runner_model()
+
     def reload(self) -> None:
         storage = self._save_storage()
         self.cfg = configure.load_config(storage)
@@ -397,6 +448,7 @@ class ConfigureUI(tk.Tk):
 
     def _load_values_into_vars(self) -> None:
         backend = self.cfg["backend"]
+        runner = self.cfg.get("runner") or {}
         approvals = self.cfg["approvals"]
         permissions = self.cfg["permissions"]
         git = permissions["git"]
@@ -416,6 +468,10 @@ class ConfigureUI(tk.Tk):
         self.push_main.set(remote_perms.get("push_main", False))
         self.make_prs.set(remote_perms.get("make_prs", False))
         self.approvers.set(", ".join(approvals.get("approver_usernames", [])))
+        self.runner_provider.set(runner.get("provider") or "claude")
+        self.runner_model.set(runner.get("model") or self._default_runner_model())
+        self.runner_model_was_default = self.runner_model.get() == self._default_runner_model()
+        self.runner_effort.set(runner.get("effort") or "medium")
         self.poll_interval.set(
             str(self.cfg.get("poll_interval_seconds", configure.DEFAULT_POLL_INTERVAL))
         )
@@ -427,6 +483,13 @@ class ConfigureUI(tk.Tk):
             poll_interval = int(self.poll_interval.get().strip())
             if poll_interval <= 0:
                 raise ValueError("Poll interval must be greater than zero.")
+            runner_provider = self.runner_provider.get().strip().lower()
+            if runner_provider not in ("claude", "codex"):
+                raise ValueError("Agent CLI must be claude or codex.")
+            runner_model = self.runner_model.get().strip() or None
+            runner_effort = self.runner_effort.get().strip().lower() or "medium"
+            if runner_effort not in ("low", "medium", "high"):
+                raise ValueError("Reasoning effort must be low, medium, or high.")
         except ValueError as exc:
             messagebox.showerror("Cannot save", str(exc))
             return
@@ -434,6 +497,9 @@ class ConfigureUI(tk.Tk):
         cfg = configure.default_config()
         cfg["specseed_dir"] = specseed_rel.as_posix()
         cfg["poll_interval_seconds"] = poll_interval
+        cfg["runner"]["provider"] = runner_provider
+        cfg["runner"]["model"] = runner_model
+        cfg["runner"]["effort"] = runner_effort
         cfg["backend"]["enabled"] = not self.local_only.get()
         cfg["backend"]["provider"] = None if self.local_only.get() else self.provider.get()
         cfg["approvals"]["approver_usernames"] = self._split_names(self.approvers.get())

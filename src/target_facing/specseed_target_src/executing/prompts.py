@@ -75,5 +75,9 @@ def build_review_prompt(entity: Any, ctx: Any) -> str:
         "repository. Assess correctness, scope, and whether the issue's acceptance criteria "
         "are met. Report findings as a concise review summary. Do not merge, do not change "
         "workflow labels, and do not approve; the scheduler resolves the outcome "
-        "programmatically from your review and the configured gates."
+        "programmatically from your review and the configured gates.\n\n"
+        "End your output with EXACTLY ONE final line in this format (nothing after it):\n"
+        "SPECSEED_REVIEW verdict=<approve|changes> confidence=<0.0-1.0>\n"
+        "Use verdict=approve only if the work is correct and complete; otherwise "
+        "verdict=changes. confidence is your certainty in that verdict."
     )

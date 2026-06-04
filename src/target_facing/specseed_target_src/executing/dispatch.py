@@ -29,6 +29,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from src.target_facing.specseed_target_src.executing import advance
 from src.target_facing.specseed_target_src.executing import context as context_mod
 from src.target_facing.specseed_target_src.executing.context import ExecutionContext
 from src.target_facing.specseed_target_src.executing import prompts
@@ -243,11 +244,31 @@ def _run_work(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
     state_result = evaluate_entity_state(entity, ctx.config, conversation)
     intent = decide_intent(entity, state_result, task)
 
+    # Approval gates are resolved in code, with no agent run: an approver's
+    # `approve <id>` comment moves an awaiting_approval entity forward.
+    if getattr(entity, "status", None) == "awaiting_approval":
+        resolved = advance.resolve_approval(ctx, entity, state_result, conversation)
+        return HandlerOutcome(
+            success=True,
+            detail=resolved or "awaiting_approval; no approver yet",
+        )
+
     if intent == AgentIntent.NONE:
         return HandlerOutcome(
             success=True,
             detail="no actionable intent (tier={0}, status={1})".format(
                 getattr(entity, "tier", None), getattr(entity, "status", None)
+            ),
+        )
+
+    # Several queued events can describe one entity in a single drain (a status
+    # swap is a label remove + add). The local snapshot is stale, so skip the
+    # expensive agent run if the remote shows the entity already moved on.
+    if intent in (AgentIntent.IMPLEMENT, AgentIntent.REVIEW) and advance._is_stale(ctx, entity):
+        return HandlerOutcome(
+            success=True,
+            detail="stale {0} event; remote already advanced past {1}".format(
+                intent, getattr(entity, "status", None)
             ),
         )
 
@@ -268,7 +289,16 @@ def _run_work(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
     )
 
     if getattr(result, "ok", False):
-        return HandlerOutcome(success=True, detail="agent ran intent {0}".format(intent))
+        detail = "agent ran intent {0}".format(intent)
+        if intent in (AgentIntent.IMPLEMENT, AgentIntent.REVIEW):
+            try:
+                transition = advance.apply_post_work_transition(
+                    ctx, entity, intent, result, state_result, conversation
+                )
+                detail = "{0}; {1}".format(detail, transition)
+            except Exception as exc:  # never lose the successful run over a write hiccup
+                detail = "{0}; transition failed: {1!r}".format(detail, exc)
+        return HandlerOutcome(success=True, detail=detail)
     if getattr(result, "killed", False) or getattr(result, "timed_out", False):
         return HandlerOutcome(
             success=False,

@@ -21,6 +21,8 @@ class ConfigureSpecseedDirTest(unittest.TestCase):
                 "seedmeta",  # specseed dir
                 "",          # append to .gitignore
                 "",          # local only
+                "",          # runner provider (claude)
+                "",          # runner model (default)
                 "",          # local git on
                 "",          # merge dev off
                 "",          # merge main off
@@ -50,6 +52,8 @@ class ConfigureSpecseedDirTest(unittest.TestCase):
                 "seedmeta",  # specseed dir
                 "",          # would append
                 "",          # local only
+                "",          # runner provider (claude)
+                "",          # runner model (default)
                 "",          # local git on
                 "",          # merge dev off
                 "",          # merge main off
