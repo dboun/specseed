@@ -77,7 +77,7 @@ class PopulateDefaultsTest(unittest.TestCase):
         self.assertEqual(
             pinned,
             {
-                self.entry("TIMELINE").id,
+                self.entry("SCHEDULE").id,
                 existing_roadmap_id,
                 self.entry("CONTROL").id,
             },

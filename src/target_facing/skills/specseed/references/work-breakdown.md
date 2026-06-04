@@ -69,8 +69,8 @@ sprint boundaries, so a per-sprint view hides the real bottleneck. The critical
 path is the longest dependency chain by summed effort; it sets the minimum
 duration. Schedule its tickets first. "Important" is not the same as "on the
 critical path". A very long CP usually means tickets are too narrow or deps are
-artificial: rebalance. Record the CP in `plan.json` and reflect it in the
-ROADMAP/TIMELINE dashboard bodies.
+artificial: rebalance. Record the CP in `plan.json` and mark `★` on the critical
+tickets in the SCHEDULE dashboard body.
 
 ## Sprints
 
@@ -78,9 +78,11 @@ A sprint is a time-boxed batch of tickets (~one week, ~168h soft budget). It is
 **orthogonal to epics**: an epic groups by outcome, a sprint groups by time. A
 ticket has one epic and one sprint.
 
-In this build a sprint is expressed as a `sprint:<id>` label on each member
-ticket post plus the `Current sprint` dashboard body; `TIMELINE` lists sprints in
-execution order. ROADMAP stays strategic and never lists sprints.
+In this build a sprint is expressed as a `sprint:<id>` label on each member ticket
+post (the runtime renders the `Current sprint` board from those labels — you do not
+write that body). You write `SCHEDULE`, which lists every sprint in execution order
+with its tickets (format in `remote-posts.md`). ROADMAP stays strategic, never lists
+sprints, and is also runtime-rendered.
 
 Packing rule: place a ticket only after all the tickets it depends on are in the
 same or an earlier sprint (**no backward sprint dependency**). Within that

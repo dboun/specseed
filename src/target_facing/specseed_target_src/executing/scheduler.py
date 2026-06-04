@@ -32,6 +32,7 @@ from typing import Any, Callable, Optional
 
 from specseed_target_src.scheduling.sync_to_db import sync_to_db
 from specseed_target_src.tracking.resolve_remote import (
+    load_remote_state,
     resolve_local,
     resolve_remote,
 )
@@ -87,7 +88,8 @@ class Scheduler:
         if self.storage is not None:
             platform_log.configure(self.storage)
         self.repo_root = Path(repo_root) if repo_root else Path.cwd()
-        self.permissions = permissions or Permissions(self.config)
+        remote_state = load_remote_state(self.storage) if self.storage is not None else {}
+        self.permissions = permissions or Permissions(self.config, remote_state)
         self.agent_timeout_s = agent_timeout_s
         self.tick = tick
         self.poll_interval = (

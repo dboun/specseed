@@ -43,7 +43,8 @@ _add_package_parent_to_path()
 from specseed_target_src.db.database import Database
 from specseed_target_src.executing.agent_runner import (
     AgentRunner,
-    build_runner,
+    RunnerChains,
+    build_runner_chains,
 )
 from specseed_target_src.executing import platform_log
 from specseed_target_src.executing.scheduler import Scheduler
@@ -75,9 +76,15 @@ def build_scheduler(
         runner_injected=runner is not None,
         db_injected=db is not None,
     )
+    # A bare AgentRunner (e.g. a test double) is wrapped as a single-spec chain
+    # for every function; otherwise build the configured per-function chains.
+    if runner is None:
+        runner = build_runner_chains(config)
+    elif not isinstance(runner, RunnerChains):
+        runner = RunnerChains.single(runner)
     return Scheduler(
         db=db or Database.instance(),
-        runner=runner or build_runner(config),
+        runner=runner,
         config=config,
         storage=storage_dir,
         repo_root=Path(repo_root) if repo_root else Path.cwd(),
@@ -85,24 +92,24 @@ def build_scheduler(
     )
 
 
-def _backend_kind(config: dict) -> str:
-    """Map the configured backend to a ``populate_defaults`` backend kind."""
-    backend = config.get("backend") or {}
-    if not backend.get("enabled"):
+def _backend_kind(remote_state: dict) -> str:
+    """Map the configured remote (remote.json) to a ``populate_defaults`` kind."""
+    remote_state = remote_state or {}
+    if not remote_state.get("enabled"):
         return "remote_local"
-    provider = backend.get("provider")
+    provider = remote_state.get("provider")
     if provider == "github":
         return "remote_github"
     if provider == "gitlab":
         return "remote_gitlab"
-    raise ValueError(f"unsupported backend provider: {provider!r}")
+    raise ValueError(f"unsupported remote provider: {provider!r}")
 
 
 def _seed_marker_file(storage: Path) -> Path:
     return Path(storage) / "seed_state.json"
 
 
-def ensure_remote_seeded(storage: str | Path, config: dict) -> Optional[dict]:
+def ensure_remote_seeded(storage: str | Path, remote_state: Optional[dict] = None) -> Optional[dict]:
     """Seed the configured remote once so the scheduler has something to poll.
 
     First run on a repo finds an empty remote (the local stand-in is an empty
@@ -112,12 +119,14 @@ def ensure_remote_seeded(storage: str | Path, config: dict) -> Optional[dict]:
 
     Idempotent and non-destructive (``prune=False`` never deletes user content).
     A marker file keyed to ``(kind, repo)`` skips re-seeding on later launches and
-    re-seeds when the backend changes. Returns the populate summary, or ``None``
-    when seeding was skipped because the backend was already seeded.
+    re-seeds when the remote changes. Returns the populate summary, or ``None``
+    when seeding was skipped because the remote was already seeded.
     """
     storage = Path(storage)
-    kind = _backend_kind(config)
-    repo = (load_remote_state(storage) or {}).get("repo")
+    if remote_state is None:
+        remote_state = load_remote_state(storage)
+    kind = _backend_kind(remote_state)
+    repo = (remote_state or {}).get("repo")
     desired = {"kind": kind, "repo": repo}
 
     marker = _seed_marker_file(storage)
@@ -165,7 +174,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         once=args.once,
     )
     try:
-        seeded = ensure_remote_seeded(storage_dir, load_config(storage_dir))
+        seeded = ensure_remote_seeded(storage_dir, load_remote_state(storage_dir))
         if seeded is not None:
             posts = seeded.get("default_posts", {})
             created = [title for title, info in posts.items() if info.get("created")]

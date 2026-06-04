@@ -18,21 +18,21 @@ from src.target_facing.specseed_target_src.tracking.tracking_remote_local import
 
 
 class BackendKindTest(unittest.TestCase):
-    def test_maps_backend_to_populate_kind(self) -> None:
-        self.assertEqual(run._backend_kind({"backend": {"enabled": False}}), "remote_local")
+    def test_maps_remote_state_to_populate_kind(self) -> None:
+        self.assertEqual(run._backend_kind({"enabled": False}), "remote_local")
         self.assertEqual(run._backend_kind({}), "remote_local")
         self.assertEqual(
-            run._backend_kind({"backend": {"enabled": True, "provider": "github"}}),
+            run._backend_kind({"enabled": True, "provider": "github"}),
             "remote_github",
         )
         self.assertEqual(
-            run._backend_kind({"backend": {"enabled": True, "provider": "gitlab"}}),
+            run._backend_kind({"enabled": True, "provider": "gitlab"}),
             "remote_gitlab",
         )
 
-    def test_rejects_enabled_backend_without_known_provider(self) -> None:
+    def test_rejects_enabled_remote_without_known_provider(self) -> None:
         with self.assertRaises(ValueError):
-            run._backend_kind({"backend": {"enabled": True, "provider": None}})
+            run._backend_kind({"enabled": True, "provider": None})
 
 
 class EnsureRemoteSeededTest(unittest.TestCase):
@@ -50,7 +50,7 @@ class EnsureRemoteSeededTest(unittest.TestCase):
         return {entry.title for entry in self.remote.list_entries(is_open=None).data}
 
     def test_first_run_seeds_then_marker_skips_subsequent_runs(self) -> None:
-        config = {"backend": {"enabled": False, "provider": None}}
+        config = {"enabled": False, "provider": None}
         with mock.patch.object(run, "resolve_remote", return_value=self.remote) as resolve:
             first = run.ensure_remote_seeded(self.storage, config)
             second = run.ensure_remote_seeded(self.storage, config)
@@ -66,7 +66,7 @@ class EnsureRemoteSeededTest(unittest.TestCase):
         self.assertEqual(marker, {"kind": "remote_local", "repo": None})
 
     def test_changed_backend_reseeds(self) -> None:
-        config = {"backend": {"enabled": False, "provider": None}}
+        config = {"enabled": False, "provider": None}
         with mock.patch.object(run, "resolve_remote", return_value=self.remote):
             run.ensure_remote_seeded(self.storage, config)
 

@@ -75,8 +75,8 @@ Manual work preempts the existing active sprint:
   tickets created or selected by this inject request.
 - If the request injects an issue under an existing ticket, move that parent
   ticket into the new current sprint with the manual issue.
-- Refresh TIMELINE and Current sprint dashboard bodies. ROADMAP may be refreshed
-  when an epic or ticket was added.
+- Refresh the SCHEDULE body. ROADMAP and Current sprint re-render from the runtime
+  (from the work posts + `sprint:*`/`current_sprint` labels) — do not hand-edit them.
 
 There must still be only one active current sprint after the plan applies.
 
@@ -87,7 +87,7 @@ Record the full decision:
 - `manual: true`
 - `inferred_tier` and `tier_reason`
 - `creates` for all new posts
-- `edits` for parent bodies and dashboards
+- `edits` for parent bodies and the SCHEDULE dashboard
 - `labels` for status and sprint/current-sprint changes
 - `comments` for the request post and any affected parent work posts
 - `sprint_shift` describing what moved from current to next sprint

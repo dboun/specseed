@@ -87,17 +87,17 @@ class ResolveRemoteTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as storage:
             self.assertIsInstance(resolve_remote(storage), TrackingRemoteLocal)
 
-    def test_disabled_backend_resolves_to_local_stand_in(self) -> None:
+    def test_disabled_remote_resolves_to_local_stand_in(self) -> None:
         with tempfile.TemporaryDirectory() as storage:
-            self._write_config(storage, {"backend": {"enabled": False}})
+            self._write_config(storage, {}, {"enabled": False})
             self.assertIsInstance(resolve_remote(storage), TrackingRemoteLocal)
 
-    def test_enabled_backend_without_repo_raises(self) -> None:
+    def test_enabled_remote_without_repo_raises(self) -> None:
         with tempfile.TemporaryDirectory() as storage:
             self._write_config(
                 storage,
-                {"backend": {"enabled": True, "provider": "github"}},
-                {"repo": None},
+                {},
+                {"enabled": True, "provider": "github", "repo": None},
             )
             with self.assertRaises(ValueError):
                 resolve_remote(storage)

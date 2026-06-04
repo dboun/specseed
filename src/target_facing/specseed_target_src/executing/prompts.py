@@ -17,9 +17,104 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from specseed_target_src.executing.permissions import (
+    AGENT_CATEGORIES,
+    Permissions,
+)
+
 
 def _title(entity: Any) -> str:
     return getattr(entity, "title", None) or "(untitled)"
+
+
+_GATE_RULE = {
+    "block": "do NOT do it; stop, report it is blocked, and leave it for a human",
+    "require_human_approval": "do NOT do it yet; stop and report it needs human approval first",
+    "surface": "do it, but announce it clearly in your final report",
+    "auto": "just do it",
+}
+
+
+def render_action_gates(ctx: Any) -> str:
+    """Action-class gate policy the implementation agent must honour.
+
+    Deterministic from ``permissions.agents``. Each action class carries a level the
+    agent obeys before taking such an action.
+    """
+    perms = getattr(ctx, "permissions", None)
+    if not isinstance(perms, Permissions):
+        perms = Permissions(getattr(ctx, "config", {}) or {})
+    policy = perms.agents_policy()
+    lines = ["Action gates (honour BEFORE taking any such action):"]
+    for category, desc in AGENT_CATEGORIES.items():
+        level = policy.get(category, "block")
+        lines.append(
+            "- {0} ({1}) -> {2} [{3}]".format(category, desc, _GATE_RULE.get(level, level), level)
+        )
+    lines.append(
+        "When unsure which class an action falls in, treat it as the stricter case. These "
+        "gates fire mid-work regardless of which issue is active."
+    )
+    return "\n".join(lines)
+
+
+def _perms(ctx: Any) -> Permissions:
+    perms = getattr(ctx, "permissions", None)
+    if isinstance(perms, Permissions):
+        return perms
+    return Permissions(getattr(ctx, "config", {}) or {})
+
+
+def render_git_policy(ctx: Any) -> str:
+    """Git rules the implementation agent must follow.
+
+    The runtime never runs git itself; the agent does. This block is the agent's
+    only source of truth for branch/merge/push/PR behaviour, derived from
+    ``dev_branch`` + the git/remote permissions. Refresh-on-merge and the
+    conflict-park rule are stated here because there is no runtime merge driver.
+    """
+    perms = _perms(ctx)
+    config = getattr(ctx, "config", {}) or {}
+    dev_branch = config.get("dev_branch") or "main"
+    remote_on = perms.remote_enabled()
+    lines = ["Git rules:"]
+    lines.append(
+        "- Work on a dedicated branch for this issue, forked from `{0}`. Never commit "
+        "straight onto `{0}`.".format(dev_branch)
+    )
+    if perms.can_merge_to_dev_branch():
+        lines.append(
+            "- When the work is complete and tests pass, merge your branch into `{0}`.".format(dev_branch)
+        )
+        lines.append(
+            "- Refresh: after merging into `{0}`, and when you resume a parked branch, merge "
+            "the latest `{0}` into the other live issue branches. Resolve trivial conflicts "
+            "silently. Only a genuinely unsafe conflict you cannot settle should be left in "
+            "place and reported for a human.".format(dev_branch)
+        )
+    else:
+        lines.append(
+            "- Do NOT merge into `{0}` yourself; leave your branch for a human to merge.".format(dev_branch)
+        )
+    if remote_on:
+        lines.append(
+            "- You may push your issue branch to the remote."
+            if perms.can_push_branches()
+            else "- Do NOT push your issue branch to the remote."
+        )
+        lines.append(
+            "- You may push `{0}` to the remote.".format(dev_branch)
+            if perms.can_push_dev_branch()
+            else "- Do NOT push `{0}` to the remote.".format(dev_branch)
+        )
+        lines.append(
+            "- You may open a pull/merge request for completed work."
+            if perms.can_make_prs()
+            else "- Do NOT open pull/merge requests."
+        )
+    else:
+        lines.append("- No remote is configured: keep everything local, do not push or open PRs.")
+    return "\n".join(lines)
 
 
 def _specseed_dir(ctx: Any) -> str:
@@ -62,7 +157,10 @@ def build_implement_prompt(entity: Any, ctx: Any) -> str:
         "Implement the change in this repository to satisfy the issue, keeping edits scoped "
         "to what the issue asks. Do not change the issue's workflow labels or approve "
         "anything yourself; the scheduler advances state programmatically. When finished, "
-        "leave the working tree in a building, test-passing state."
+        "leave the working tree in a building, test-passing state.\n\n"
+        + render_git_policy(ctx)
+        + "\n\n"
+        + render_action_gates(ctx)
     )
 
 

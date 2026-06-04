@@ -35,9 +35,8 @@ class LifecycleTest(unittest.TestCase):
         db = Database(db_path=self.root / "queue.db")
         cfg = {
             "specseed_dir": "seedmeta",
-            "backend": {"enabled": False, "provider": None},
             "approvals": {"approver_usernames": ["alice"]},
-            "permissions": {"remote": {"post_issues": True}},
+            "permissions": {},
             "review": review,
         }
         sched = Scheduler(db=db, runner=runner, config=cfg, storage=self.root,

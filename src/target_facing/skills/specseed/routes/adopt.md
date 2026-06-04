@@ -58,9 +58,10 @@ imported docs instead of a brief:
   tickets at `:status:todo`, **issues at `:status:awaiting_approval`** (claimable,
   so gated per the protocol's approval gate).
 - Epics group both. Critical path + first sprint over the *remaining* work.
-- Dashboards (ROADMAP/TIMELINE/Current sprint) reflect current state, if enabled.
+- SCHEDULE reflects the sprint plan (you write it). ROADMAP and Current sprint are
+  rendered by the runtime from the work posts — do not hand-edit them.
 
-All into `plan.json` (`creates`, dashboard `edits`).
+All into `plan.json` (`creates`, SCHEDULE `edits`).
 
 ## Finish
 

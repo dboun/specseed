@@ -16,8 +16,7 @@ network so a spec-change run never hammers the provider API.
 Configuration lives in the co-located storage dir (the same files
 ``configuring/configure.py`` writes):
 
-    configuration.json   backend.enabled + backend.provider
-    remote.json          provider + repo
+    remote.json          enabled + provider + repo
     token_remote.txt      the raw access token (gitignored)
 
 Only Python stdlib is used.
@@ -76,35 +75,33 @@ def load_token(storage: Optional[str | Path] = None) -> Optional[str]:
 def resolve_remote(storage: Optional[str | Path] = None) -> TrackingBase:
     """Build the configured *remote* tracker (the source of truth to write to).
 
-    backend disabled  -> ``TrackingRemoteLocal`` (no network stand-in).
-    provider github    -> ``TrackingRemoteGitHub(repo, token)``.
-    provider gitlab    -> ``TrackingRemoteGitLab(repo, token)``.
+    remote disabled  -> ``TrackingRemoteLocal`` (no network stand-in).
+    provider github   -> ``TrackingRemoteGitHub(repo, token)``.
+    provider gitlab   -> ``TrackingRemoteGitLab(repo, token)``.
 
     Raises ``ValueError`` when a remote provider is enabled but its repo or
     token is missing, so a spec-change run fails loudly rather than half-writing.
     """
     storage = _resolve_storage(storage)
-    config = load_config(storage)
-    backend = config.get("backend") or {}
+    remote_state = load_remote_state(storage)
 
-    if not backend.get("enabled"):
+    if not remote_state.get("enabled"):
         return TrackingRemoteLocal()
 
-    provider = backend.get("provider")
-    remote_state = load_remote_state(storage)
+    provider = remote_state.get("provider")
     repo = remote_state.get("repo")
     token = load_token(storage)
 
     if not repo:
-        raise ValueError("backend enabled but remote.json has no repo")
+        raise ValueError("remote enabled but remote.json has no repo")
     if not token:
-        raise ValueError("backend enabled but token_remote.txt is missing")
+        raise ValueError("remote enabled but token_remote.txt is missing")
 
     if provider == "github":
         return TrackingRemoteGitHub(repo=repo, token=token)
     if provider == "gitlab":
         return TrackingRemoteGitLab(repo=repo, token=token)
-    raise ValueError(f"unsupported backend provider: {provider!r}")
+    raise ValueError(f"unsupported remote provider: {provider!r}")
 
 
 def resolve_local(db_path: Optional[str | Path] = None) -> TrackingLocal:

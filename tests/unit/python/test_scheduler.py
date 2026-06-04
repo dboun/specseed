@@ -42,15 +42,12 @@ from src.target_facing.specseed_target_src.tracking.tracking_remote_local import
 )
 
 
-def _config(*, backend_enabled=False, approvers=("alice",)):
+def _config(*, approvers=("alice",)):
     return {
-        "backend": {"enabled": backend_enabled, "provider": None},
         "approvals": {"approver_usernames": list(approvers)},
         "permissions": {
             "remote": {
-                "post_issues": True,
                 "post_control": True,
-                "post_dashboards": True,
             }
         },
     }

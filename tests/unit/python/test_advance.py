@@ -81,9 +81,8 @@ class _Base(unittest.TestCase):
     def _config(self, review=None):
         cfg = {
             "specseed_dir": "seedmeta",
-            "backend": {"enabled": False, "provider": None},
             "approvals": {"approver_usernames": ["alice"]},
-            "permissions": {"remote": {"post_issues": True}},
+            "permissions": {},
         }
         if review is not None:
             cfg["review"] = review
@@ -169,7 +168,8 @@ class ReviewTransitionTest(_Base):
         self.assertTrue(out.success)
         self.assertIn("issue:status:todo", self._remote_labels(eid))
 
-    def test_review_changes_requires_human_approval(self) -> None:
+    def test_review_pass_ignores_legacy_human_gate_key(self) -> None:
+        # require_human_approval is gone; a stale key in config changes nothing.
         eid = self._seed("Review me", ["issue", "issue:status:in_review"])
         ctx = self._ctx(
             self._config(review={"enabled": True, "require_human_approval": True}),
@@ -177,8 +177,8 @@ class ReviewTransitionTest(_Base):
         )
         out = dispatch(ctx, {"action": "handle_comment_added", "post_id": str(eid), "payload": {}})
         self.assertTrue(out.success)
-        self.assertIn("issue:status:awaiting_approval", self._remote_labels(eid))
-        self.assertTrue(self._remote_details(eid).is_open)
+        self.assertIn("issue:status:done", self._remote_labels(eid))
+        self.assertFalse(self._remote_details(eid).is_open)
 
     def test_review_exhausts_attempts_escalates(self) -> None:
         # two prior review attempts already recorded; max_attempts=3 -> this is #3
@@ -202,6 +202,47 @@ class ReviewTransitionTest(_Base):
         for summary in listing.data:
             out.append(self.remote.get_entry(summary.id).data)
         return out
+
+
+class ImplementApprovalGateTest(_Base):
+    """platform.auto_implement_issue=False parks a ready issue for sign-off."""
+
+    def _auto_off(self, approvers=None):
+        cfg = self._config()
+        cfg["permissions"]["platform"] = {"auto_implement_issue": False}
+        if approvers is not None:
+            cfg["approvals"]["approver_usernames"] = list(approvers)
+        return cfg
+
+    def test_todo_parks_awaiting_approval_when_auto_off(self) -> None:
+        eid = self._seed("Do it", ["issue", "issue:status:todo"])
+        ctx = self._ctx(self._auto_off(), FakeAgentRunner(AgentResult(ok=True, returncode=0)))
+        out = dispatch(ctx, {"action": "handle_label_added", "post_id": str(eid), "payload": {}})
+        self.assertTrue(out.success)
+        labels = self._remote_labels(eid)
+        self.assertIn("issue:status:awaiting_approval", labels)
+        self.assertNotIn("issue:status:todo", labels)
+        bodies = [c.body for c in self._remote_details(eid).comments]
+        self.assertTrue(any("approve" in b for b in bodies))
+
+    def test_todo_proceeds_when_already_approved(self) -> None:
+        # local comments are authored by "agent" (the tracker author) — make it an approver.
+        eid = self._seed("Do it", ["issue", "issue:status:todo"])
+        self.local.add_entry_comment(eid, "approve {0}".format(eid))
+        ctx = self._ctx(self._auto_off(approvers=["agent"]),
+                        FakeAgentRunner(AgentResult(ok=True, returncode=0)))
+        out = dispatch(ctx, {"action": "handle_label_added", "post_id": str(eid), "payload": {}})
+        self.assertTrue(out.success)
+        self.assertIn("issue:status:done", self._remote_labels(eid))
+
+    def test_auto_on_implements_without_parking(self) -> None:
+        eid = self._seed("Do it", ["issue", "issue:status:todo"])
+        cfg = self._config()
+        cfg["permissions"]["platform"] = {"auto_implement_issue": True}
+        ctx = self._ctx(cfg, FakeAgentRunner(AgentResult(ok=True, returncode=0)))
+        out = dispatch(ctx, {"action": "handle_label_added", "post_id": str(eid), "payload": {}})
+        self.assertTrue(out.success)
+        self.assertIn("issue:status:done", self._remote_labels(eid))
 
 
 class _SR:

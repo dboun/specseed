@@ -23,17 +23,19 @@ from src.target_facing.specseed_target_src.tracking.tracking_remote_local import
 )
 
 
-def _config(*, backend_enabled=False, post_issues=True, post_control=True, approvers=None):
+def _config(*, post_control=True, approvers=None):
     return {
-        "backend": {"enabled": backend_enabled, "provider": None},
         "approvals": {"approver_usernames": list(approvers or ["alice"])},
         "permissions": {
             "remote": {
-                "post_issues": post_issues,
                 "post_control": post_control,
             }
         },
     }
+
+
+def _remote_state(*, enabled=False, provider=None):
+    return {"enabled": enabled, "provider": provider}
 
 
 class ControlTest(unittest.TestCase):
@@ -123,9 +125,9 @@ class ControlTest(unittest.TestCase):
         self.assertEqual(channel.poll(), [])
 
     def test_post_status_gated_off(self) -> None:
-        # backend enabled + post_control false -> not permitted.
-        cfg = _config(backend_enabled=True, post_issues=True, post_control=False)
-        perms = Permissions(cfg)
+        # remote enabled + post_control false -> not permitted.
+        cfg = _config(post_control=False)
+        perms = Permissions(cfg, _remote_state(enabled=True))
         channel = ControlChannel(self.remote, cfg, perms, bot_author="bot")
         self.assertFalse(channel.post_status("hello"))
         # No comment was written.
@@ -133,8 +135,8 @@ class ControlTest(unittest.TestCase):
         self.assertEqual(len(details.comments), 0)
 
     def test_post_status_allowed_local(self) -> None:
-        # backend disabled -> local stand-in, posting allowed.
-        cfg = _config(backend_enabled=False)
+        # remote disabled -> local stand-in, posting allowed.
+        cfg = _config()
         perms = Permissions(cfg)
         channel = ControlChannel(self.remote, cfg, perms, bot_author="bot")
         ok = channel.post_status(render_status({"state": "PAUSED", "pending": 0}))

@@ -149,9 +149,9 @@ All on the object from `resolve_remote()`. All return `TrackingResult`.
 | `pin_entry(id)` | pin a dashboard (GitHub only; GitLab no-ops) |
 
 A **status swap** = `remove_entry_label(id, "<tier>:status:<old>")` then
-`add_entry_label(id, "<tier>:status:<new>")`. A **dashboard refresh** =
-`edit_entry(dashboard_id, body=<rendered markdown>)`. See `remote-posts.md` for
-the post/label model.
+`add_entry_label(id, "<tier>:status:<new>")`. A **SCHEDULE refresh** =
+`edit_entry(schedule_id, body=<rendered markdown>)` (ROADMAP + Current sprint are
+runtime-rendered — do not hand-edit). See `remote-posts.md` for the post/label model.
 
 ## Approval gate (APR-NNNN): required before any new work
 

@@ -14,6 +14,7 @@ from src.target_facing.specseed_target_src.db.database import Database
 from src.target_facing.specseed_target_src.executing.agent_runner import (
     AgentResult,
     FakeAgentRunner,
+    RunnerChains,
 )
 from src.target_facing.specseed_target_src.executing.context import ExecutionContext
 from src.target_facing.specseed_target_src.executing import dispatch as dispatch_mod
@@ -37,9 +38,8 @@ from src.target_facing.specseed_target_src.tracking.tracking_remote_local import
 def _config():
     return {
         "specseed_dir": "seedmeta",
-        "backend": {"enabled": False, "provider": None},
         "approvals": {"approver_usernames": ["alice"]},
-        "permissions": {"remote": {"post_issues": True}},
+        "permissions": {},
     }
 
 
@@ -273,6 +273,47 @@ class DispatchRoutingTest(DispatchTestBase):
         self.assertFalse(out.success)
         self.assertFalse(out.requeue)
         self.assertIsNotNone(out.error)
+
+
+class RunAgentRoutingTest(DispatchTestBase):
+    """``_run_agent`` picks the chain for the intent's function, and works with
+    both a per-function RunnerChains and a bare runner."""
+
+    def _ctx_with(self, runner):
+        self.ctx.runner = runner
+        return self.ctx
+
+    def test_intent_maps_to_runner_function(self) -> None:
+        self.assertEqual(dispatch_mod._INTENT_FUNCTION[AgentIntent.SPEC_CHANGE], "spec")
+        self.assertEqual(dispatch_mod._INTENT_FUNCTION[AgentIntent.IMPLEMENT], "implementation")
+        self.assertEqual(dispatch_mod._INTENT_FUNCTION[AgentIntent.REVIEW], "review")
+
+    def test_chains_run_uses_function_chain(self) -> None:
+        spec_runner = FakeAgentRunner(result=AgentResult(ok=True, returncode=0))
+        impl_runner = FakeAgentRunner(result=AgentResult(ok=True, returncode=0))
+        chains = RunnerChains({"spec": [spec_runner], "implementation": [impl_runner]})
+        ctx = self._ctx_with(chains)
+        dispatch_mod._run_agent(ctx, "do it", AgentIntent.IMPLEMENT)
+        self.assertEqual(len(impl_runner.calls), 1)
+        self.assertEqual(len(spec_runner.calls), 0)
+
+    def test_chains_fallback_inside_dispatch_helper(self) -> None:
+        primary = FakeAgentRunner(result=AgentResult(ok=False, returncode=1))
+        fallback = FakeAgentRunner(result=AgentResult(ok=True, returncode=0))
+        chains = RunnerChains({"implementation": [primary, fallback]})
+        ctx = self._ctx_with(chains)
+        result = dispatch_mod._run_agent(ctx, "do it", AgentIntent.IMPLEMENT)
+        self.assertTrue(result.ok)
+        self.assertEqual(len(fallback.calls), 1)
+
+    def test_bare_runner_still_supported(self) -> None:
+        bare = FakeAgentRunner(result=AgentResult(ok=True, returncode=0))
+        ctx = self._ctx_with(bare)
+        result = dispatch_mod._run_agent(ctx, "do it", AgentIntent.REVIEW)
+        self.assertTrue(result.ok)
+        self.assertEqual(len(bare.calls), 1)
+        # a bare runner gets no function kwarg
+        self.assertNotIn("function", bare.calls[0])
 
 
 if __name__ == "__main__":

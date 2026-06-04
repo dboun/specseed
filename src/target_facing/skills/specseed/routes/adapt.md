@@ -51,9 +51,9 @@ Plan the first work breakdown as remote posts:
   are claimable, so they stay gated until a human approves. See the protocol's
   "Approval gate (APR-NNNN)".
 - Compute critical path at the ticket tier and a rough first sprint; record it
-  for the dashboards.
+  in the SCHEDULE body.
 
-Write all of this into `plan.json` as `creates` plus dashboard edits if enabled.
+Write all of this into `plan.json` as `creates` plus the SCHEDULE edit.
 Then finish through the normal protocol, including the **approval gate**: post one
 `APR-NNNN` request comment summarizing the breakdown and park the request
 `spec-change:status:awaiting_approval`.
@@ -95,8 +95,8 @@ the request post, identify the trigger and map it to an impact set:
   noting the revision and its cause.
 - A `done` post whose underlying req changed -> swap to `:status:blocked` and
   comment for triage.
-- Refresh ROADMAP / TIMELINE / Current sprint bodies (`edit_entry`) if dashboards
-  are enabled.
+- Refresh the SCHEDULE body (`edit_entry`). ROADMAP and Current sprint re-render
+  from the runtime — do not hand-edit them.
 
 ## 4. ADR
 

@@ -1,6 +1,6 @@
 """dashboards.py - keep the ROADMAP and Current sprint posts in sync.
 
-The seed creates permanent ``management`` posts (ROADMAP, TIMELINE, CONTROL,
+The seed creates permanent ``management`` posts (ROADMAP, SCHEDULE, CONTROL,
 Current sprint) and their bodies say "the scheduler keeps this in sync". This
 module is that maintenance: it renders the live epic -> ticket -> issue tree from
 the work posts and rewrites the dashboard bodies to match.

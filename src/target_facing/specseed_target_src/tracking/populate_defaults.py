@@ -112,11 +112,16 @@ LABEL_SPECS = [
 
 DESIRED_LABELS = {label.name for label in LABEL_SPECS}
 
-TIMELINE_BODY = (
-    "# TIMELINE\n\n"
-    "Chronological log of what the specseed scheduler has done: synced changes, "
-    "claimed and finished work, and state transitions. The scheduler maintains this "
-    "post; treat it as read-only history.\n"
+SCHEDULE_BODY = (
+    "# SCHEDULE\n\n"
+    "Sprints in execution order: the tactical schedule of which tickets ship when. "
+    "For the strategic map (phases, epics, ticket titles) see the ROADMAP post. The "
+    "sprint-planning routes keep this in sync. **Do not hand-edit; plan with a "
+    "`spec-change:plan-next-sprint` post.**\n\n"
+    "★ = on the critical path: the longest dependency chain of tickets, the "
+    "chain that sets the minimum delivery time. Slip a ★ ticket and the whole "
+    "plan slips.\n\n"
+    "_No sprints planned yet. Plan one with a `spec-change:plan-next-sprint` post._\n"
 )
 
 ROADMAP_BODY = (
@@ -158,7 +163,7 @@ FIRST_ADAPT_DRAFT_BODY = (
 )
 
 DEFAULT_POSTS = [
-    ("TIMELINE", TIMELINE_BODY, ["management"], True),
+    ("SCHEDULE", SCHEDULE_BODY, ["management"], True),
     ("ROADMAP", ROADMAP_BODY, ["management"], True),
     ("CONTROL", CONTROL_BODY, ["management"], True),
     ("Current sprint", CURRENT_SPRINT_BODY, ["management", "current_sprint"], False),

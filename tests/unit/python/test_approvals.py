@@ -161,9 +161,8 @@ class _Base(unittest.TestCase):
     def _config(self):
         return {
             "specseed_dir": "seedmeta",
-            "backend": {"enabled": False, "provider": None},
             "approvals": {},  # no list -> default any-human approver
-            "permissions": {"remote": {"post_issues": True}},
+            "permissions": {},
         }
 
     def _ctx(self, config):

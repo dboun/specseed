@@ -55,16 +55,55 @@ text too. Posts are flat; the structure is the links.
 | Post | Role | Pinned |
 |------|------|:------:|
 | ROADMAP | strategic map: phases -> epics -> ticket titles | yes |
-| TIMELINE | sprint schedule in execution order | yes |
+| SCHEDULE | tactical schedule: sprints in execution order, each listing its tickets | yes |
 | CONTROL | command/ops channel | yes |
 | Current sprint | the active sprint's board | no |
 
-Find them by title via `local.list_entries(...)`; **refresh a dashboard with
-`edit_entry(dashboard_id, body=<rendered markdown>)`**. (GitHub pins cap at 3,
-which is why there are three pinned; GitLab has no pinning and `pin_entry`
-no-ops there.) Only touch dashboards when the route says to and when
-`config.permissions.remote.post_dashboards` would allow it; otherwise leave them
-and note it.
+ROADMAP and SCHEDULE are **orthogonal**: ROADMAP groups by outcome (what + why),
+SCHEDULE groups by time (which tickets ship in which sprint). SCHEDULE never
+repeats the strategic map; ROADMAP never lists sprints.
+
+### SCHEDULE body format
+
+Sprints in execution order, each a `##` section; one line per ticket. `★` marks a
+ticket on the project critical path. Hours are the ticket estimate; `(done/total)`
+counts its issues. Link the ROADMAP post and each ticket post (`[PROJ-0001](#NN)`).
+
+```
+# SCHEDULE
+
+Sprints in execution order: the tactical schedule. For the strategic map see the
+[ROADMAP](#<roadmap_id>) post. The sprint-planning routes keep this in sync.
+
+★ = on the critical path (the longest dependency chain; it sets minimum delivery time).
+
+## SPRINT_2026_W23_A — Foundation sprint  (done)
+- [PROJ-0001](#12) Local storage foundation — 4h (2/2) ★
+- [PROJ-0002](#13) Core task commands — 5h (2/2) ★
+
+## SPRINT_2026_W24_A — Workflow sprint  (ongoing)
+- [PROJ-0003](#14) Due dates and tags — 4h (2/2) ★
+- [PROJ-0004](#15) CLI polish and docs — 3h (1/2) ★
+```
+
+Sprint state is one of `done | ongoing | planned`. Until tickets carry hours/CP,
+keep the seed's empty-state line.
+
+Find them by title via `local.list_entries(...)`. (GitHub pins cap at 3, which is
+why there are three pinned; GitLab has no pinning and `pin_entry` no-ops there.)
+
+**Who refreshes which dashboard:**
+- **ROADMAP** and **Current sprint** are rendered automatically by the runtime
+  scheduler (`executing/dashboards.py`) from the live work posts, idempotently. Do
+  NOT hand-edit them. Create/update the work posts (epics/tickets/issues + labels)
+  and the scheduler reflects the change on its next poll. There is no permission
+  switch for this; it is unconditional.
+- **SCHEDULE** has no runtime renderer, so the sprint-planning routes maintain it by
+  hand: `edit_entry(schedule_id, body=<rendered markdown>)`. Refresh it only when a
+  route changes sprint composition.
+
+(The old `config.permissions.remote.post_dashboards` gate is gone — dashboards are
+not opt-out.)
 
 ## Spec-change post (the request itself)
 
@@ -100,6 +139,7 @@ Do not treat `draft` posts as work. `question` marks clarification threads.
 ## What the worker may write
 
 Only through the `apply.py` reconcile script, and only what the route plans:
-create work posts, edit bodies (incl. dashboards), swap status labels, comment,
+create work posts, edit bodies (incl. the SCHEDULE dashboard — but NOT ROADMAP or
+Current sprint, which the runtime scheduler owns), swap status labels, comment,
 close/delete retired posts. Never write the local cache directly; the remote is
 the system's source of truth and the next poll re-syncs the cache from it.

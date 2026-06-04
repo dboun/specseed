@@ -14,8 +14,9 @@ Flow (driven from ``dispatch._run_work`` after a successful agent run):
   (+ close the entry).
 * REVIEW success -> read the reviewer's self-reported verdict+confidence from the
   agent output, post the review as a comment, then:
-  - pass (approve & confidence >= threshold) -> ``done`` (+ close), or
-    ``awaiting_approval`` when ``require_human_approval``;
+  - pass (approve & confidence >= threshold) -> ``done`` (+ close). The review step
+    itself is not human-gated; a human bounces work back via a request-changes
+    comment (the ``in_review``/``awaiting_approval`` -> ``in_progress`` transition);
   - fail (changes / low confidence) -> back to ``todo`` to reimplement, until
     ``max_attempts`` review cycles, after which a draft ``spec-change:adapt`` post
     is opened for the human and the issue is parked ``blocked``.
@@ -205,7 +206,6 @@ def _advance_after_review(ctx: Any, entity: Any, result: Any, conversation: Any)
     cfg = _review_config(ctx)
     threshold = float(cfg.get("confidence_threshold", 0.75))
     max_attempts = int(cfg.get("max_attempts", 3))
-    require_approval = bool(cfg.get("require_human_approval", False))
 
     verdict, confidence = parse_review(getattr(result, "stdout", "") or "")
     summary = _review_summary(getattr(result, "stdout", "") or "")
@@ -219,14 +219,6 @@ def _advance_after_review(ctx: Any, entity: Any, result: Any, conversation: Any)
     _comment(ctx, entity.post_id, "{0}\n\n{1}\n\n{2}".format(header, summary, REVIEW_MARKER))
 
     if passed:
-        if require_approval:
-            _set_status(ctx, entity, "awaiting_approval")
-            _comment(
-                ctx, entity.post_id,
-                "Review passed (confidence {0:.2f}). Awaiting human approval: an "
-                "approver must comment `approve {1}` to complete.".format(confidence, entity.post_id),
-            )
-            return "review passed -> awaiting_approval"
         _set_status(ctx, entity, "done")
         _close(ctx, entity.post_id)
         rolled = roll_up(ctx, entity)
@@ -278,6 +270,26 @@ def _escalate(ctx: Any, entity: Any, attempt: int, max_attempts: int, summary: s
         ),
     )
     return "escalated"
+
+
+def park_for_implement_approval(ctx: Any, entity: Any) -> str:
+    """Park a ready issue ``awaiting_approval`` because ``auto_implement_issue`` is off.
+
+    The issue waits until a configured approver comments ``approve <id>``; the gate is
+    then resolved by ``resolve_approval`` (pre-work gate -> back to ``todo``), and the
+    next ``todo`` event runs the implementation agent (approval is now on record).
+    """
+    if not _can_write(ctx):
+        return "remote writes not permitted; not parking"
+    if _is_stale(ctx, entity):
+        return "stale event; remote already advanced past {0}".format(entity.status)
+    _set_status(ctx, entity, "awaiting_approval")
+    _comment(
+        ctx, entity.post_id,
+        "Implementation requires human approval (`auto_implement_issue` is off). An "
+        "approver must comment `approve {0}` before work begins.".format(entity.post_id),
+    )
+    return "todo -> awaiting_approval (implement approval required)"
 
 
 def resolve_approval(ctx: Any, entity: Any, state_result: Any, conversation: Any = None) -> Optional[str]:

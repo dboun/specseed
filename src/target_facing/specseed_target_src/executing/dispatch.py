@@ -77,6 +77,36 @@ class AgentIntent:
     NONE = "none"
 
 
+# intent -> runner function (the chain to run). merge_conflicts has no intent.
+_INTENT_FUNCTION = {
+    AgentIntent.SPEC_CHANGE: "spec",
+    AgentIntent.IMPLEMENT: "implementation",
+    AgentIntent.REVIEW: "review",
+}
+
+
+def _run_agent(ctx: ExecutionContext, prompt: str, intent: str) -> Any:
+    """Run the prompt on the chain for ``intent``'s function.
+
+    Works with both a per-function :class:`RunnerChains` (production) and a bare
+    runner (a test double injected straight into the context)."""
+    runner = ctx.runner
+    if hasattr(runner, "chain_for"):  # RunnerChains
+        return runner.run(
+            prompt,
+            function=_INTENT_FUNCTION.get(intent, "implementation"),
+            cwd=ctx.repo_root,
+            cancel=ctx.cancel,
+            timeout_s=ctx.agent_timeout_s,
+        )
+    return runner.run(
+        prompt,
+        cwd=ctx.repo_root,
+        cancel=ctx.cancel,
+        timeout_s=ctx.agent_timeout_s,
+    )
+
+
 def _spec_change_route(entity: Any) -> Optional[str]:
     """Return the route suffix of a ``spec-change:<route>`` label, else None.
 
@@ -420,6 +450,19 @@ def _run_work(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
             ),
         )
 
+    # Platform gate: a ready issue parks for human sign-off unless auto_implement_issue
+    # is on, or an approver has already approved it (which moved it back to todo).
+    if intent == AgentIntent.IMPLEMENT and not ctx.permissions.auto_implement_issue():
+        if not getattr(state_result, "approved_by", None):
+            detail = advance.park_for_implement_approval(ctx, entity)
+            platform_log.log_event(
+                "implement_approval_required",
+                task_id=task.get("task_id"),
+                post_id=post_id,
+                detail=detail,
+            )
+            return HandlerOutcome(success=True, detail=detail)
+
     if intent == AgentIntent.SPEC_CHANGE and _has_pending_spec_change_run(ctx, post_id):
         platform_log.log_event(
             "spec_change_run_pending_skip",
@@ -440,12 +483,7 @@ def _run_work(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
     else:  # REVIEW
         prompt = prompts.build_review_prompt(entity, ctx)
 
-    result = ctx.runner.run(
-        prompt,
-        cwd=ctx.repo_root,
-        cancel=ctx.cancel,
-        timeout_s=ctx.agent_timeout_s,
-    )
+    result = _run_agent(ctx, prompt, intent)
     platform_log.log_event(
         "agent_result",
         task_id=task.get("task_id"),

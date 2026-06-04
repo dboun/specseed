@@ -266,7 +266,7 @@ class TrackingBase(ABC):
 
         Only the provided fields change; passing None leaves a field untouched.
         This is the seam dashboards use to rewrite their bodies (ROADMAP,
-        TIMELINE, the sprint board).
+        SCHEDULE, the sprint board).
 
         Expected success payload:
             TrackingEntryId

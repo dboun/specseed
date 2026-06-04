@@ -19,6 +19,7 @@ from specseed_target_src.entities.entity_base import Entity
 from specseed_target_src.executing.agent_runner import (
     AgentRunner,
     DEFAULT_AGENT_TIMEOUT_S,
+    RunnerChains,
 )
 from specseed_target_src.executing.permissions import Permissions
 
@@ -32,7 +33,7 @@ class ExecutionContext:
     remote: Any                      # source of truth (TrackingBase)
     config: dict[str, Any]
     permissions: Permissions
-    runner: AgentRunner
+    runner: "AgentRunner | RunnerChains"   # a bare runner (tests) or per-function chains
     repo_root: Path
     storage: Path
     cancel: threading.Event

@@ -73,9 +73,10 @@ Read `references/spec-change-protocol.md` first. The shape is always:
    imports `resolve_remote()` and applies the post mutations through the tracking
    contract: `add_entry`, `edit_entry` (title/body), `add_entry_label`,
    `remove_entry_label`, `add_entry_comment`, `set_entry_open`/`set_entry_closed`,
-   `delete_entry`, `ensure_label`. `edit_entry` is how dashboards (ROADMAP,
-   TIMELINE, sprint board) get rewritten; a status swap is `remove_entry_label`
-   then `add_entry_label`. See the protocol for the canonical header and the
+   `delete_entry`, `ensure_label`. `edit_entry` rewrites post bodies — including the
+   SCHEDULE dashboard, but NOT ROADMAP or Current sprint, which the runtime scheduler
+   renders from the work posts. A status swap is `remove_entry_label` then
+   `add_entry_label`. See the protocol for the canonical header and the
    per-provider notes (GitHub cannot hard-delete issues, so close instead).
 4. **Enqueue it.** Call `scheduling/spec_change.enqueue_spec_change_run(...)`.
    The scheduler (`specseed_target_src/executing/`) drains the queue and runs the
@@ -141,3 +142,15 @@ spec.
   never `:status:todo`. Every run that creates issues posts an `APR-NNNN` request
   and parks the request `awaiting_approval`. You never release claimable work
   yourself. (See "Approval before work".)
+
+## Action gates (awareness only)
+
+The implementation agent honors config-driven **action-class gates**
+(`permissions.agents` in `configuration.json`: container, heavy_compute, network,
+deps, data_destructive, external_publish, outside_repo, secrets — each `block` /
+`surface` / `auto` / `require_human_approval`). They fire mid-implementation, not
+here. You do NOT evaluate or enforce them. But when an issue you spec obviously
+demands a gated action (a deploy, a destructive migration, a new dependency), say so
+in the issue body so the human reading the plan is not surprised when the impl agent
+parks for approval. The runtime renders the live policy into the impl prompt; the
+authoritative list lives in `specseed_target_src/executing/permissions.py`.

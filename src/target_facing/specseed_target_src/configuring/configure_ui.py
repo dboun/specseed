@@ -60,33 +60,38 @@ class ConfigureUI(tk.Tk):
         self._update_storage_preview()
 
     def _build_vars(self) -> None:
-        backend = self.cfg["backend"]
         runner = self.cfg.get("runner") or {}
         approvals = self.cfg["approvals"]
         permissions = self.cfg["permissions"]
         git = permissions["git"]
         remote_perms = permissions["remote"]
+        platform = permissions.get("platform") or {}
+        agents = permissions.get("agents") or {}
 
         self.specseed_dir = tk.StringVar(value=self.cfg.get("specseed_dir") or configure.DEFAULT_SPECSEED_DIR)
+        self.dev_branch = tk.StringVar(value=self._dev_branch_default())
         self.ignore_specseed = tk.BooleanVar(value=True)
-        self.local_only = tk.BooleanVar(value=not backend.get("enabled"))
-        self.provider = tk.StringVar(value=backend.get("provider") or self.remote.get("provider") or "github")
+        self.local_only = tk.BooleanVar(value=not self.remote.get("enabled"))
+        self.provider = tk.StringVar(value=self.remote.get("provider") or "github")
         self.repo = tk.StringVar(value=self.remote.get("repo") or "")
         self.token = tk.StringVar(value="")
         self.git_enabled = tk.BooleanVar(value=git.get("enabled", True))
-        self.merge_to_dev = tk.BooleanVar(value=git.get("merge_to_dev", False))
-        self.merge_to_main = tk.BooleanVar(value=git.get("merge_to_main", False))
-        self.post_issues = tk.BooleanVar(value=remote_perms.get("post_issues", False))
-        self.post_dashboards = tk.BooleanVar(value=remote_perms.get("post_dashboards", False))
+        self.merge_to_dev_branch = tk.BooleanVar(value=git.get("merge_to_dev_branch", False))
         self.post_control = tk.BooleanVar(value=remote_perms.get("post_control", False))
         self.push_branches = tk.BooleanVar(value=remote_perms.get("push_branches", False))
-        self.push_main = tk.BooleanVar(value=remote_perms.get("push_main", False))
+        self.push_dev_branch = tk.BooleanVar(value=remote_perms.get("push_dev_branch", False))
         self.make_prs = tk.BooleanVar(value=remote_perms.get("make_prs", False))
+        self.auto_implement_issue = tk.BooleanVar(value=platform.get("auto_implement_issue", True))
+        self.auto_next_sprint = tk.BooleanVar(
+            value=platform.get("auto_proceed_to_next_sprint_if_available", False)
+        )
+        self.agent_gates = {
+            cat: tk.StringVar(value=agents.get(cat) or configure.DEFAULT_AGENT_GATES.get(cat, "block"))
+            for cat in configure.AGENT_CATEGORIES
+        }
         self.approvers = tk.StringVar(value=", ".join(approvals.get("approver_usernames", [])))
-        self.runner_provider = tk.StringVar(value=runner.get("provider") or "claude")
-        self.runner_model = tk.StringVar(value=runner.get("model") or self._default_runner_model())
-        self.runner_effort = tk.StringVar(value=runner.get("effort") or "medium")
-        self.runner_model_was_default = self.runner_model.get() == self._default_runner_model()
+        # Per-function fallback chains: function -> list of spec-var dicts.
+        self.runner_chains = self._runner_chains_from_cfg(runner)
         self.poll_interval = tk.StringVar(
             value=str(self.cfg.get("poll_interval_seconds", configure.DEFAULT_POLL_INTERVAL))
         )
@@ -98,12 +103,8 @@ class ConfigureUI(tk.Tk):
             self.local_only,
             self.provider,
             self.git_enabled,
-            self.post_issues,
-            self.runner_provider,
         ):
             variable.trace_add("write", lambda *_args: self._sync_visibility())
-        self.runner_provider.trace_add("write", lambda *_args: self._on_runner_provider_changed())
-        self.runner_model.trace_add("write", lambda *_args: self._on_runner_model_changed())
         self.specseed_dir.trace_add("write", lambda *_args: self._update_storage_preview())
 
     def _configure_style(self) -> None:
@@ -153,6 +154,8 @@ class ConfigureUI(tk.Tk):
         self._build_backend_section()
         self._build_git_section()
         self._build_remote_permissions_section()
+        self._build_platform_section()
+        self._build_agents_section()
         self._build_approvals_section()
         self._build_runner_section()
 
@@ -160,9 +163,10 @@ class ConfigureUI(tk.Tk):
         frame = self._card("Repository")
         self._row(frame, 0, "Target repo", ttk.Label(frame, text=str(self.repo_root), style="Muted.TLabel"))
         self._row(frame, 1, "Specseed dir", ttk.Entry(frame, textvariable=self.specseed_dir, width=44))
+        self._row(frame, 2, "Dev branch", ttk.Entry(frame, textvariable=self.dev_branch, width=44))
         self._row(
             frame,
-            2,
+            3,
             "",
             ttk.Checkbutton(
                 frame,
@@ -225,39 +229,22 @@ class ConfigureUI(tk.Tk):
         ).pack(anchor=tk.W, pady=(0, 5))
         ttk.Checkbutton(
             self.git_merge_frame,
-            text="Allow merging into the dev integration branch",
-            variable=self.merge_to_dev,
-        ).pack(anchor=tk.W)
-        ttk.Checkbutton(
-            self.git_merge_frame,
-            text="Allow merging into main/master",
-            variable=self.merge_to_main,
+            text="Allow merging into the dev branch",
+            variable=self.merge_to_dev_branch,
         ).pack(anchor=tk.W)
 
     def _build_remote_permissions_section(self) -> None:
         self.remote_permissions_frame = self._card("Remote Actions")
+        ttk.Label(
+            self.remote_permissions_frame,
+            text="Posting issues/tickets/epics is always allowed — the tracker lives on the remote.",
+            style="Muted.TLabel",
+        ).grid(row=0, column=0, columnspan=2, sticky=tk.W, padx=10, pady=(8, 4))
         ttk.Checkbutton(
             self.remote_permissions_frame,
-            text="Post issues/tickets/epics, labels, and comments",
-            variable=self.post_issues,
-        ).grid(row=0, column=0, columnspan=2, sticky=tk.W, padx=10, pady=(8, 4))
-        self.post_children_frame = ttk.Frame(self.remote_permissions_frame)
-        self.post_children_frame.grid(row=1, column=0, columnspan=2, sticky=tk.EW, padx=28, pady=(0, 6))
-        ttk.Checkbutton(
-            self.post_children_frame,
-            text="Also post dashboards: ROADMAP, TIMELINE, current branch",
-            variable=self.post_dashboards,
-        ).pack(anchor=tk.W)
-        ttk.Checkbutton(
-            self.post_children_frame,
-            text="Also post the CONTROL channel",
+            text="Post the CONTROL channel",
             variable=self.post_control,
-        ).pack(anchor=tk.W)
-        ttk.Label(
-            self.post_children_frame,
-            text="Replying to spec-change posts is always allowed while posting is on.",
-            style="Muted.TLabel",
-        ).pack(anchor=tk.W, pady=(2, 0))
+        ).grid(row=1, column=0, columnspan=2, sticky=tk.W, padx=10, pady=2)
         ttk.Checkbutton(
             self.remote_permissions_frame,
             text="Push branches to the remote",
@@ -265,14 +252,52 @@ class ConfigureUI(tk.Tk):
         ).grid(row=2, column=0, columnspan=2, sticky=tk.W, padx=10, pady=2)
         ttk.Checkbutton(
             self.remote_permissions_frame,
-            text="Push to main/master on the remote",
-            variable=self.push_main,
+            text="Push to the dev branch on the remote",
+            variable=self.push_dev_branch,
         ).grid(row=3, column=0, columnspan=2, sticky=tk.W, padx=10, pady=2)
         ttk.Checkbutton(
             self.remote_permissions_frame,
             text="Open pull/merge requests",
             variable=self.make_prs,
         ).grid(row=4, column=0, columnspan=2, sticky=tk.W, padx=10, pady=(2, 10))
+
+    def _build_platform_section(self) -> None:
+        frame = self._card("Platform Autos")
+        self.platform_frame = frame
+        ttk.Checkbutton(
+            frame,
+            text="Auto-implement ready issues (off = each needs human approval first)",
+            variable=self.auto_implement_issue,
+        ).grid(row=0, column=0, columnspan=2, sticky=tk.W, padx=10, pady=(8, 2))
+        ttk.Checkbutton(
+            frame,
+            text="Auto-proceed to the next sprint when available (off = human approves)",
+            variable=self.auto_next_sprint,
+        ).grid(row=1, column=0, columnspan=2, sticky=tk.W, padx=10, pady=(2, 10))
+
+    def _build_agents_section(self) -> None:
+        frame = self._card("Agent Action Gates")
+        ttk.Label(
+            frame,
+            text=("Level for each action class the implementation agent may hit mid-work: "
+                  "block = never · surface = do + announce · auto = do silently · "
+                  "require_human_approval = only after a human approves."),
+            style="Muted.TLabel",
+            wraplength=620,
+        ).grid(row=0, column=0, columnspan=2, sticky=tk.W, padx=10, pady=(8, 6))
+        for i, (cat, desc) in enumerate(configure.AGENT_CATEGORIES.items(), start=1):
+            self._row(
+                frame,
+                i,
+                cat,
+                ttk.Combobox(
+                    frame,
+                    textvariable=self.agent_gates[cat],
+                    values=list(configure.AGENT_LEVELS),
+                    state="readonly",
+                    width=24,
+                ),
+            )
 
     def _build_approvals_section(self) -> None:
         frame = self._card("Approvals")
@@ -292,39 +317,76 @@ class ConfigureUI(tk.Tk):
 
     def _build_runner_section(self) -> None:
         frame = self._card("Runner")
-        provider_box = ttk.Frame(frame)
-        ttk.Radiobutton(provider_box, text="Claude", variable=self.runner_provider, value="claude").pack(
-            side=tk.LEFT
-        )
-        ttk.Radiobutton(provider_box, text="Codex", variable=self.runner_provider, value="codex").pack(
-            side=tk.LEFT, padx=(12, 0)
-        )
-        self._row(frame, 0, "Agent CLI", provider_box)
-        self._row(
-            frame,
-            1,
-            "Model",
-            ttk.Entry(frame, textvariable=self.runner_model, width=44),
-        )
-        self.effort_frame = ttk.Frame(frame)
-        for label, value in (("Low", "low"), ("Medium", "medium"), ("High", "high")):
-            ttk.Radiobutton(self.effort_frame, text=label, variable=self.runner_effort, value=value).pack(
-                side=tk.LEFT, padx=(0 if value == "low" else 12, 0)
-            )
-        self._row(frame, 2, "Reasoning effort", self.effort_frame)
         ttk.Label(
             frame,
-            text="Reasoning effort is used by the Codex runner.",
+            text=(
+                "Each function runs an ordered fallback chain: the first agent is primary, "
+                "the rest are tried on failure. merge_conflicts is surfaced for later use."
+            ),
             style="Muted.TLabel",
             wraplength=620,
-        ).grid(row=3, column=1, sticky=tk.EW, padx=10, pady=(0, 10))
+        ).grid(row=0, column=0, columnspan=2, sticky=tk.EW, padx=10, pady=(4, 8))
+        # One container per function; rows are (re)drawn dynamically by _draw_chain.
+        self.runner_function_frames = {}
+        row = 1
+        for fn in configure.RUNNER_FUNCTIONS:
+            fn_frame = ttk.LabelFrame(frame, text=fn, padding=(6, 4))
+            fn_frame.grid(row=row, column=0, columnspan=2, sticky=tk.EW, padx=10, pady=6)
+            fn_frame.columnconfigure(0, weight=1)
+            self.runner_function_frames[fn] = fn_frame
+            self._draw_chain(fn)
+            row += 1
         self._row(
             frame,
-            4,
+            row,
             "Poll interval",
             ttk.Entry(frame, textvariable=self.poll_interval, width=14),
             suffix="seconds",
         )
+
+    def _draw_chain(self, fn: str) -> None:
+        """(Re)draw every spec row for one function plus its Add button."""
+        container = self.runner_function_frames[fn]
+        for child in container.winfo_children():
+            child.destroy()
+        specs = self.runner_chains[fn]
+        for i, v in enumerate(specs):
+            self._draw_spec_row(container, fn, i, v, removable=len(specs) > 1)
+        ttk.Button(
+            container,
+            text="+ Add fallback",
+            command=lambda f=fn: self._add_runner_spec(f),
+        ).grid(row=len(specs), column=0, sticky=tk.W, padx=4, pady=(4, 2))
+
+    def _draw_spec_row(self, container, fn: str, i: int, v: dict, *, removable: bool) -> None:
+        row = ttk.Frame(container)
+        row.grid(row=i, column=0, sticky=tk.EW, pady=2)
+        label = "primary" if i == 0 else f"fallback #{i}"
+        ttk.Label(row, text=label, width=11).pack(side=tk.LEFT)
+        ttk.Combobox(
+            row, textvariable=v["provider"], values=list(configure.RUNNER_PROVIDERS),
+            state="readonly", width=8,
+        ).pack(side=tk.LEFT, padx=2)
+        ttk.Entry(row, textvariable=v["model"], width=16).pack(side=tk.LEFT, padx=2)
+        ttk.Combobox(
+            row, textvariable=v["effort"], values=["low", "medium", "high"],
+            state="readonly", width=8,
+        ).pack(side=tk.LEFT, padx=2)
+        ttk.Entry(row, textvariable=v["data_dir"], width=18).pack(side=tk.LEFT, padx=2)
+        if removable:
+            ttk.Button(
+                row, text="✕", width=3,
+                command=lambda f=fn, idx=i: self._remove_runner_spec(f, idx),
+            ).pack(side=tk.LEFT, padx=2)
+
+    def _add_runner_spec(self, fn: str) -> None:
+        self.runner_chains[fn].append(self._spec_vars(None))
+        self._draw_chain(fn)
+
+    def _remove_runner_spec(self, fn: str, idx: int) -> None:
+        if len(self.runner_chains[fn]) > 1:
+            del self.runner_chains[fn][idx]
+            self._draw_chain(fn)
 
     def _card(self, title: str) -> ttk.LabelFrame:
         frame = ttk.LabelFrame(self.body, text=title, style="Card.TLabelframe", padding=(0, 4))
@@ -356,22 +418,12 @@ class ConfigureUI(tk.Tk):
         else:
             self.remote_backend_frame.grid()
             if not self.remote_permissions_frame.winfo_ismapped():
-                self.remote_permissions_frame.pack(fill=tk.X, pady=(0, 12), before=self.approvals_frame)
+                self.remote_permissions_frame.pack(fill=tk.X, pady=(0, 12), before=self.platform_frame)
 
         if self.git_enabled.get():
             self.git_merge_frame.grid()
         else:
             self.git_merge_frame.grid_remove()
-
-        if self.post_issues.get() and not self.local_only.get():
-            self.post_children_frame.grid()
-        else:
-            self.post_children_frame.grid_remove()
-
-        if self.runner_provider.get() == "codex":
-            self.effort_frame.grid()
-        else:
-            self.effort_frame.grid_remove()
 
         if self.provider.get() == "github":
             self.token_help.configure(
@@ -427,17 +479,44 @@ class ConfigureUI(tk.Tk):
             return
         self.storage_preview.set(f"storage: {storage}")
 
-    def _default_runner_model(self) -> str:
-        provider = self.runner_provider.get() if hasattr(self, "runner_provider") else "claude"
-        return "gpt-5.4-mini" if provider == "codex" else "claude-opus-4-8"
+    def _dev_branch_default(self) -> str:
+        # Stored value wins; absent/plain-default falls back to git autodetection.
+        stored = self.cfg.get("dev_branch")
+        if stored and stored != configure.DEFAULT_DEV_BRANCH:
+            return stored
+        return configure.detect_default_branch(self.repo_root)
 
-    def _on_runner_provider_changed(self) -> None:
-        if self.runner_model_was_default or not self.runner_model.get().strip():
-            self.runner_model.set(self._default_runner_model())
-            self.runner_model_was_default = True
+    def _spec_vars(self, spec: dict | None) -> dict:
+        """tk vars for one agent spec, defaulting from ``spec``."""
+        spec = spec or configure.default_runner_spec()
+        provider = spec.get("provider") or "claude"
+        return {
+            "provider": tk.StringVar(value=provider),
+            "model": tk.StringVar(value=spec.get("model") or "opus"),
+            "effort": tk.StringVar(value=spec.get("effort") or "high"),
+            "data_dir": tk.StringVar(
+                value=spec.get("provider_data_dir")
+                or configure.PROVIDER_DEFAULT_HOME.get(provider, "~/.claude")
+            ),
+        }
 
-    def _on_runner_model_changed(self) -> None:
-        self.runner_model_was_default = self.runner_model.get().strip() == self._default_runner_model()
+    def _spec_from_vars(self, v: dict) -> dict:
+        provider = v["provider"].get().strip().lower() or "claude"
+        return {
+            "provider": provider,
+            "provider_data_dir": v["data_dir"].get().strip()
+            or configure.PROVIDER_DEFAULT_HOME.get(provider, "~/.claude"),
+            "model": v["model"].get().strip() or "opus",
+            "effort": v["effort"].get().strip().lower() or "high",
+        }
+
+    def _runner_chains_from_cfg(self, runner: dict | None) -> dict:
+        coerced = configure._coerce_runner(runner) or configure.default_runner_chains()
+        chains = {}
+        for fn in configure.RUNNER_FUNCTIONS:
+            specs = coerced.get(fn) or [configure.default_runner_spec()]
+            chains[fn] = [self._spec_vars(s) for s in specs]
+        return chains
 
     def reload(self) -> None:
         storage = self._save_storage()
@@ -450,31 +529,34 @@ class ConfigureUI(tk.Tk):
         messagebox.showinfo("Reload", f"Reloaded values from {storage}")
 
     def _load_values_into_vars(self) -> None:
-        backend = self.cfg["backend"]
         runner = self.cfg.get("runner") or {}
         approvals = self.cfg["approvals"]
         permissions = self.cfg["permissions"]
         git = permissions["git"]
         remote_perms = permissions["remote"]
+        platform = permissions.get("platform") or {}
+        agents = permissions.get("agents") or {}
         self.specseed_dir.set(self.cfg.get("specseed_dir") or configure.DEFAULT_SPECSEED_DIR)
-        self.local_only.set(not backend.get("enabled"))
-        self.provider.set(backend.get("provider") or self.remote.get("provider") or "github")
+        self.dev_branch.set(self._dev_branch_default())
+        self.local_only.set(not self.remote.get("enabled"))
+        self.provider.set(self.remote.get("provider") or "github")
         self.repo.set(self.remote.get("repo") or "")
         self.token.set("")
         self.git_enabled.set(git.get("enabled", True))
-        self.merge_to_dev.set(git.get("merge_to_dev", False))
-        self.merge_to_main.set(git.get("merge_to_main", False))
-        self.post_issues.set(remote_perms.get("post_issues", False))
-        self.post_dashboards.set(remote_perms.get("post_dashboards", False))
+        self.merge_to_dev_branch.set(git.get("merge_to_dev_branch", False))
         self.post_control.set(remote_perms.get("post_control", False))
         self.push_branches.set(remote_perms.get("push_branches", False))
-        self.push_main.set(remote_perms.get("push_main", False))
+        self.push_dev_branch.set(remote_perms.get("push_dev_branch", False))
         self.make_prs.set(remote_perms.get("make_prs", False))
+        self.auto_implement_issue.set(platform.get("auto_implement_issue", True))
+        self.auto_next_sprint.set(platform.get("auto_proceed_to_next_sprint_if_available", False))
+        for cat, var in self.agent_gates.items():
+            var.set(agents.get(cat) or configure.DEFAULT_AGENT_GATES.get(cat, "block"))
         self.approvers.set(", ".join(approvals.get("approver_usernames", [])))
-        self.runner_provider.set(runner.get("provider") or "claude")
-        self.runner_model.set(runner.get("model") or self._default_runner_model())
-        self.runner_model_was_default = self.runner_model.get() == self._default_runner_model()
-        self.runner_effort.set(runner.get("effort") or "medium")
+        self.runner_chains = self._runner_chains_from_cfg(runner)
+        if hasattr(self, "runner_function_frames"):
+            for fn in configure.RUNNER_FUNCTIONS:
+                self._draw_chain(fn)
         self.poll_interval.set(
             str(self.cfg.get("poll_interval_seconds", configure.DEFAULT_POLL_INTERVAL))
         )
@@ -486,43 +568,43 @@ class ConfigureUI(tk.Tk):
             poll_interval = int(self.poll_interval.get().strip())
             if poll_interval <= 0:
                 raise ValueError("Poll interval must be greater than zero.")
-            runner_provider = self.runner_provider.get().strip().lower()
-            if runner_provider not in ("claude", "codex"):
-                raise ValueError("Agent CLI must be claude or codex.")
-            runner_model = self.runner_model.get().strip() or None
-            runner_effort = self.runner_effort.get().strip().lower() or "medium"
-            if runner_effort not in ("low", "medium", "high"):
-                raise ValueError("Reasoning effort must be low, medium, or high.")
+            runner_chains = {}
+            for fn in configure.RUNNER_FUNCTIONS:
+                specs = [self._spec_from_vars(v) for v in self.runner_chains[fn]]
+                for s in specs:
+                    if s["provider"] not in configure.RUNNER_PROVIDERS:
+                        raise ValueError(f"{fn}: provider must be claude or codex.")
+                    if s["effort"] not in ("low", "medium", "high"):
+                        raise ValueError(f"{fn}: reasoning effort must be low, medium, or high.")
+                runner_chains[fn] = specs or [configure.default_runner_spec()]
         except ValueError as exc:
             messagebox.showerror("Cannot save", str(exc))
             return
 
         cfg = configure.default_config()
         cfg["specseed_dir"] = specseed_rel.as_posix()
+        cfg["dev_branch"] = self.dev_branch.get().strip() or configure.DEFAULT_DEV_BRANCH
         cfg["poll_interval_seconds"] = poll_interval
-        cfg["runner"]["provider"] = runner_provider
-        cfg["runner"]["model"] = runner_model
-        cfg["runner"]["effort"] = runner_effort
-        cfg["backend"]["enabled"] = not self.local_only.get()
-        cfg["backend"]["provider"] = None if self.local_only.get() else self.provider.get()
+        cfg["runner"] = runner_chains
         cfg["approvals"]["approver_usernames"] = self._split_names(self.approvers.get())
-        cfg["permissions"]["git"]["enabled"] = self.git_enabled.get()
-        cfg["permissions"]["git"]["merge_to_dev"] = self.merge_to_dev.get() if self.git_enabled.get() else False
-        cfg["permissions"]["git"]["merge_to_main"] = self.merge_to_main.get() if self.git_enabled.get() else False
-        cfg["permissions"]["remote"]["post_issues"] = self.post_issues.get() if not self.local_only.get() else False
-        cfg["permissions"]["remote"]["post_dashboards"] = (
-            self.post_dashboards.get() if cfg["permissions"]["remote"]["post_issues"] else False
-        )
-        cfg["permissions"]["remote"]["post_control"] = (
-            self.post_control.get() if cfg["permissions"]["remote"]["post_issues"] else False
-        )
-        cfg["permissions"]["remote"]["push_branches"] = self.push_branches.get() if not self.local_only.get() else False
-        cfg["permissions"]["remote"]["push_main"] = self.push_main.get() if not self.local_only.get() else False
-        cfg["permissions"]["remote"]["make_prs"] = self.make_prs.get() if not self.local_only.get() else False
+        local_only = self.local_only.get()
+        git_on = self.git_enabled.get()
+        cfg["permissions"]["git"]["enabled"] = git_on
+        cfg["permissions"]["git"]["merge_to_dev_branch"] = self.merge_to_dev_branch.get() if git_on else False
+        cfg["permissions"]["remote"]["post_control"] = self.post_control.get() if not local_only else False
+        cfg["permissions"]["remote"]["push_branches"] = self.push_branches.get() if not local_only else False
+        cfg["permissions"]["remote"]["push_dev_branch"] = self.push_dev_branch.get() if not local_only else False
+        cfg["permissions"]["remote"]["make_prs"] = self.make_prs.get() if not local_only else False
+        cfg["permissions"]["platform"]["auto_implement_issue"] = self.auto_implement_issue.get()
+        cfg["permissions"]["platform"]["auto_proceed_to_next_sprint_if_available"] = self.auto_next_sprint.get()
+        for cat, var in self.agent_gates.items():
+            level = var.get().strip() or configure.DEFAULT_AGENT_GATES.get(cat, "block")
+            cfg["permissions"]["agents"][cat] = level
 
         remote = configure.load_remote_state(storage)
-        remote["provider"] = None if self.local_only.get() else self.provider.get()
-        remote["repo"] = None if self.local_only.get() else (self.repo.get().strip() or None)
+        remote["enabled"] = not local_only
+        remote["provider"] = None if local_only else self.provider.get()
+        remote["repo"] = None if local_only else (self.repo.get().strip() or None)
         token = self.token.get().strip() or configure.load_token(storage)
 
         try:

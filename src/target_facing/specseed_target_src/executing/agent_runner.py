@@ -20,6 +20,7 @@ Only Python stdlib is used.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import threading
 import time
@@ -33,6 +34,16 @@ from specseed_target_src.executing import platform_log
 # Hard cap on a single agent run. The scheduler also enforces this at the thread
 # level as a backstop, but the runner owns the primary deadline.
 DEFAULT_AGENT_TIMEOUT_S = 6 * 60 * 60
+
+# The agent jobs a runner chain is configured per. Each maps to one dispatch
+# intent except merge_conflicts, which is surfaced but not dispatched yet (the
+# runtime never drives git, so nothing triggers it — conflict handling lives in
+# the implement prompt's git policy instead).
+RUNNER_FUNCTIONS = ("spec", "implementation", "review", "merge_conflicts")
+
+# provider -> the env var its CLI reads for its config/home dir, and the default.
+PROVIDER_CONFIG_ENV = {"claude": "CLAUDE_CONFIG_DIR", "codex": "CODEX_HOME"}
+PROVIDER_DEFAULT_HOME = {"claude": "~/.claude", "codex": "~/.codex"}
 
 
 @dataclass
@@ -65,12 +76,26 @@ class AgentRunner:
 class SubprocessAgentRunner(AgentRunner):
     """Run an external CLI, prompt on stdin, stoppable by cancel + deadline."""
 
-    def __init__(self, *, poll_interval: float = 0.25, grace: float = 10.0) -> None:
+    def __init__(
+        self,
+        *,
+        poll_interval: float = 0.25,
+        grace: float = 10.0,
+        env: Optional[dict[str, str]] = None,
+    ) -> None:
         self.poll_interval = poll_interval
         self.grace = grace
+        # Extra env vars layered over the parent process env for the child (e.g.
+        # CLAUDE_CONFIG_DIR / CODEX_HOME from a spec's provider_data_dir).
+        self.env_overrides: dict[str, str] = dict(env or {})
 
     def build_command(self, prompt: str, cwd: str | Path) -> list[str]:
         raise NotImplementedError
+
+    def _child_env(self) -> Optional[dict[str, str]]:
+        if not self.env_overrides:
+            return None
+        return {**os.environ, **self.env_overrides}
 
     def run(
         self,
@@ -91,6 +116,7 @@ class SubprocessAgentRunner(AgentRunner):
             argv=argv,
             timeout_s=timeout_s,
             prompt_chars=len(prompt),
+            env_overrides=sorted(self.env_overrides) or None,
         )
         try:
             proc = subprocess.Popen(
@@ -100,6 +126,7 @@ class SubprocessAgentRunner(AgentRunner):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                env=self._child_env(),
             )
         except (OSError, ValueError) as exc:
             platform_log.log_event(
@@ -220,15 +247,18 @@ class ClaudeAgentRunner(SubprocessAgentRunner):
         allowed_tools: str = "Read,Edit,Bash",
         permission_mode: str = "acceptEdits",
         binary: str = "claude",
+        config_dir: Optional[str] = None,
         poll_interval: float = 0.5,
         grace: float = 10.0,
     ) -> None:
-        super().__init__(poll_interval=poll_interval, grace=grace)
+        env = _config_dir_env("claude", config_dir)
+        super().__init__(poll_interval=poll_interval, grace=grace, env=env)
         self.model = model
         self.max_turns = max_turns
         self.allowed_tools = allowed_tools
         self.permission_mode = permission_mode
         self.binary = binary
+        self.config_dir = config_dir
 
     def build_command(self, prompt: str, cwd: str | Path) -> list[str]:
         return [
@@ -256,14 +286,17 @@ class CodexAgentRunner(SubprocessAgentRunner):
         effort: str = "medium",
         sandbox: str = "workspace-write",
         binary: str = "codex",
+        config_dir: Optional[str] = None,
         poll_interval: float = 0.5,
         grace: float = 10.0,
     ) -> None:
-        super().__init__(poll_interval=poll_interval, grace=grace)
+        env = _config_dir_env("codex", config_dir)
+        super().__init__(poll_interval=poll_interval, grace=grace, env=env)
         self.model = model
         self.effort = effort
         self.sandbox = sandbox
         self.binary = binary
+        self.config_dir = config_dir
 
     def build_command(self, prompt: str, cwd: str | Path) -> list[str]:
         return [
@@ -276,31 +309,139 @@ class CodexAgentRunner(SubprocessAgentRunner):
         ]
 
 
-def build_runner(config: Optional[dict[str, Any]] = None) -> AgentRunner:
-    """Build the agent runner the config selects (``config["runner"]``).
+def _config_dir_env(provider: str, config_dir: Optional[str]) -> dict[str, str]:
+    """``{ENV_VAR: expanded_dir}`` for a provider's config/home, or ``{}``.
 
-    ``runner.provider`` picks the CLI (``claude`` default, or ``codex``);
-    ``runner.model`` / ``runner.effort`` tune it. Missing config => the Claude
-    default, matching prior hardcoded behaviour.
+    ``config_dir`` (a spec's ``provider_data_dir``) is ``~``-expanded. ``None``/blank
+    means inherit the parent env (no override).
     """
-    runner_cfg = (config or {}).get("runner") or {}
-    provider = str(runner_cfg.get("provider") or "claude").lower()
-    model = runner_cfg.get("model")
+    if not config_dir:
+        return {}
+    var = PROVIDER_CONFIG_ENV.get(provider)
+    if not var:
+        return {}
+    return {var: str(Path(str(config_dir)).expanduser())}
+
+
+def default_runner_spec() -> dict[str, Any]:
+    """The single Claude spec every function defaults to."""
+    return {
+        "provider": "claude",
+        "provider_data_dir": PROVIDER_DEFAULT_HOME["claude"],
+        "model": "opus",
+        "effort": "high",
+    }
+
+
+def default_runner_chains() -> dict[str, list[dict[str, Any]]]:
+    """One default Claude spec per function."""
+    return {fn: [default_runner_spec()] for fn in RUNNER_FUNCTIONS}
+
+
+def runner_from_spec(spec: dict[str, Any]) -> AgentRunner:
+    """Build one :class:`AgentRunner` from a ``{provider, provider_data_dir, model,
+    effort}`` spec. ``provider_data_dir`` wires the CLI's config-dir env var."""
+    spec = spec or {}
+    provider = str(spec.get("provider") or "claude").lower()
+    model = spec.get("model")
+    data_dir = spec.get("provider_data_dir")
     if provider == "codex":
         kwargs: dict[str, Any] = {}
         if model:
             kwargs["model"] = model
-        if runner_cfg.get("effort"):
-            kwargs["effort"] = runner_cfg["effort"]
-        if runner_cfg.get("sandbox"):
-            kwargs["sandbox"] = runner_cfg["sandbox"]
+        if spec.get("effort"):
+            kwargs["effort"] = spec["effort"]
+        if spec.get("sandbox"):
+            kwargs["sandbox"] = spec["sandbox"]
+        if data_dir:
+            kwargs["config_dir"] = data_dir
         return CodexAgentRunner(**kwargs)
     if provider in ("claude", "claude-code"):
         kwargs = {}
         if model:
             kwargs["model"] = model
+        if data_dir:
+            kwargs["config_dir"] = data_dir
         return ClaudeAgentRunner(**kwargs)
     raise ValueError(f"unsupported runner provider: {provider!r}")
+
+
+class RunnerChains:
+    """A per-function ordered fallback chain of agent runners.
+
+    ``dispatch`` asks for a function (spec/implementation/review); the chain tries
+    its first spec, and on a plain failure (nonzero exit / launch error, NOT a
+    cancel) falls through to the next spec. A cancel returns immediately — a
+    deliberate stop is not a failure to retry.
+    """
+
+    def __init__(self, chains: dict[str, list[AgentRunner]]) -> None:
+        self.chains = chains
+
+    @classmethod
+    def single(cls, runner: AgentRunner) -> "RunnerChains":
+        """Wrap one runner as the whole chain for every function (test/back-compat)."""
+        return cls({fn: [runner] for fn in RUNNER_FUNCTIONS})
+
+    def chain_for(self, function: str) -> list[AgentRunner]:
+        chain = self.chains.get(function)
+        if chain:
+            return chain
+        # Fall back to implementation, then any configured chain — never empty.
+        return self.chains.get("implementation") or next(
+            (c for c in self.chains.values() if c), []
+        )
+
+    def run(
+        self,
+        prompt: str,
+        *,
+        function: str,
+        cwd: str | Path,
+        cancel: Optional[threading.Event] = None,
+        timeout_s: float = DEFAULT_AGENT_TIMEOUT_S,
+    ) -> AgentResult:
+        chain = self.chain_for(function)
+        last: Optional[AgentResult] = None
+        for i, runner in enumerate(chain):
+            if i:
+                platform_log.log_event(
+                    "agent_chain_fallback", function=function, spec_index=i
+                )
+            result = runner.run(prompt, cwd=cwd, cancel=cancel, timeout_s=timeout_s)
+            last = result
+            if getattr(result, "killed", False):
+                return result  # deliberate stop — do not try fallbacks
+            if getattr(result, "ok", False):
+                return result
+        if last is None:
+            return AgentResult(ok=False, error=f"no runner configured for {function!r}")
+        platform_log.log_event(
+            "agent_chain_exhausted", function=function, specs=len(chain)
+        )
+        return last
+
+
+def build_runner_chains(config: Optional[dict[str, Any]] = None) -> RunnerChains:
+    """Build a :class:`RunnerChains` from ``config["runner"]``.
+
+    ``runner`` maps each function to an ordered list of specs. Missing/empty
+    functions fall back to the default Claude spec, so the result always has a
+    usable chain per function.
+    """
+    runner_cfg = (config or {}).get("runner") or {}
+    chains: dict[str, list[AgentRunner]] = {}
+    for fn in RUNNER_FUNCTIONS:
+        specs = runner_cfg.get(fn)
+        if not isinstance(specs, list) or not specs:
+            specs = [default_runner_spec()]
+        chains[fn] = [runner_from_spec(s) for s in specs]
+    return RunnerChains(chains)
+
+
+def build_runner(config: Optional[dict[str, Any]] = None) -> AgentRunner:
+    """Back-compat: the primary implementation runner (first spec of the chain)."""
+    return build_runner_chains(config).chain_for("implementation")[0]
 
 
 class FakeAgentRunner(AgentRunner):

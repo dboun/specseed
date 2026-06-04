@@ -41,6 +41,52 @@ from pathlib import Path
 CONFIG_VERSION = 1
 DEFAULT_POLL_INTERVAL = 45
 DEFAULT_SPECSEED_DIR = ".specseed"
+DEFAULT_DEV_BRANCH = "main"
+
+# The runner runs one ordered fallback chain of agent specs per function. Kept here
+# so configure.py stays import-light (mirrors executing/agent_runner.py).
+RUNNER_FUNCTIONS = ("spec", "implementation", "review", "merge_conflicts")
+RUNNER_PROVIDERS = ("claude", "codex")
+PROVIDER_DEFAULT_HOME = {"claude": "~/.claude", "codex": "~/.codex"}
+
+
+def default_runner_spec():
+    """The single Claude spec every function defaults to."""
+    return {
+        "provider": "claude",
+        "provider_data_dir": PROVIDER_DEFAULT_HOME["claude"],
+        "model": "opus",
+        "effort": "high",
+    }
+
+
+def default_runner_chains():
+    """One default Claude spec per function."""
+    return {fn: [default_runner_spec()] for fn in RUNNER_FUNCTIONS}
+
+# Action-class gate taxonomy the implementation agent honours. Mirrors
+# executing/permissions.py (kept here so configure.py stays import-light / standalone).
+AGENT_CATEGORIES = {
+    "container":        "docker/podman build, run, push, pull",
+    "heavy_compute":    "GPU / training / experiment scripts / long jobs",
+    "network":          "outbound non-localhost calls (downloads, external APIs)",
+    "deps":             "add/remove a dependency, or major-version bump",
+    "data_destructive": "delete data, drop/rewrite schema, destructive migration",
+    "external_publish": "deploy, submission, upload — anything leaving the repo",
+    "outside_repo":     "writes outside the repo root",
+    "secrets":          "reading/writing credentials or secret material",
+}
+AGENT_LEVELS = ("block", "surface", "auto", "require_human_approval")
+DEFAULT_AGENT_GATES = {
+    "container":        "block",
+    "heavy_compute":    "block",
+    "network":          "surface",
+    "deps":             "block",
+    "data_destructive": "block",
+    "external_publish": "block",
+    "outside_repo":     "block",
+    "secrets":          "surface",
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -66,6 +112,30 @@ def repo_root_from_cwd():
     except Exception:
         pass
     return Path.cwd().resolve()
+
+
+def detect_default_branch(repo_root):
+    """Best-effort dev branch: prefer `main`, fall back to `master`, else `main`.
+
+    Reads local branches via git. A repo that already lives on `master` keeps it;
+    everything else defaults to `main`.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "for-each-ref", "--format=%(refname:short)", "refs/heads/"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+        )
+        if out.returncode == 0:
+            heads = {line.strip() for line in out.stdout.splitlines() if line.strip()}
+            if "main" in heads:
+                return "main"
+            if "master" in heads:
+                return "master"
+    except Exception:
+        pass
+    return DEFAULT_DEV_BRANCH
 
 
 def storage_for_specseed_dir(specseed_dir):
@@ -176,14 +246,22 @@ def _write_json(path, data):
 # --------------------------------------------------------------------------- #
 # defaults — everything that can act is OFF until the human turns it on
 # --------------------------------------------------------------------------- #
+def default_agent_gates():
+    return dict(DEFAULT_AGENT_GATES)
+
+
 def default_config():
     return {
         "version": CONFIG_VERSION,
         "specseed_dir": DEFAULT_SPECSEED_DIR,
+        # The integration branch work merges into. "dev branch" = where changes go;
+        # default main (or master if that is the repo's branch).
+        "dev_branch": DEFAULT_DEV_BRANCH,
         "poll_interval_seconds": DEFAULT_POLL_INTERVAL,
-        # Which coding-agent CLI the runner shells out to. provider claude|codex.
-        "runner": {"provider": "claude", "model": None, "effort": "medium"},
-        "backend": {"enabled": False, "provider": None},
+        # Per-function ordered fallback chains of agent specs. Each spec is
+        # {provider, provider_data_dir, model, effort}; the first is primary, the
+        # rest are tried on failure.
+        "runner": default_runner_chains(),
         "approvals": {
             # Remote approval commands are only accepted from these usernames.
             # Empty means no remote author is allowed to resolve approvals.
@@ -191,39 +269,45 @@ def default_config():
         },
         # Code-review loop. enabled also gates the in_review state on every issue.
         # A passing review (verdict approve + confidence >= threshold) closes the
-        # issue (or routes to awaiting_approval when require_human_approval). A
-        # failing review reimplements until max_attempts, then opens a draft
-        # spec-change:adapt post for the human to discuss.
+        # issue. The review step itself is not human-gated; pass/fail is the
+        # confidence threshold. A failing review reimplements until max_attempts,
+        # then opens a draft spec-change:adapt post for the human to discuss.
         "review": {
             "enabled": False,
             "confidence_threshold": 0.75,
             "max_attempts": 3,
-            "require_human_approval": False,
         },
         "permissions": {
             # local git. creating local branches is ALWAYS allowed when git is on
-            # (no switch); merges into protected branches each get their own switch.
+            # (no switch); merging into the dev branch gets its own switch.
             "git": {
                 "enabled": True,
-                "merge_to_dev": False,
-                "merge_to_main": False,
+                "merge_to_dev_branch": False,
             },
-            # remote actions. only meaningful when backend.enabled. replying to
-            # spec-change posts is ALWAYS allowed when post_issues is on (no switch).
+            # remote actions. only meaningful once the remote is enabled (remote.json).
+            # posting issues/tickets/epics is ALWAYS allowed (the tracker lives on the
+            # remote; no opt-out), so it is not a switch here.
             "remote": {
-                "post_issues": False,     # issues/tickets/epics + their labels + comments
-                "post_dashboards": False,  # ROADMAP, TIMELINE, current branch (needs post_issues)
-                "post_control": False,     # the CONTROL channel post (needs post_issues)
+                "post_control": False,     # the CONTROL channel post
                 "push_branches": False,
-                "push_main": False,
+                "push_dev_branch": False,  # push to the dev branch on the remote
                 "make_prs": False,
             },
+            # platform-level autos. off = a human approves first.
+            "platform": {
+                "auto_implement_issue": True,
+                "auto_proceed_to_next_sprint_if_available": False,
+            },
+            # action-class gates the implementation agent honours mid-work.
+            "agents": default_agent_gates(),
         },
     }
 
 
 def default_remote_state():
     return {
+        # whether work mirrors to a real github/gitlab remote (vs the local stand-in).
+        "enabled": False,
         "provider": None,
         "repo": None,
         "state": {
@@ -234,6 +318,36 @@ def default_remote_state():
     }
 
 
+def _coerce_runner(existing):
+    """Normalize a stored ``runner`` into the per-function chain shape.
+
+    Handles three cases: the new ``{function: [specs]}`` shape (kept, known
+    functions only), the legacy flat ``{provider, model, effort}`` single runner
+    (migrated to a one-spec chain per function), and anything else (``None``).
+    """
+    if not isinstance(existing, dict):
+        return None
+    has_functions = any(fn in existing for fn in RUNNER_FUNCTIONS)
+    is_legacy_flat = (not has_functions) and any(
+        k in existing for k in ("provider", "model", "effort")
+    )
+    if is_legacy_flat:
+        provider = (existing.get("provider") or "claude").lower()
+        spec = {
+            "provider": provider,
+            "provider_data_dir": PROVIDER_DEFAULT_HOME.get(provider, "~/.claude"),
+            "model": existing.get("model"),
+            "effort": existing.get("effort") or "high",
+        }
+        return {fn: [dict(spec)] for fn in RUNNER_FUNCTIONS}
+    out = {}
+    for fn in RUNNER_FUNCTIONS:
+        chain = existing.get(fn)
+        if isinstance(chain, list) and chain:
+            out[fn] = chain
+    return out or None
+
+
 def load_config(storage):
     """Load configuration.json with defaults backfilled for missing keys."""
     existing = _load_json(config_file(storage))
@@ -242,23 +356,23 @@ def load_config(storage):
         return cfg
 
     for key, value in existing.items():
+        # legacy "backend" lived here before it moved to remote.json; drop it.
         if key not in ("backend", "approvals", "permissions", "runner", "review"):
             cfg[key] = value
 
-    if isinstance(existing.get("runner"), dict):
-        cfg["runner"].update(existing["runner"])
-    if isinstance(existing.get("backend"), dict):
-        cfg["backend"].update(existing["backend"])
+    coerced = _coerce_runner(existing.get("runner"))
+    if coerced:
+        cfg["runner"].update(coerced)
     if isinstance(existing.get("approvals"), dict):
         cfg["approvals"].update(existing["approvals"])
     if isinstance(existing.get("review"), dict):
         cfg["review"].update(existing["review"])
+        cfg["review"].pop("require_human_approval", None)  # legacy: review step is not human-gated
     if isinstance(existing.get("permissions"), dict):
         permissions = existing["permissions"]
-        if isinstance(permissions.get("git"), dict):
-            cfg["permissions"]["git"].update(permissions["git"])
-        if isinstance(permissions.get("remote"), dict):
-            cfg["permissions"]["remote"].update(permissions["remote"])
+        for block in ("git", "remote", "platform", "agents"):
+            if isinstance(permissions.get(block), dict):
+                cfg["permissions"][block].update(permissions[block])
     return cfg
 
 
@@ -285,18 +399,21 @@ def write_config_files(
     specseed_rel=None,
     ignore_specseed=False,
 ):
-    """Persist config/remote/token files using configure.py's file policy."""
+    """Persist config/remote/token files using configure.py's file policy.
+
+    remote.json is ALWAYS written now (it holds the enabled+provider choice). The
+    token is only written when the remote is enabled and a token was supplied.
+    """
     written = {}
     written["config"] = _write_json(config_file(storage), cfg)
     if ignore_specseed and repo_root is not None and specseed_rel is not None:
         gitignore = ensure_repo_gitignored(repo_root, Path(specseed_rel))
         if gitignore is not None:
             written["repo_gitignore"] = gitignore
-    if cfg.get("backend", {}).get("enabled"):
-        written["remote"] = _write_json(remote_file(storage), remote)
-        if token:
-            written["token"] = write_token(storage, token)
-            written["storage_gitignore"] = ensure_gitignored(storage)
+    written["remote"] = _write_json(remote_file(storage), remote)
+    if remote.get("enabled") and token:
+        written["token"] = write_token(storage, token)
+        written["storage_gitignore"] = ensure_gitignored(storage)
     return written
 
 
@@ -464,26 +581,23 @@ def _detect_origin(storage):
 
 
 def section_backend(cfg, remote, storage):
-    """Set backend on/off + provider + repo in `remote`. Returns the access token
-    (or None for local-only); the caller persists it to token_remote.txt."""
-    backend = cfg["backend"]
+    """Set remote on/off + provider + repo in `remote` (remote.json). Returns the
+    access token (or None for local-only); the caller persists it to token_remote.txt."""
     local = ask_yn(
         "Track work locally only (no GitHub/GitLab remote)?",
-        default=not backend.get("enabled"),
+        default=not remote.get("enabled"),
     )
     if local:
-        backend["enabled"] = False
-        backend["provider"] = None
+        remote["enabled"] = False
         remote["provider"] = None
         return None
 
     provider = ask_choice(
         "Mirror to which host?",
         ("github", "gitlab"),
-        backend.get("provider") or "github",
+        remote.get("provider") or "github",
     )
-    backend["enabled"] = True
-    backend["provider"] = provider
+    remote["enabled"] = True
     remote["provider"] = provider
 
     detected = _detect_origin(storage)
@@ -503,61 +617,80 @@ def section_backend(cfg, remote, storage):
 
 def section_git_permissions(cfg):
     git = cfg["permissions"]["git"]
+    dev_branch = cfg.get("dev_branch") or DEFAULT_DEV_BRANCH
     print("\n--- local git ---")
     git["enabled"] = ask_yn(
         "Let the agent use local git (branch/commit/merge)?",
         default=git.get("enabled", True),
     )
     if not git["enabled"]:
-        git["merge_to_dev"] = False
-        git["merge_to_main"] = False
+        git["merge_to_dev_branch"] = False
         return
     print("  (creating local branches is always allowed once git is on.)")
-    git["merge_to_dev"] = ask_yn(
-        "  Allow merging into the dev integration branch?",
-        default=git.get("merge_to_dev", False),
-    )
-    git["merge_to_main"] = ask_yn(
-        "  Allow merging into main/master?",
-        default=git.get("merge_to_main", False),
+    git["merge_to_dev_branch"] = ask_yn(
+        f"  Allow merging into the dev branch ({dev_branch})?",
+        default=git.get("merge_to_dev_branch", False),
     )
 
 
-def section_remote_permissions(cfg):
-    if not cfg["backend"].get("enabled"):
+def section_dev_branch(cfg):
+    print("\n--- dev branch ---")
+    cfg["dev_branch"] = ask_str(
+        "Dev branch (where work merges to; main/master)",
+        cfg.get("dev_branch") or DEFAULT_DEV_BRANCH,
+    ) or DEFAULT_DEV_BRANCH
+
+
+def section_remote_permissions(cfg, remote):
+    if not remote.get("enabled"):
         return
     rem = cfg["permissions"]["remote"]
+    dev_branch = cfg.get("dev_branch") or DEFAULT_DEV_BRANCH
     print("\n--- remote actions ---")
-    rem["post_issues"] = ask_yn(
-        "Allow posting issues/tickets/epics (+ their labels + comments)?",
-        default=rem.get("post_issues", False),
+    print("  (posting issues/tickets/epics is always allowed — the tracker lives on the remote.)")
+    rem["post_control"] = ask_yn(
+        "Allow posting the CONTROL channel?",
+        default=rem.get("post_control", False),
     )
-    if rem["post_issues"]:
-        rem["post_dashboards"] = ask_yn(
-            "  Also post the dashboards (ROADMAP, TIMELINE, current branch)?",
-            default=rem.get("post_dashboards", False),
-        )
-        rem["post_control"] = ask_yn(
-            "  Also post the CONTROL channel?",
-            default=rem.get("post_control", False),
-        )
-        print("  (replying to spec-change posts is always allowed while posting is on.)")
-    else:
-        rem["post_dashboards"] = False
-        rem["post_control"] = False
-
     rem["push_branches"] = ask_yn(
         "Allow pushing branches to the remote?",
         default=rem.get("push_branches", False),
     )
-    rem["push_main"] = ask_yn(
-        "Allow pushing to main/master on the remote?",
-        default=rem.get("push_main", False),
+    rem["push_dev_branch"] = ask_yn(
+        f"Allow pushing to the dev branch ({dev_branch}) on the remote?",
+        default=rem.get("push_dev_branch", False),
     )
     rem["make_prs"] = ask_yn(
         "Allow opening pull/merge requests?",
         default=rem.get("make_prs", False),
     )
+
+
+def section_platform(cfg):
+    plat = cfg["permissions"].setdefault("platform", {})
+    print("\n--- platform autos ---")
+    plat["auto_implement_issue"] = ask_yn(
+        "Auto-implement ready issues (off = each needs human approval first)?",
+        default=plat.get("auto_implement_issue", True),
+    )
+    plat["auto_proceed_to_next_sprint_if_available"] = ask_yn(
+        "Auto-proceed to the next sprint when available (off = human approves)?",
+        default=plat.get("auto_proceed_to_next_sprint_if_available", False),
+    )
+
+
+def section_agents(cfg):
+    gates = cfg["permissions"].setdefault("agents", default_agent_gates())
+    print("\n--- agent action gates ---")
+    print("  Level for each action class the implementation agent may hit mid-work:")
+    print("  block = never · surface = do + announce · auto = do silently · "
+          "require_human_approval = only after a human approves")
+    for category, desc in AGENT_CATEGORIES.items():
+        gates[category] = ask_choice(
+            f"  {category} ({desc})",
+            AGENT_LEVELS,
+            gates.get(category) or DEFAULT_AGENT_GATES.get(category, "block"),
+        )
 
 
 def section_approvals(cfg):
@@ -569,22 +702,42 @@ def section_approvals(cfg):
     )
 
 
+def _ask_runner_spec(spec):
+    """Prompt for one agent spec, defaulting from ``spec``. Returns a spec dict."""
+    spec = spec or default_runner_spec()
+    provider = ask_choice("    Provider", RUNNER_PROVIDERS, spec.get("provider") or "claude")
+    default_model = spec.get("model") or ("gpt-5.4-mini" if provider == "codex" else "opus")
+    model = ask_str("    Model", default_model) or default_model
+    effort = ask_choice("    Reasoning effort", ("low", "medium", "high"), spec.get("effort") or "high")
+    default_dir = spec.get("provider_data_dir") or PROVIDER_DEFAULT_HOME.get(provider, "~/.claude")
+    data_dir = ask_str("    Provider data dir", default_dir) or default_dir
+    return {"provider": provider, "provider_data_dir": data_dir, "model": model, "effort": effort}
+
+
+def _edit_runner_chain(function, chain):
+    """Edit one function's ordered fallback chain. Primary required, then optional
+    fallbacks. Returns a non-empty list of specs."""
+    chain = list(chain) if chain else [default_runner_spec()]
+    print(f"\n  {function}: primary agent (tried first)")
+    new_chain = [_ask_runner_spec(chain[0])]
+    idx = 1
+    while True:
+        existing = chain[idx] if idx < len(chain) else None
+        prompt = "  Add a fallback agent?" if existing is None else f"  Keep/replace fallback #{idx}?"
+        if not ask_yn(prompt, default=existing is not None):
+            break
+        print(f"  {function}: fallback #{idx} (tried if the previous one fails)")
+        new_chain.append(_ask_runner_spec(existing))
+        idx += 1
+    return new_chain
+
+
 def section_runner(cfg):
-    runner = cfg.setdefault("runner", {"provider": "claude", "model": None, "effort": "medium"})
-    print("\n--- coding agent ---")
-    runner["provider"] = ask_choice(
-        "Which coding-agent CLI should the runner drive?",
-        ("claude", "codex"),
-        runner.get("provider") or "claude",
-    )
-    default_model = runner.get("model") or ("gpt-5.4-mini" if runner["provider"] == "codex" else "claude-opus-4-8")
-    runner["model"] = ask_str("  Model", default_model) or None
-    if runner["provider"] == "codex":
-        runner["effort"] = ask_choice(
-            "  Reasoning effort",
-            ("low", "medium", "high"),
-            runner.get("effort") or "medium",
-        )
+    runner = _coerce_runner(cfg.get("runner")) or default_runner_chains()
+    print("\n--- coding agents (per-function fallback chains) ---")
+    for function in RUNNER_FUNCTIONS:
+        runner[function] = _edit_runner_chain(function, runner.get(function))
+    cfg["runner"] = runner
 
 
 def section_interval(cfg):
@@ -601,15 +754,23 @@ def section_interval(cfg):
 def summary_lines(cfg, remote, token):
     L = []
     L.append(f"specseed dir: {cfg.get('specseed_dir') or DEFAULT_SPECSEED_DIR}")
-    backend = cfg["backend"]
-    if backend.get("enabled"):
-        L.append(f"backend: {backend['provider']} mirror — repo={remote.get('repo') or '?'}, "
+    dev_branch = cfg.get("dev_branch") or DEFAULT_DEV_BRANCH
+    if remote.get("enabled"):
+        L.append(f"remote: {remote.get('provider')} mirror — repo={remote.get('repo') or '?'}, "
                  f"token={'set' if token else 'MISSING'}")
     else:
-        L.append("backend: local only")
-    runner = cfg.get("runner") or {}
-    L.append(f"agent: {runner.get('provider', 'claude')} "
-             f"(model={runner.get('model') or 'default'}, effort={runner.get('effort', 'medium')})")
+        L.append("remote: local only")
+    runner = _coerce_runner(cfg.get("runner")) or {}
+    for function in RUNNER_FUNCTIONS:
+        chain = runner.get(function) or []
+        if not chain:
+            continue
+        specs = ", ".join(
+            "{0}/{1}/{2}".format(s.get("provider"), s.get("model") or "default", s.get("effort") or "?")
+            for s in chain
+        )
+        L.append(f"agent[{function}]: {specs}")
+    L.append(f"dev branch: {dev_branch}")
     L.append(f"poll interval: {cfg['poll_interval_seconds']}s")
     approvers = cfg.get("approvals", {}).get("approver_usernames", [])
     L.append("approvers: " + (", ".join(approvers) if approvers else "none configured"))
@@ -617,14 +778,19 @@ def summary_lines(cfg, remote, token):
     if not git["enabled"]:
         L.append("git: OFF (agent never touches git)")
     else:
-        L.append(f"git: on — branches=always, merge_to_dev={git['merge_to_dev']}, "
-                 f"merge_to_main={git['merge_to_main']}")
-    if backend.get("enabled"):
+        L.append(f"git: on — branches=always, merge_to_dev_branch={git['merge_to_dev_branch']}")
+    plat = cfg["permissions"].get("platform", {})
+    L.append(f"platform: auto_implement_issue={plat.get('auto_implement_issue', True)}, "
+             f"auto_proceed_to_next_sprint={plat.get('auto_proceed_to_next_sprint_if_available', False)}")
+    if remote.get("enabled"):
         r = cfg["permissions"]["remote"]
-        L.append(f"remote: post_issues={r['post_issues']} "
-                 f"(dashboards={r['post_dashboards']}, control={r['post_control']}), "
-                 f"push_branches={r['push_branches']}, push_main={r['push_main']}, "
+        L.append(f"remote actions: post_control={r['post_control']}, "
+                 f"push_branches={r['push_branches']}, push_dev_branch={r['push_dev_branch']}, "
                  f"make_prs={r['make_prs']}")
+    gates = cfg["permissions"].get("agents", {})
+    blocked = sorted(k for k, v in gates.items() if v == "block")
+    L.append("agent gates: " + (f"{len(gates)} classes (block: {', '.join(blocked) or 'none'})"
+                                 if gates else "defaults"))
     return L
 
 
@@ -651,6 +817,7 @@ def run_interactive(storage, explicit_storage=False):
     else:
         cfg = default_config()
         cfg["specseed_dir"] = specseed_rel.as_posix()
+        cfg["dev_branch"] = detect_default_branch(repo_root)
         print(f"Configuring a fresh repo (storage at {Path(storage).resolve()}).")
 
     remote = load_remote_state(storage)
@@ -658,8 +825,11 @@ def run_interactive(storage, explicit_storage=False):
 
     token = section_backend(cfg, remote, storage)
     section_runner(cfg)
+    section_dev_branch(cfg)
     section_git_permissions(cfg)
-    section_remote_permissions(cfg)
+    section_remote_permissions(cfg, remote)
+    section_platform(cfg)
+    section_agents(cfg)
     section_approvals(cfg)
     section_interval(cfg)
 

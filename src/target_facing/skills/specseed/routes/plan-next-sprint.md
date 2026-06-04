@@ -61,8 +61,9 @@ to adapt** for that change (note it in `plan.json`), then resume.
   `:status:awaiting_approval`** (gated, per the protocol's approval gate).
 - Recompute ticket-tier critical path across **all** tickets (prior + new); each
   slice sharpens it.
-- Pack the new tickets into the next sprint. Refresh ROADMAP / TIMELINE /
-  Current sprint dashboard bodies (`edit_entry`) if dashboards are enabled.
+- Pack the new tickets into the next sprint. Refresh the SCHEDULE body
+  (`edit_entry`). ROADMAP and Current sprint re-render from the runtime — do not
+  hand-edit them.
 
 ## Finish
 

@@ -25,11 +25,8 @@ from src.target_facing.specseed_target_src.tracking.tracking_remote_local import
 )
 
 
-def _config(*, backend_enabled=False, post_issues=True):
-    return {
-        "backend": {"enabled": backend_enabled, "provider": None},
-        "permissions": {"remote": {"post_issues": post_issues}},
-    }
+def _config():
+    return {"permissions": {"remote": {}}}
 
 
 class SpecChangeExecutorTest(unittest.TestCase):
@@ -107,18 +104,18 @@ class SpecChangeExecutorTest(unittest.TestCase):
         self.assertTrue(out.success, out.error)
         self.assertTrue(marker.exists())
 
-    def test_permission_off_blocks_run(self) -> None:
-        marker = self.root / "blocked_marker.txt"
+    def test_spec_change_always_permitted(self) -> None:
+        # Posting issues has no opt-out (the tracker lives on the remote), so a
+        # spec-change apply.py is always permitted to run.
+        marker = self.root / "ran_marker.txt"
         script_dir, _ = self._write_script(
             "from pathlib import Path\n"
             "Path(r'{0}').write_text('ran')\n".format(marker)
         )
-        # Backend enabled but post_issues off -> not permitted.
-        ctx = self._ctx(_config(backend_enabled=True, post_issues=False))
+        ctx = self._ctx(_config())
         out = dispatch(ctx, self._task(script_dir))
-        self.assertFalse(out.success)
-        self.assertIn("not permitted", out.error)
-        self.assertFalse(marker.exists())
+        self.assertTrue(out.success, out.error)
+        self.assertTrue(marker.exists())
 
     def test_nonzero_exit_is_failure(self) -> None:
         script_dir, _ = self._write_script("import sys\nsys.exit(3)\n")
