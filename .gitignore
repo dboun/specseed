@@ -222,3 +222,12 @@ __marimo__/
 
 
 .agent_memory_tmp/
+
+
+
+
+
+remote_local.db
+remote_local1.db
+remote_local2.db
+database.db
