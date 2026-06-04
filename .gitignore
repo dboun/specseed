@@ -230,4 +230,5 @@ __marimo__/
 remote_local.db
 remote_local1.db
 remote_local2.db
+tracking_remote_local.db
 database.db

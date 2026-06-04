@@ -12,7 +12,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timezone
+import threading
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -38,8 +39,29 @@ from tracking_base import (
 DEFAULT_DB_PATH = Path(__file__).with_name("tracking_local.db")
 
 
+_STAMP_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
+_clock_lock = threading.Lock()
+_last_stamp = ""
+
+
 def _now() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    """Return a strictly-increasing microsecond UTC timestamp.
+
+    ``sync_from_remote`` detects changes by comparing ``updated_at`` strings, so
+    two writes must never produce the same value. Microsecond precision makes
+    collisions astronomically unlikely; a per-process monotonic guard removes the
+    last of them by bumping the stamp by 1us if the wall clock has not advanced
+    past the previous one. The fixed-width ``%f`` keeps stamps lexicographically
+    ordered.
+    """
+    global _last_stamp
+    with _clock_lock:
+        stamp = datetime.now(timezone.utc).strftime(_STAMP_FORMAT)
+        if stamp <= _last_stamp:
+            prev = datetime.strptime(_last_stamp, _STAMP_FORMAT).replace(tzinfo=timezone.utc)
+            stamp = (prev + timedelta(microseconds=1)).strftime(_STAMP_FORMAT)
+        _last_stamp = stamp
+        return stamp
 
 
 def _assignees_to_json(assignees: Optional[list[str]]) -> str:

@@ -24,6 +24,10 @@ TRACKING_DIR = (
 )
 sys.path.insert(0, str(TRACKING_DIR))
 
+from datetime import datetime, timezone  # noqa: E402
+from unittest import mock  # noqa: E402
+
+import tracking_local  # noqa: E402
 from tracking_base import (  # noqa: E402
     TrackingEntryDetails,
     TrackingLabel,
@@ -32,6 +36,14 @@ from tracking_base import (  # noqa: E402
 )
 from tracking_local import TrackingLocal  # noqa: E402
 from tracking_remote_local import TrackingRemoteLocal  # noqa: E402
+
+
+class _FrozenDateTime(datetime):
+    """A datetime whose now() is frozen; strptime/arithmetic still real."""
+
+    @classmethod
+    def now(cls, tz=None):  # noqa: D401
+        return datetime(2026, 6, 4, 1, 2, 3, tzinfo=tz)
 
 
 class TrackingLocalTest(unittest.TestCase):
@@ -269,6 +281,36 @@ class TrackingLocalTest(unittest.TestCase):
         self.assertEqual(details.data.title, "Updated")
         self.assertEqual(details.data.comments, [])
         self.assertEqual(details.data.labels, [])
+
+
+    def test_now_is_strictly_increasing_even_with_a_frozen_clock(self) -> None:
+        # Two writes in the same instant must still get distinct, ordered stamps,
+        # otherwise sync_from_remote would miss the second one.
+        with mock.patch.object(tracking_local, "_last_stamp", ""), mock.patch.object(
+            tracking_local, "datetime", _FrozenDateTime
+        ):
+            stamps = [tracking_local._now() for _ in range(5)]
+        self.assertEqual(stamps, sorted(stamps))
+        self.assertEqual(len(set(stamps)), len(stamps))
+
+    def test_two_same_instant_updates_are_both_detected_by_sync(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        remote = TrackingRemoteLocal(db_path=root / "tracking_remote_local.db", author="alice")
+        local = TrackingLocal(db_path=root / "tracking_local.db", author="bob")
+
+        entry_id = remote.add_entry("E").data.id
+        local.sync_from_remote(remote)
+
+        # Freeze the clock so both updates land on the same wall-clock instant;
+        # the monotonic guard must still make them distinguishable.
+        with mock.patch.object(tracking_local, "datetime", _FrozenDateTime):
+            remote.set_entry_closed(entry_id)
+            result = local.sync_from_remote(remote)
+
+        actions = [(c.action, c.resource_type, c.field) for c in result.data]
+        self.assertIn(("state", "entry", "is_open"), actions)
 
 
 if __name__ == "__main__":
