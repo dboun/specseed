@@ -46,9 +46,12 @@ from specseed_target_src.executing.agent_runner import (
     build_runner,
 )
 from specseed_target_src.executing.scheduler import Scheduler
+from specseed_target_src.tracking.populate_defaults import populate_defaults
 from specseed_target_src.tracking.resolve_remote import (
     default_storage_dir,
     load_config,
+    load_remote_state,
+    resolve_remote,
 )
 
 
@@ -72,6 +75,56 @@ def build_scheduler(
     )
 
 
+def _backend_kind(config: dict) -> str:
+    """Map the configured backend to a ``populate_defaults`` backend kind."""
+    backend = config.get("backend") or {}
+    if not backend.get("enabled"):
+        return "remote_local"
+    provider = backend.get("provider")
+    if provider == "github":
+        return "remote_github"
+    if provider == "gitlab":
+        return "remote_gitlab"
+    raise ValueError(f"unsupported backend provider: {provider!r}")
+
+
+def _seed_marker_file(storage: Path) -> Path:
+    return Path(storage) / "seed_state.json"
+
+
+def ensure_remote_seeded(storage: str | Path, config: dict) -> Optional[dict]:
+    """Seed the configured remote once so the scheduler has something to poll.
+
+    First run on a repo finds an empty remote (the local stand-in is an empty
+    sqlite db), so a poll diffs nothing and no work is ever queued. This seeds
+    the default labels and permanent posts (incl. the draft ``spec-change:adapt``
+    post) by reusing ``populate_defaults`` against the resolved remote.
+
+    Idempotent and non-destructive (``prune=False`` never deletes user content).
+    A marker file keyed to ``(kind, repo)`` skips re-seeding on later launches and
+    re-seeds when the backend changes. Returns the populate summary, or ``None``
+    when seeding was skipped because the backend was already seeded.
+    """
+    storage = Path(storage)
+    kind = _backend_kind(config)
+    repo = (load_remote_state(storage) or {}).get("repo")
+    desired = {"kind": kind, "repo": repo}
+
+    marker = _seed_marker_file(storage)
+    try:
+        if json.loads(marker.read_text(encoding="utf-8")) == desired:
+            return None
+    except (OSError, json.JSONDecodeError):
+        pass
+
+    remote = resolve_remote(storage)
+    summary = populate_defaults(kind, tracker=remote, prune=False)
+
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(json.dumps(desired, indent=2) + "\n", encoding="utf-8")
+    return summary
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Launch the specseed scheduler.")
     parser.add_argument("--storage", default=None, help="override the storage dir")
@@ -80,8 +133,19 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--once", action="store_true", help="run one control+sync+drain pass and exit")
     args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
 
+    storage_dir = Path(args.storage) if args.storage else default_storage_dir()
+    seeded = ensure_remote_seeded(storage_dir, load_config(storage_dir))
+    if seeded is not None:
+        posts = seeded.get("default_posts", {})
+        created = [title for title, info in posts.items() if info.get("created")]
+        print(
+            f"seeded {seeded['backend']}: {len(seeded.get('ensured_labels', []))} labels, "
+            f"{len(posts)} permanent posts"
+            + (f" (created: {', '.join(created)})" if created else " (already present)")
+        )
+
     scheduler = build_scheduler(
-        storage=args.storage,
+        storage=storage_dir,
         repo_root=args.repo_root,
         interval=args.interval,
     )
