@@ -5,8 +5,11 @@ description: Non-interactive spec-change worker. Invoked by the specseed schedul
 
 # specseed (spec-change worker)
 
-Narrow, **non-interactive** skill. It runs one spec-change route against one
-request and stops. It does two things, every time:
+Skill not meant to run in interactive shell, but rather be interactive through 
+asking questions and stopping when needed. 
+User answers through reprompting and it continues.
+It runs one spec-change route against one request and stops. 
+It does two things, every time:
 
 1. **Edits the spec** under `.specseed/spec/` (vision, SRS, SAD, SDD, `adr.csv`,
    `reqs.json`).
