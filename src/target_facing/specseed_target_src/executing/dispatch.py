@@ -533,4 +533,6 @@ _WORK_ACTIONS = {
     "handle_comment_updated",
     "handle_reaction_added",
     "handle_reaction_removed",
+    "handle_entry_reaction_added",
+    "handle_entry_reaction_removed",
 }

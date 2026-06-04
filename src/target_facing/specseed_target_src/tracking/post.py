@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
-from specseed_target_src.tracking.comment import TrackingComment
+from specseed_target_src.tracking.comment import TrackingComment, TrackingReaction
 
 
 @dataclass(frozen=True)
@@ -38,6 +38,10 @@ class TrackingPostDetails(TrackingPostSummary):
 
     body: Optional[str] = None
     comments: list[TrackingComment] = field(default_factory=list)
+    # Reactions attached to the post ENTRY itself (not to a comment). Both GitHub
+    # (issue reactions) and GitLab (issue award emoji) support these. A 👍 here from
+    # an approver is one way the approval system clears an awaiting_approval gate.
+    reactions: list[TrackingReaction] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

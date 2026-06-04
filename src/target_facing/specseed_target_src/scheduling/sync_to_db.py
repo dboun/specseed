@@ -36,6 +36,8 @@ from specseed_target_src.tasks.cleanup_task import CleanupTask
 from specseed_target_src.tasks.handle_comment_added import HandleCommentAdded
 from specseed_target_src.tasks.handle_comment_updated import HandleCommentUpdated
 from specseed_target_src.tasks.handle_entry_created import HandleEntryCreated
+from specseed_target_src.tasks.handle_entry_reaction_added import HandleEntryReactionAdded
+from specseed_target_src.tasks.handle_entry_reaction_removed import HandleEntryReactionRemoved
 from specseed_target_src.tasks.handle_entry_reopened import HandleEntryReopened
 from specseed_target_src.tasks.handle_entry_updated import HandleEntryUpdated
 from specseed_target_src.tasks.handle_label_added import HandleLabelAdded
@@ -83,7 +85,7 @@ def sync_to_db(local: Any, remote: Any, db: Optional[Database] = None) -> dict[s
             field=getattr(change, "field", None),
         )
         if _is_entry_teardown(change):
-            _teardown_post(db, str(change.resource_id), change.action, summary)
+            _teardown_post(db, str(change.resource_id), change.action, summary, local=local)
             continue
 
         task = _build_task(change)
@@ -126,6 +128,8 @@ def _build_task(change: Any):
         if action == "create":
             return HandleEntryCreated.from_change(change)
         if action == "update":
+            if change.field == "updated_at":
+                return None
             return HandleEntryUpdated.from_change(change)
         if action == "state" and change.field == "is_open" and _is_open(change.new):
             return HandleEntryReopened.from_change(change)
@@ -147,6 +151,12 @@ def _build_task(change: Any):
             return HandleReactionAdded.from_change(change)
         if action == "delete":
             return HandleReactionRemoved.from_change(change)
+        return None
+    if rt == "entry_reaction":
+        if action == "create":
+            return HandleEntryReactionAdded.from_change(change)
+        if action == "delete":
+            return HandleEntryReactionRemoved.from_change(change)
         return None
     # repo-level labels and pins imply no agent work.
     return None
@@ -191,10 +201,26 @@ def _supersede(db: Database, task: Any) -> int:
     return removed
 
 
-def _teardown_post(db: Database, post_id: str, action: str, summary: dict[str, Any]) -> None:
+def _teardown_post(
+    db: Database,
+    post_id: str,
+    action: str,
+    summary: dict[str, Any],
+    local: Any = None,
+) -> None:
     platform_log.log_event("entry_teardown_start", post_id=post_id, action=action)
     in_progress: list[dict[str, Any]] = []
-    for row in db.tasks_for(post_id):
+    task_rows: list[dict[str, Any]] = []
+    seen_task_ids: set[int] = set()
+    for key in [post_id, *_comment_ids_for_post(local, post_id)]:
+        for row in db.tasks_for(key):
+            task_id = int(row["task_id"])
+            if task_id in seen_task_ids:
+                continue
+            seen_task_ids.add(task_id)
+            task_rows.append(row)
+
+    for row in task_rows:
         if row["status"] == "pending":
             db.remove(row["task_id"])
             summary["superseded"] += 1
@@ -220,6 +246,18 @@ def _teardown_post(db: Database, post_id: str, action: str, summary: dict[str, A
             interrupted_task_id=row["task_id"],
             reason=f"entry_{action}",
         )
+
+
+def _comment_ids_for_post(local: Any, post_id: str) -> list[str]:
+    if local is None:
+        return []
+    try:
+        result = local.get_entry(post_id)
+    except Exception:
+        return []
+    if not getattr(result, "ok", False) or getattr(result, "data", None) is None:
+        return []
+    return [str(getattr(comment, "id")) for comment in getattr(result.data, "comments", []) or []]
 
 
 def _request_interrupt(row: dict[str, Any]) -> None:

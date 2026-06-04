@@ -96,6 +96,19 @@ bodies, ADR justifications. Does NOT apply to machine artifacts (`reqs.json`,
 SRS requirement-table rows, frontmatter) or post labels. Specs are neutral
 reference text: no injected voice, opinions, or first person.
 
+## Approval before work (mandatory, every route)
+
+You never put new work into a state an impl agent can claim. **A run is not
+finished until it posts an approval request and parks it.** An issue becomes
+claimable the instant it is `issue:status:todo`; so every issue you newly spec is
+born **`issue:status:awaiting_approval`**, and you post one `APR-NNNN`
+approval-request comment naming the batch, then swap the request to
+`spec-change:status:awaiting_approval` and stop. A human approves (`approve
+APR-NNNN` or 👍 on the issue) before any code work begins; the executor then flips
+the issue to `todo`. This is a status gate, not a promise. It is **not**
+epic-gating. Full contract + helpers in `references/spec-change-protocol.md`
+("Approval gate (APR-NNNN)").
+
 ## Async clarification (the only "question" path)
 
 This worker cannot interview a human live. When a request is too ambiguous to
@@ -124,3 +137,7 @@ spec.
   fail loudly. The one provider gap: GitHub issues cannot be hard-deleted, so
   use `set_entry_closed` there (`delete_entry` is fine on local and GitLab).
 - **One request, one run.** Do the route, write the script, enqueue, stop.
+- **No work without approval.** New issues are created `:status:awaiting_approval`,
+  never `:status:todo`. Every run that creates issues posts an `APR-NNNN` request
+  and parks the request `awaiting_approval`. You never release claimable work
+  yourself. (See "Approval before work".)

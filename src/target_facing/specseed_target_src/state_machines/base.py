@@ -13,12 +13,21 @@ import re
 from typing import Any, Iterable, Optional
 
 from specseed_target_src.entities.entity_base import Entity
+from specseed_target_src.state_machines.approvals import requested_apr_ids
 
 
 DEFAULT_STATE = "todo"
 TERMINAL_STATES = {"done", "wont_do", "deprecated"}
 APPROVAL_COMMAND_RE = re.compile(r"^\s*approve\b(?P<ids>.*)$", re.IGNORECASE | re.DOTALL)
+REJECT_COMMAND_RE = re.compile(r"^\s*reject\b(?P<ids>.*)$", re.IGNORECASE | re.DOTALL)
 ID_SPLIT_RE = re.compile(r"[\s,]+")
+
+# Reaction kinds the approval system reads off a post: 👍 approves, 👎 rejects.
+APPROVE_REACTION = "thumbs_up"
+REJECT_REACTION = "thumbs_down"
+# Author names that are the bot itself, never a human approver. The local/remote
+# sqlite stand-ins author as these; real providers add the configured bot login.
+_DEFAULT_BOT_NAMES = {"local", "remote"}
 
 
 @dataclass(frozen=True)
@@ -44,6 +53,7 @@ class StateMachineResult:
     next_states: list[str]
     transitions: list[StateTransition] = field(default_factory=list)
     approved_by: list[str] = field(default_factory=list)
+    rejected_by: list[str] = field(default_factory=list)
     approval_ids: list[str] = field(default_factory=list)
     review_required: bool = False
     manual_testing_required: bool = False
@@ -73,6 +83,23 @@ def approval_ids_from_body(body: Optional[str]) -> list[str]:
     return [part for part in ID_SPLIT_RE.split(tail) if part]
 
 
+def reject_ids_from_body(body: Optional[str]) -> list[str]:
+    """Parse a strict single rejection post: ``reject <id> [<id> ...]``.
+
+    Mirror of :func:`approval_ids_from_body` for the negative path.
+    """
+
+    if not body:
+        return []
+    match = REJECT_COMMAND_RE.match(body.strip())
+    if match is None:
+        return []
+    tail = match.group("ids").strip()
+    if not tail:
+        return []
+    return [part for part in ID_SPLIT_RE.split(tail) if part]
+
+
 def approver_usernames(config: dict[str, Any]) -> set[str]:
     """Return configured usernames allowed to approve remote gates."""
 
@@ -87,6 +114,60 @@ def approver_usernames(config: dict[str, Any]) -> set[str]:
         if isinstance(nested, dict):
             candidates.extend(nested.get("approver_usernames") or [])
     return {str(name).casefold() for name in candidates if str(name).strip()}
+
+
+def bot_usernames(config: dict[str, Any]) -> set[str]:
+    """Author names that are the bot, never a valid human approver."""
+
+    names = set(_DEFAULT_BOT_NAMES)
+    candidates: list[Any] = []
+    for key in ("bot_usernames", "bot_username"):
+        value = config.get(key)
+        if isinstance(value, (list, tuple, set)):
+            candidates.extend(value)
+        elif value:
+            candidates.append(value)
+    approvals = config.get("approvals")
+    if isinstance(approvals, dict):
+        for key in ("bot_usernames", "bot_username"):
+            value = approvals.get(key)
+            if isinstance(value, (list, tuple, set)):
+                candidates.extend(value)
+            elif value:
+                candidates.append(value)
+    names.update(str(name).casefold() for name in candidates if str(name).strip())
+    return names
+
+
+def _allow_any_approver(config: dict[str, Any]) -> bool:
+    """Whether any non-bot human may approve when no approvers are configured.
+
+    Defaults to True: a solo/local project configures no approver list, so
+    requiring one would deadlock every gate. Set ``approvals.allow_any_approver``
+    false to require an explicit approver list instead.
+    """
+    approvals = config.get("approvals")
+    if isinstance(approvals, dict) and "allow_any_approver" in approvals:
+        return bool(approvals.get("allow_any_approver"))
+    if "allow_any_approver" in config:
+        return bool(config.get("allow_any_approver"))
+    return True
+
+
+def _approver_predicate(config: dict[str, Any]):
+    """Return ``is_approver(author) -> bool`` for this config.
+
+    With an explicit approver list, only those names approve. With no list and
+    ``allow_any_approver`` (the default), any author that is not the bot approves.
+    Otherwise nobody can (a deliberate, configured deadlock).
+    """
+    allowed = approver_usernames(config)
+    if allowed:
+        return lambda author: str(author).casefold() in allowed
+    if _allow_any_approver(config):
+        bots = bot_usernames(config)
+        return lambda author: bool(str(author).strip()) and str(author).casefold() not in bots
+    return lambda author: False
 
 
 def approval_target_ids(entity: Entity) -> set[str]:
@@ -104,28 +185,74 @@ def approval_target_ids(entity: Entity) -> set[str]:
     return {item.casefold() for item in ids if item}
 
 
+def _entity_reaction_users(entity: Entity, kind: str) -> list[str]:
+    """Usernames who reacted ``kind`` to the entity itself (not to a comment)."""
+    users: list[str] = []
+    for reaction in getattr(entity, "reactions", None) or []:
+        if _field(reaction, "kind") != kind:
+            continue
+        for user in _field(reaction, "users") or []:
+            if user:
+                users.append(str(user))
+    return users
+
+
 def approved_by(
     entity: Entity,
     config: dict[str, Any],
     conversation: Optional[Iterable[Any]] = None,
 ) -> list[str]:
-    """Find configured approvers who approved this entity in the conversation."""
+    """Find approvers who approved this entity.
 
-    allowed = approver_usernames(config)
-    if not allowed:
-        return []
+    Two equivalent signals count, both from an allowed approver (see
+    :func:`_approver_predicate`):
+
+    * a comment ``approve <id>`` whose id matches the entity (its post id, a
+      pending approval attr, or a live ``APR-NNNN`` requested in the
+      conversation), or
+    * a 👍 (``thumbs_up``) reaction on the post itself.
+    """
+
+    is_approver = _approver_predicate(config)
     targets = approval_target_ids(entity)
+    targets.update(item_id.casefold() for item_id in requested_apr_ids(conversation))
     authors = []
     for item in _conversation_items(entity, conversation):
         body = _field(item, "body")
         author = _field(item, "author")
-        if not body or not author:
-            continue
-        if str(author).casefold() not in allowed:
+        if not body or not author or not is_approver(author):
             continue
         ids = {item_id.casefold() for item_id in approval_ids_from_body(str(body))}
         if targets.intersection(ids):
             authors.append(str(author))
+    for user in _entity_reaction_users(entity, APPROVE_REACTION):
+        if is_approver(user):
+            authors.append(user)
+    return _dedupe(authors)
+
+
+def rejected_by(
+    entity: Entity,
+    config: dict[str, Any],
+    conversation: Optional[Iterable[Any]] = None,
+) -> list[str]:
+    """Find approvers who rejected this entity (``reject <id>`` or 👎)."""
+
+    is_approver = _approver_predicate(config)
+    targets = approval_target_ids(entity)
+    targets.update(item_id.casefold() for item_id in requested_apr_ids(conversation))
+    authors = []
+    for item in _conversation_items(entity, conversation):
+        body = _field(item, "body")
+        author = _field(item, "author")
+        if not body or not author or not is_approver(author):
+            continue
+        ids = {item_id.casefold() for item_id in reject_ids_from_body(str(body))}
+        if targets.intersection(ids):
+            authors.append(str(author))
+    for user in _entity_reaction_users(entity, REJECT_REACTION):
+        if is_approver(user):
+            authors.append(user)
     return _dedupe(authors)
 
 
@@ -139,6 +266,7 @@ def evaluate_entity_state(
     state = entity.status or DEFAULT_STATE
     tier = entity.tier or "entity"
     approvals = approved_by(entity, config, conversation)
+    rejections = rejected_by(entity, config, conversation)
     review_required = _review_required(entity, config)
     manual_required = _manual_testing_required(entity, config)
     hitl_required = _hitl_required(entity, config)
@@ -159,6 +287,7 @@ def evaluate_entity_state(
         next_states=_dedupe([transition.to_state for transition in transitions]),
         transitions=transitions,
         approved_by=approvals,
+        rejected_by=rejections,
         approval_ids=sorted(approval_target_ids(entity)),
         review_required=review_required,
         manual_testing_required=manual_required,

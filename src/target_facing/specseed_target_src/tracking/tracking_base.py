@@ -81,6 +81,14 @@ class TrackingReactionResult:
 
 
 @dataclass(frozen=True)
+class TrackingEntryReactionResult:
+    """Payload for adding a reaction to an entry itself (not one of its comments)."""
+
+    entry_id: int | str
+    reaction: str
+
+
+@dataclass(frozen=True)
 class TrackingSyncChange:
     """One mutation applied while syncing from another remote.
 
@@ -144,6 +152,9 @@ class TrackingBase(ABC):
     ) -> TrackingResult:
         return self.add_entry_comment_reaction(post_id, comment_id, reaction)
 
+    def add_post_reaction(self, post_id: int | str, reaction: str) -> TrackingResult:
+        return self.add_entry_reaction(post_id, reaction)
+
     def get_post_labels(self, post_id: int | str) -> TrackingResult:
         return self.get_entry_labels(post_id)
 
@@ -178,8 +189,10 @@ class TrackingBase(ABC):
         """Return full normalized data for one entry.
 
         Implementations should fetch the entry body plus all comments. Comment
-        reactions should be normalized into TrackingReaction objects using only
-        SUPPORTED_REACTIONS. Provider-specific payloads must not be returned.
+        reactions AND entry-level reactions should be normalized into
+        TrackingReaction objects using only SUPPORTED_REACTIONS; entry reactions
+        go on ``TrackingEntryDetails.reactions``. Provider-specific payloads must
+        not be returned.
 
         Expected success payload:
             TrackingEntryDetails
@@ -304,6 +317,22 @@ class TrackingBase(ABC):
 
         Expected success payload:
             TrackingReactionResult
+        """
+
+    @abstractmethod
+    def add_entry_reaction(self, entry_id: int | str, reaction: str) -> TrackingResult:
+        """Add a normalized reaction to an entry itself (not to a comment).
+
+        reaction must be one of:
+            eyes, heart, thumbs_up, thumbs_down
+
+        Both GitHub (``POST /issues/:n/reactions``) and GitLab (issue award
+        emoji) support entry reactions. Implementations should map the normalized
+        reaction to the provider spelling, and return ok=False on an unsupported
+        reaction. This is the seam the approval system reads a 👍 from.
+
+        Expected success payload:
+            TrackingEntryReactionResult
         """
 
     @abstractmethod

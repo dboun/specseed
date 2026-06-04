@@ -36,6 +36,8 @@ def resource_key(action: str, post_id: Optional[str], payload: dict[str, Any]) -
         return ("entry_label", pid, payload.get("label"))
     if action in ("handle_reaction_added", "handle_reaction_removed"):
         return ("reaction", payload.get("reaction_id"))
+    if action in ("handle_entry_reaction_added", "handle_entry_reaction_removed"):
+        return ("entry_reaction", payload.get("reaction_id"))
     if action in ("handle_entry_created", "handle_entry_updated", "handle_entry_reopened"):
         return ("entry", pid)
     return (action, pid)

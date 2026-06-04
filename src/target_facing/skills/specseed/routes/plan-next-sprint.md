@@ -56,8 +56,9 @@ to adapt** for that change (note it in `plan.json`), then resume.
 
 ## 3. Break down the slice (plan.json)
 
-- Create tickets/issues for the slice's roadmap titles (`creates`, tier +
-  `:status:todo`, body links, `satisfies_reqs` -> the reqs just added).
+- Create tickets/issues for the slice's roadmap titles (`creates`, body links,
+  `satisfies_reqs` -> the reqs just added). Tickets at `:status:todo`; **issues at
+  `:status:awaiting_approval`** (gated, per the protocol's approval gate).
 - Recompute ticket-tier critical path across **all** tickets (prior + new); each
   slice sharpens it.
 - Pack the new tickets into the next sprint. Refresh ROADMAP / TIMELINE /
@@ -65,8 +66,9 @@ to adapt** for that change (note it in `plan.json`), then resume.
 
 ## Finish
 
-Per the protocol: `plan.json` -> `apply.py` -> move the request post toward
-`done` -> `enqueue_spec_change_run(...)` -> stop.
+Per the protocol: `plan.json` -> `apply.py` -> `enqueue_spec_change_run(...)` ->
+stop. The new issues are gated, so post one `APR-NNNN` request comment and park
+the request `spec-change:status:awaiting_approval` (the approval gate), not `done`.
 
 ## Boundary
 

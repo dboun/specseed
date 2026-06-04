@@ -43,7 +43,9 @@ proves this manual item done?" Keep questions narrow.
 
 All manual work created by this route becomes the **current sprint**.
 
-- Create the requested epic, ticket, or issue at `:status:todo`.
+- Create the requested epic or ticket at `:status:todo`; create any **issue** at
+  **`:status:awaiting_approval`** (gated, per the protocol's approval gate). Even
+  injected/urgent issues do not auto-implement: a human approves first.
 - If the injected item is a ticket and needs execution work, create one or more
   child issues. A simple manual ticket may get one issue with matching scope.
 - If the injected item is an issue and no parent ticket is clear, create a
@@ -95,8 +97,9 @@ comment and the request status swap to `spec-change:status:awaiting_approval`.
 
 ## Finish
 
-Per the protocol: `plan.json` -> `apply.py` -> move the request post toward
-`done` -> `enqueue_spec_change_run(...)` -> stop.
+Per the protocol: `plan.json` -> `apply.py` -> `enqueue_spec_change_run(...)` ->
+stop. If the run created any issue, post one `APR-NNNN` request comment and park
+the request `spec-change:status:awaiting_approval` (the approval gate), not `done`.
 
 ## Boundary
 

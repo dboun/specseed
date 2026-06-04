@@ -170,6 +170,17 @@ class TrackingLocalUI(tk.Tk):
         ttk.Button(issue_actions, text="Remove Label", command=self.remove_issue_label).pack(
             side=tk.LEFT, padx=(8, 0)
         )
+        self.issue_entry_reaction = tk.StringVar(value=REACTION_CHOICES[0])
+        ttk.Combobox(
+            issue_actions,
+            textvariable=self.issue_entry_reaction,
+            values=REACTION_CHOICES,
+            state="readonly",
+            width=10,
+        ).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(issue_actions, text="React to Issue", command=self.react_to_issue).pack(
+            side=tk.LEFT, padx=(8, 0)
+        )
 
         self.issue_meta = ttk.Label(right, text="", style="Muted.TLabel", wraplength=560)
         self.issue_meta.pack(anchor=tk.W, pady=(0, 10))
@@ -346,10 +357,13 @@ class TrackingLocalUI(tk.Tk):
         labels = ", ".join(label.name for label in entry.labels) or "none"
         assignees = ", ".join(entry.assignees) or "none"
         state = "open" if entry.is_open else "closed"
+        entry_reactions = self._reaction_summary(getattr(entry, "reactions", []))
+        reaction_text = f" | reactions: {entry_reactions}" if entry_reactions else ""
         self.issue_meta.configure(
             text=(
                 f"#{entry.id} {state} by {entry.author or 'unknown'} | "
-                f"labels: {labels} | assignees: {assignees} | updated: {entry.updated_at or 'unknown'}"
+                f"labels: {labels} | assignees: {assignees} | "
+                f"updated: {entry.updated_at or 'unknown'}{reaction_text}"
             )
         )
         self.issue_comments.delete(0, tk.END)
@@ -493,6 +507,16 @@ class TrackingLocalUI(tk.Tk):
             self.selected_issue_id,
             self.issue_comment_ids[index],
             self.issue_reaction.get(),
+        )
+        if self._ok(result):
+            self.load_issue_by_id(self.selected_issue_id)
+
+    def react_to_issue(self) -> None:
+        if not self.selected_issue_id:
+            return
+        result = self.tracker.add_entry_reaction(
+            self.selected_issue_id,
+            self.issue_entry_reaction.get(),
         )
         if self._ok(result):
             self.load_issue_by_id(self.selected_issue_id)

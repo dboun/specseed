@@ -217,6 +217,9 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
+# Local sqlite files from opt-in integration tests
+tests/**/*.db
+tests/**/*.db-*
 
 .DS_Store
 

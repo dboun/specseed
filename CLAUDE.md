@@ -91,6 +91,8 @@ tests/integration/python/            # opt-in integration tests (marker: integra
 - **Integration tests live in `tests/integration/python/`, marked `@pytest.mark.integration`** - like
   old_specseed did. Opt-in: `python3 -m pytest tests/integration/python/`. Add them when a new script
   flow would otherwise only be checked by hand. Keep fast, isolated under `tmp_path`/`/tmp`, clean up.
+- See `tests/integration/python/CLAUDE.md` before adding integration coverage; focus remote-local
+  state changes, queue side effects, teardown, supersession, and reaction/comment/label churn.
 - **No test hits real GitHub/GitLab.** `TrackingRemoteLocal` is the authoritative stand-in. (CLAUDE rule:
   no tests involving actual remotes in `tests/*/python`.)
 - Tests MUST NOT invoke an agent or consume tokens.

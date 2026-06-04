@@ -346,6 +346,71 @@ class TrackingLocalTest(unittest.TestCase):
         self.assertEqual(details.data.labels, [])
 
 
+    def test_entry_reactions_are_returned_on_entry_details(self) -> None:
+        tmp, local = self.make_local(author="alice")
+        self.addCleanup(tmp.cleanup)
+        entry_id = local.add_entry("Approve me").data.id
+
+        reaction = local.add_entry_reaction(entry_id, "thumbs_up")
+        local.add_entry_reaction(entry_id, "thumbs_up")
+        details = local.get_entry(entry_id)
+
+        self.assertTrue(reaction.ok)
+        self.assertEqual(reaction.data.entry_id, entry_id)
+        self.assertEqual(reaction.data.reaction, "thumbs_up")
+        self.assertEqual(
+            details.data.reactions,
+            [TrackingReaction("thumbs_up", count=2, users=["alice", "alice"])],
+        )
+
+    def test_entry_reaction_error_envelopes(self) -> None:
+        tmp, local = self.make_local()
+        self.addCleanup(tmp.cleanup)
+        entry_id = local.add_entry("E").data.id
+
+        bad = local.add_entry_reaction(entry_id, "confetti")
+        missing = local.add_entry_reaction(999, "eyes")
+
+        self.assertFalse(bad.ok)
+        self.assertEqual(bad.error, "unsupported reaction: confetti")
+        self.assertFalse(missing.ok)
+        self.assertEqual(missing.error, "entry not found: 999")
+
+    def test_sync_copies_and_deletes_entry_reactions(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        remote = TrackingRemoteLocal(db_path=root / "tracking_remote_local.db", author="alice")
+        local = TrackingLocal(db_path=root / "tracking_local.db", author="bob")
+
+        entry_id = remote.add_entry("Gate").data.id
+        remote.add_entry_reaction(entry_id, "thumbs_up")
+
+        result = local.sync_from_remote(remote)
+        self.assertTrue(result.ok)
+        created = [(c.action, c.resource_type, c.parent_id) for c in result.data]
+        self.assertIn(("create", "entry_reaction", entry_id), created)
+        synced = local.get_entry(entry_id)
+        self.assertEqual(synced.data.reactions, [TrackingReaction("thumbs_up", 1, ["alice"])])
+
+        # second sync is a no-op
+        self.assertEqual(local.sync_from_remote(remote).data, [])
+
+        # delete it on the remote and confirm the deletion syncs down
+        with sqlite3.connect(root / "tracking_remote_local.db") as conn:
+            conn.execute("DELETE FROM entry_reactions")
+            conn.execute(
+                "UPDATE entries SET updated_at = ? WHERE id = ?",
+                ("2999-01-01T00:00:00Z", entry_id),
+            )
+        deletion = local.sync_from_remote(remote)
+        self.assertTrue(deletion.ok)
+        self.assertIn(
+            ("delete", "entry_reaction"),
+            [(c.action, c.resource_type) for c in deletion.data],
+        )
+        self.assertEqual(local.get_entry(entry_id).data.reactions, [])
+
     def test_now_is_strictly_increasing_even_with_a_frozen_clock(self) -> None:
         # Two writes in the same instant must still get distinct, ordered stamps,
         # otherwise sync_from_remote would miss the second one.

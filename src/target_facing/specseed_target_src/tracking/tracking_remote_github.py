@@ -27,6 +27,7 @@ from specseed_target_src.tracking.tracking_base import (
     TrackingEntryDetails,
     TrackingEntryId,
     TrackingEntryOpenState,
+    TrackingEntryReactionResult,
     TrackingEntrySummary,
     TrackingLabel,
     TrackingLabelList,
@@ -171,6 +172,7 @@ class TrackingRemoteGitHub(TrackingBase):
                     updated_at=summary.updated_at,
                     body=issue.get("body"),
                     comments=comments,
+                    reactions=self._reactions_for_entry(entry_id),
                 ),
             )
         except Exception as exc:
@@ -296,6 +298,22 @@ class TrackingRemoteGitHub(TrackingBase):
                     comment_id=comment_id,
                     reaction=reaction,
                 ),
+            )
+        except Exception as exc:
+            return self._error(exc)
+
+    def add_entry_reaction(self, entry_id: int | str, reaction: str) -> TrackingResult:
+        if not self.is_supported_reaction(reaction):
+            return TrackingResult(ok=False, error=f"unsupported reaction: {reaction}")
+        try:
+            self._request(
+                "POST",
+                f"/repos/{self.repo}/issues/{entry_id}/reactions",
+                body={"content": GITHUB_REACTION_BY_REMOTE[reaction]},
+            )
+            return TrackingResult(
+                ok=True,
+                data=TrackingEntryReactionResult(entry_id=entry_id, reaction=reaction),
             )
         except Exception as exc:
             return self._error(exc)
@@ -671,6 +689,13 @@ class TrackingRemoteGitHub(TrackingBase):
 
     def _reactions_for_comment(self, comment_id: int | str) -> list[TrackingReaction]:
         reactions = self._paginate(f"/repos/{self.repo}/issues/comments/{comment_id}/reactions")
+        return self._group_reactions(reactions)
+
+    def _reactions_for_entry(self, entry_id: int | str) -> list[TrackingReaction]:
+        reactions = self._paginate(f"/repos/{self.repo}/issues/{entry_id}/reactions")
+        return self._group_reactions(reactions)
+
+    def _group_reactions(self, reactions: list[object]) -> list[TrackingReaction]:
         grouped: dict[str, list[str]] = {}
         for reaction in reactions:
             kind = REMOTE_REACTION_BY_GITHUB.get(reaction.get("content"))

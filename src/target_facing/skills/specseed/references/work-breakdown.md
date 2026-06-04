@@ -55,7 +55,9 @@ components.
 4. Set issue artifacts (code paths, tests) and plan notes.
 5. Insert integration issues at merge points.
 6. Body-link both directions (epic <-> tickets, ticket <-> issues, depends-on).
-7. Label every post: tier + `:status:todo`.
+7. Label every post: tier + status. Epics/tickets at `:status:todo`; **issues at
+   `:status:awaiting_approval`** (the approval gate, see
+   `spec-change-protocol.md`). New issues never start `todo`.
 
 Ticket/issue/epic prose gets the humanizer pass (neutral, concrete, no em
 dashes). Labels and req ids are machine text, exempt.
@@ -90,5 +92,6 @@ together (cohesion), then by priority, filling toward the budget. One sprint is
 
 Flag issues whose work is risky or irreversible (data migration, destructive
 ops, external side effects) so an impl agent treats them carefully; note the flag
-in the issue body. This skill does not run a HITL approval engine; it only marks
-risk in the breakdown.
+in the issue body. This skill does not run the approval engine itself (the
+executor does); it only marks risk and births issues `awaiting_approval` so a
+human approves before any work starts (see `spec-change-protocol.md`).

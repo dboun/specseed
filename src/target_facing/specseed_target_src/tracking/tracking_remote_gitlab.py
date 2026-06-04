@@ -27,6 +27,7 @@ from specseed_target_src.tracking.tracking_base import (
     TrackingEntryDetails,
     TrackingEntryId,
     TrackingEntryOpenState,
+    TrackingEntryReactionResult,
     TrackingEntrySummary,
     TrackingLabel,
     TrackingLabelList,
@@ -179,6 +180,7 @@ class TrackingRemoteGitLab(TrackingBase):
                     updated_at=summary.updated_at,
                     body=issue.get("description"),
                     comments=comments,
+                    reactions=self._reactions_for_entry(entry_id),
                 ),
             )
         except Exception as exc:
@@ -288,6 +290,22 @@ class TrackingRemoteGitLab(TrackingBase):
                     comment_id=comment_id,
                     reaction=reaction,
                 ),
+            )
+        except Exception as exc:
+            return self._error(exc)
+
+    def add_entry_reaction(self, entry_id: int | str, reaction: str) -> TrackingResult:
+        if not self.is_supported_reaction(reaction):
+            return TrackingResult(ok=False, error=f"unsupported reaction: {reaction}")
+        try:
+            self._request(
+                "POST",
+                f"/projects/{self.project}/issues/{entry_id}/award_emoji",
+                params={"name": GITLAB_REACTION_BY_REMOTE[reaction]},
+            )
+            return TrackingResult(
+                ok=True,
+                data=TrackingEntryReactionResult(entry_id=entry_id, reaction=reaction),
             )
         except Exception as exc:
             return self._error(exc)
@@ -685,6 +703,12 @@ class TrackingRemoteGitLab(TrackingBase):
     def _reactions_for_comment(self, entry_id: int | str, note_id: int | str) -> list[TrackingReaction]:
         reactions = self._paginate(
             f"/projects/{self.project}/issues/{entry_id}/notes/{note_id}/award_emoji"
+        )
+        return self._group_reactions(reactions)
+
+    def _reactions_for_entry(self, entry_id: int | str) -> list[TrackingReaction]:
+        reactions = self._paginate(
+            f"/projects/{self.project}/issues/{entry_id}/award_emoji"
         )
         return self._group_reactions(reactions)
 

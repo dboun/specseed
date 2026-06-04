@@ -55,7 +55,8 @@ imported docs instead of a brief:
 - **Already-built work** -> tickets/issues created at `:status:done` (they
   shipped; record them so the roadmap reflects reality).
 - **Gaps / remaining work** (from the request post, TODOs, obvious holes) ->
-  tickets/issues at `:status:todo`.
+  tickets at `:status:todo`, **issues at `:status:awaiting_approval`** (claimable,
+  so gated per the protocol's approval gate).
 - Epics group both. Critical path + first sprint over the *remaining* work.
 - Dashboards (ROADMAP/TIMELINE/Current sprint) reflect current state, if enabled.
 
@@ -63,6 +64,8 @@ All into `plan.json` (`creates`, dashboard `edits`).
 
 ## Finish
 
-Per the protocol: `plan.json` -> `apply.py` -> move the request post toward
-`done` -> `enqueue_spec_change_run(...)` -> stop. Use async clarification for any
-material behavior you could not determine from the code.
+Per the protocol: `plan.json` -> `apply.py` -> `enqueue_spec_change_run(...)` ->
+stop. If you created any remaining-work issue, post one `APR-NNNN` request comment
+and park the request `spec-change:status:awaiting_approval` (the approval gate),
+not `done`. (Already-built `:status:done` issues need no approval.) Use async
+clarification for any material behavior you could not determine from the code.

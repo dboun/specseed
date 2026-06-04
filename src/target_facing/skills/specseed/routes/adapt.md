@@ -46,12 +46,17 @@ Plan the first work breakdown as remote posts:
 - Use the templates in `templates/entity_templates/` for post bodies. Express
   relationships as body links (`remote-posts.md`), `satisfies_reqs` as body
   text.
-- Label each post with its tier + `:status:todo`.
+- Label epics + tickets with their tier + `:status:todo`. Label every new
+  **issue** with `issue` + **`:status:awaiting_approval`** (NOT `todo`): issues
+  are claimable, so they stay gated until a human approves. See the protocol's
+  "Approval gate (APR-NNNN)".
 - Compute critical path at the ticket tier and a rough first sprint; record it
   for the dashboards.
 
 Write all of this into `plan.json` as `creates` plus dashboard edits if enabled.
-Then finish through the normal protocol.
+Then finish through the normal protocol, including the **approval gate**: post one
+`APR-NNNN` request comment summarizing the breakdown and park the request
+`spec-change:status:awaiting_approval`.
 
 ## 1. Assess + localize
 
@@ -80,8 +85,10 @@ the request post, identify the trigger and map it to an impact set:
 
 ## 3. Reconcile the work posts (plan.json)
 
-- New scope -> new tickets/issues (`creates`, tier + `:status:todo`, body links,
-  `satisfies_reqs`). Recompute ticket-tier critical path; assign to a sprint.
+- New scope -> new tickets/issues (`creates`, body links, `satisfies_reqs`).
+  Tickets at `:status:todo`; **issues at `:status:awaiting_approval`** (gated, per
+  the protocol's approval gate). Recompute ticket-tier critical path; assign to a
+  sprint.
 - Obsolete work -> swap its status label to `:status:deprecated` (was real) or
   `:status:wont_do` (cancelled before built). Do not delete shipped history.
 - Revised acceptance criteria -> `edit_entry` the post body, or a `comment`
@@ -109,6 +116,9 @@ When the request retires an entire feature, not one req:
 
 ## Finish
 
-Per the protocol: `plan.json` -> `apply.py` -> move the request post toward
-`done` -> `enqueue_spec_change_run(...)` -> stop. If the change would invalidate
-in-progress work, comment a warning (async) rather than silently breaking it.
+Per the protocol: `plan.json` -> `apply.py` -> `enqueue_spec_change_run(...)` ->
+stop. **If the run created any issue, the request is parked
+`spec-change:status:awaiting_approval` with an `APR-NNNN` request comment, not
+`done`** (the approval gate). A spec-only change with no new issues may move the
+request toward `done`. If the change would invalidate in-progress work, comment a
+warning (async) rather than silently breaking it.

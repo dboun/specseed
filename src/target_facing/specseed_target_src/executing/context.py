@@ -67,5 +67,8 @@ def load_entity(ctx: ExecutionContext, post_id: Optional[str]) -> tuple[Optional
         labels=labels,
         title=getattr(details, "title", None),
     )
+    # Attach entry-level reactions so the approval system can read a 👍/👎 on the
+    # post itself (state_machines.base.approved_by / rejected_by).
+    entity.reactions = list(getattr(details, "reactions", []) or [])
     comments = list(getattr(details, "comments", []) or [])
     return entity, comments

@@ -289,22 +289,34 @@ def resolve_approval(ctx: Any, entity: Any, state_result: Any, conversation: Any
     """
     if entity.status != "awaiting_approval":
         return None
-    if not getattr(state_result, "approved_by", None):
+    approved = getattr(state_result, "approved_by", None)
+    rejected = getattr(state_result, "rejected_by", None)
+    if not approved and not rejected:
         return None
     if not _can_write(ctx):
         return None
     if _is_stale(ctx, entity):
         return "stale event; remote already advanced past awaiting_approval"
-    approver = state_result.approved_by[0]
-    if _count_review_attempts(conversation) > 0:
-        _set_status(ctx, entity, "done")
-        _close(ctx, entity.post_id)
-        _comment(ctx, entity.post_id, "Approved by {0}; completing.".format(approver))
-        rolled = roll_up(ctx, entity)
-        return "approval gate -> done (closed)" + ("; " + rolled if rolled else "")
-    _set_status(ctx, entity, "todo")
-    _comment(ctx, entity.post_id, "Approved by {0}; work may proceed.".format(approver))
-    return "approval gate -> todo (resume work)"
+    # Approval wins over a stray rejection if somehow both are present.
+    if approved:
+        approver = approved[0]
+        if _count_review_attempts(conversation) > 0:
+            _set_status(ctx, entity, "done")
+            _close(ctx, entity.post_id)
+            _comment(ctx, entity.post_id, "Approved by {0}; completing.".format(approver))
+            rolled = roll_up(ctx, entity)
+            return "approval gate -> done (closed)" + ("; " + rolled if rolled else "")
+        _set_status(ctx, entity, "todo")
+        _comment(ctx, entity.post_id, "Approved by {0}; work may proceed.".format(approver))
+        return "approval gate -> todo (resume work)"
+    rejecter = rejected[0]
+    _set_status(ctx, entity, "blocked")
+    _comment(
+        ctx, entity.post_id,
+        "Rejected by {0}; parked `blocked`. Re-approve to resume or cancel "
+        "explicitly.".format(rejecter),
+    )
+    return "approval gate -> blocked (rejected)"
 
 
 def _review_summary(stdout: str, limit: int = 1500) -> str:

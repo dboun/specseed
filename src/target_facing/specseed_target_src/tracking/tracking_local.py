@@ -24,6 +24,7 @@ from specseed_target_src.tracking.tracking_base import (
     TrackingEntryDetails,
     TrackingEntryId,
     TrackingEntryOpenState,
+    TrackingEntryReactionResult,
     TrackingEntrySummary,
     TrackingLabel,
     TrackingLabelList,
@@ -164,6 +165,7 @@ class TrackingLocal(TrackingBase):
                     updated_at=summary.updated_at,
                     body=row["body"],
                     comments=comments,
+                    reactions=self._reactions_for_entry(conn, row["id"]),
                 )
             return TrackingResult(ok=True, data=details)
         except Exception as exc:
@@ -209,7 +211,7 @@ class TrackingLocal(TrackingBase):
                 if row is None:
                     return self._missing_entry(entry_id)
                 # FKs are ON (see _connect): this cascades to entry_labels,
-                # comments -> comment_reactions, and pinned_entries.
+                # comments -> comment_reactions, entry_reactions, and pinned_entries.
                 conn.execute("DELETE FROM entries WHERE id = ?", (row["id"],))
             return TrackingResult(ok=True, data=TrackingEntryId(id=row["id"]))
         except Exception as exc:
@@ -334,6 +336,26 @@ class TrackingLocal(TrackingBase):
                     comment_id=comment_row["id"],
                     reaction=reaction,
                 ),
+            )
+        except Exception as exc:
+            return self._error(exc)
+
+    def add_entry_reaction(self, entry_id: int | str, reaction: str) -> TrackingResult:
+        if not self.is_supported_reaction(reaction):
+            return TrackingResult(ok=False, error=f"unsupported reaction: {reaction}")
+        try:
+            with self._connect() as conn:
+                entry_row = self._entry_row(conn, entry_id)
+                if entry_row is None:
+                    return self._missing_entry(entry_id)
+                conn.execute(
+                    "INSERT INTO entry_reactions(entry_id, kind, user) VALUES (?, ?, ?)",
+                    (entry_row["id"], reaction, self.author),
+                )
+                self._touch_entry(conn, entry_row["id"], _now())
+            return TrackingResult(
+                ok=True,
+                data=TrackingEntryReactionResult(entry_id=entry_row["id"], reaction=reaction),
             )
         except Exception as exc:
             return self._error(exc)
@@ -468,6 +490,13 @@ class TrackingLocal(TrackingBase):
                     FROM pull_requests
                     """,
                 )
+                pull_request_ids = set(source_pull_requests) | set(target_pull_requests)
+                source_pull_request_dynamic = self._snapshot_pull_request_dynamic_resources(
+                    source_conn, pull_request_ids
+                )
+                target_pull_request_dynamic = self._snapshot_pull_request_dynamic_resources(
+                    target_conn, pull_request_ids
+                )
 
                 self._entry_sort_labels = self._labels_by_entry(source_snapshot)
                 changed_entry_ids = self._sync_entries(
@@ -489,6 +518,7 @@ class TrackingLocal(TrackingBase):
                 self._sync_pins(target_conn, source_snapshot, target_snapshot, changes, stamp)
                 self._sync_comments(target_conn, source_dynamic, target_dynamic, changes, stamp)
                 self._sync_reactions(target_conn, source_dynamic, target_dynamic, changes, stamp)
+                self._sync_entry_reactions(target_conn, source_dynamic, target_dynamic, changes, stamp)
                 self._sync_pull_requests(
                     target_conn,
                     source_pull_requests,
@@ -498,6 +528,20 @@ class TrackingLocal(TrackingBase):
                 )
                 self._sync_pull_request_labels(
                     target_conn, source_snapshot, target_snapshot, changes, stamp
+                )
+                self._sync_pull_request_comments(
+                    target_conn,
+                    source_pull_request_dynamic,
+                    target_pull_request_dynamic,
+                    changes,
+                    stamp,
+                )
+                self._sync_pull_request_reactions(
+                    target_conn,
+                    source_pull_request_dynamic,
+                    target_pull_request_dynamic,
+                    changes,
+                    stamp,
                 )
                 self._delete_removed_resources(
                     target_conn,
@@ -509,6 +553,8 @@ class TrackingLocal(TrackingBase):
                     target_pull_requests,
                     source_dynamic,
                     target_dynamic,
+                    source_pull_request_dynamic,
+                    target_pull_request_dynamic,
                     changes,
                     stamp,
                 )
@@ -770,6 +816,14 @@ class TrackingLocal(TrackingBase):
                     FOREIGN KEY (comment_id) REFERENCES comments(id) ON DELETE CASCADE
                 );
 
+                CREATE TABLE IF NOT EXISTS entry_reactions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    entry_id INTEGER NOT NULL,
+                    kind TEXT NOT NULL,
+                    user TEXT,
+                    FOREIGN KEY (entry_id) REFERENCES entries(id) ON DELETE CASCADE
+                );
+
                 CREATE TABLE IF NOT EXISTS pinned_entries (
                     entry_id INTEGER PRIMARY KEY,
                     FOREIGN KEY (entry_id) REFERENCES entries(id) ON DELETE CASCADE
@@ -967,6 +1021,25 @@ class TrackingLocal(TrackingBase):
             reactions.append(TrackingReaction(kind=row["kind"], count=row["count"], users=users))
         return reactions
 
+    def _reactions_for_entry(
+        self, conn: sqlite3.Connection, entry_id: int | str
+    ) -> list[TrackingReaction]:
+        rows = conn.execute(
+            """
+            SELECT kind, COUNT(*) AS count, GROUP_CONCAT(user, char(31)) AS users
+            FROM entry_reactions
+            WHERE entry_id = ?
+            GROUP BY kind
+            ORDER BY kind
+            """,
+            (entry_id,),
+        ).fetchall()
+        reactions = []
+        for row in rows:
+            users = [user for user in (row["users"] or "").split(chr(31)) if user]
+            reactions.append(TrackingReaction(kind=row["kind"], count=row["count"], users=users))
+        return reactions
+
     def _reactions_for_pull_request_comment(
         self, conn: sqlite3.Connection, comment_id: int | str
     ) -> list[TrackingReaction]:
@@ -1083,7 +1156,7 @@ class TrackingLocal(TrackingBase):
         self, conn: sqlite3.Connection, entry_ids: set[int | str]
     ) -> dict[str, object]:
         if not entry_ids:
-            return {"comments": {}, "reactions": {}}
+            return {"comments": {}, "reactions": {}, "entry_reactions": {}}
         placeholders = ",".join("?" for _ in entry_ids)
         ids = tuple(entry_ids)
         comments = self._rows_by_id(
@@ -1095,9 +1168,18 @@ class TrackingLocal(TrackingBase):
             """,
             ids,
         )
+        entry_reactions = self._rows_by_id(
+            conn,
+            f"""
+            SELECT id, entry_id, kind, user
+            FROM entry_reactions
+            WHERE entry_id IN ({placeholders})
+            """,
+            ids,
+        )
         comment_ids = set(comments)
         if not comment_ids:
-            return {"comments": comments, "reactions": {}}
+            return {"comments": comments, "reactions": {}, "entry_reactions": entry_reactions}
         comment_placeholders = ",".join("?" for _ in comment_ids)
         reactions = self._rows_by_id(
             conn,
@@ -1108,7 +1190,38 @@ class TrackingLocal(TrackingBase):
             """,
             tuple(comment_ids),
         )
-        return {"comments": comments, "reactions": reactions}
+        return {"comments": comments, "reactions": reactions, "entry_reactions": entry_reactions}
+
+    def _snapshot_pull_request_dynamic_resources(
+        self, conn: sqlite3.Connection, pull_request_ids: set[int | str]
+    ) -> dict[str, object]:
+        if not pull_request_ids:
+            return {"pull_request_comments": {}, "pull_request_reactions": {}}
+        placeholders = ",".join("?" for _ in pull_request_ids)
+        ids = tuple(pull_request_ids)
+        comments = self._rows_by_id(
+            conn,
+            f"""
+            SELECT id, pull_request_id, body, author, created_at, updated_at
+            FROM pull_request_comments
+            WHERE pull_request_id IN ({placeholders})
+            """,
+            ids,
+        )
+        comment_ids = set(comments)
+        if not comment_ids:
+            return {"pull_request_comments": comments, "pull_request_reactions": {}}
+        comment_placeholders = ",".join("?" for _ in comment_ids)
+        reactions = self._rows_by_id(
+            conn,
+            f"""
+            SELECT id, comment_id, kind, user
+            FROM pull_request_comment_reactions
+            WHERE comment_id IN ({comment_placeholders})
+            """,
+            tuple(comment_ids),
+        )
+        return {"pull_request_comments": comments, "pull_request_reactions": reactions}
 
     def _rows_by_id(
         self,
@@ -1364,6 +1477,126 @@ class TrackingLocal(TrackingBase):
                 stamp,
             )
 
+    def _sync_pull_request_comments(
+        self,
+        conn: sqlite3.Connection,
+        source: dict[str, object],
+        target: dict[str, object],
+        changes: list[TrackingSyncChange],
+        stamp: str,
+    ) -> None:
+        source_comments = source["pull_request_comments"]
+        target_comments = target["pull_request_comments"]
+        for comment_id in sorted(source_comments):
+            source_row = source_comments[comment_id]
+            target_row = target_comments.get(comment_id)
+            if target_row is None:
+                conn.execute(
+                    """
+                    INSERT INTO pull_request_comments(
+                        id, pull_request_id, body, author, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        comment_id,
+                        source_row["pull_request_id"],
+                        source_row["body"],
+                        source_row["author"],
+                        source_row["created_at"],
+                        source_row["updated_at"],
+                    ),
+                )
+                self._record_change(
+                    changes,
+                    "create",
+                    "pull_request_comment",
+                    comment_id,
+                    source_row["pull_request_id"],
+                    None,
+                    None,
+                    source_row,
+                    stamp,
+                )
+                continue
+            if target_row["updated_at"] == source_row["updated_at"]:
+                continue
+            for field in ("pull_request_id", "body", "author", "created_at", "updated_at"):
+                if target_row[field] == source_row[field]:
+                    continue
+                conn.execute(
+                    f"UPDATE pull_request_comments SET {field} = ? WHERE id = ?",
+                    (source_row[field], comment_id),
+                )
+                self._record_change(
+                    changes,
+                    "update",
+                    "pull_request_comment",
+                    comment_id,
+                    source_row["pull_request_id"],
+                    field,
+                    target_row[field],
+                    source_row[field],
+                    stamp,
+                )
+
+    def _sync_pull_request_reactions(
+        self,
+        conn: sqlite3.Connection,
+        source: dict[str, object],
+        target: dict[str, object],
+        changes: list[TrackingSyncChange],
+        stamp: str,
+    ) -> None:
+        source_reactions = source["pull_request_reactions"]
+        target_reactions = target["pull_request_reactions"]
+        for reaction_id in sorted(source_reactions):
+            source_row = source_reactions[reaction_id]
+            target_row = target_reactions.get(reaction_id)
+            if target_row is None:
+                conn.execute(
+                    """
+                    INSERT INTO pull_request_comment_reactions(id, comment_id, kind, user)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        reaction_id,
+                        source_row["comment_id"],
+                        source_row["kind"],
+                        source_row["user"],
+                    ),
+                )
+                self._record_change(
+                    changes,
+                    "create",
+                    "pull_request_reaction",
+                    reaction_id,
+                    source_row["comment_id"],
+                    None,
+                    None,
+                    source_row,
+                    stamp,
+                )
+                continue
+            for field in ("comment_id", "kind", "user"):
+                if target_row[field] == source_row[field]:
+                    continue
+                conn.execute(
+                    f"UPDATE pull_request_comment_reactions SET {field} = ? WHERE id = ?",
+                    (source_row[field], reaction_id),
+                )
+                self._record_change(
+                    changes,
+                    "update",
+                    "pull_request_reaction",
+                    reaction_id,
+                    source_row["comment_id"],
+                    field,
+                    target_row[field],
+                    source_row[field],
+                    stamp,
+                )
+
     def _sync_comments(
         self,
         conn: sqlite3.Connection,
@@ -1482,6 +1715,55 @@ class TrackingLocal(TrackingBase):
                     stamp,
                 )
 
+    def _sync_entry_reactions(
+        self,
+        conn: sqlite3.Connection,
+        source: dict[str, object],
+        target: dict[str, object],
+        changes: list[TrackingSyncChange],
+        stamp: str,
+    ) -> None:
+        source_reactions = source["entry_reactions"]
+        target_reactions = target["entry_reactions"]
+        for reaction_id in sorted(source_reactions):
+            source_row = source_reactions[reaction_id]
+            target_row = target_reactions.get(reaction_id)
+            if target_row is None:
+                conn.execute(
+                    "INSERT INTO entry_reactions(id, entry_id, kind, user) VALUES (?, ?, ?, ?)",
+                    (reaction_id, source_row["entry_id"], source_row["kind"], source_row["user"]),
+                )
+                self._record_change(
+                    changes,
+                    "create",
+                    "entry_reaction",
+                    reaction_id,
+                    source_row["entry_id"],
+                    None,
+                    None,
+                    source_row,
+                    stamp,
+                )
+                continue
+            for field in ("entry_id", "kind", "user"):
+                if target_row[field] == source_row[field]:
+                    continue
+                conn.execute(
+                    f"UPDATE entry_reactions SET {field} = ? WHERE id = ?",
+                    (source_row[field], reaction_id),
+                )
+                self._record_change(
+                    changes,
+                    "update",
+                    "entry_reaction",
+                    reaction_id,
+                    source_row["entry_id"],
+                    field,
+                    target_row[field],
+                    source_row[field],
+                    stamp,
+                )
+
     def _delete_removed_resources(
         self,
         conn: sqlite3.Connection,
@@ -1493,6 +1775,8 @@ class TrackingLocal(TrackingBase):
         target_pull_requests: dict[int, dict[str, object]],
         source_dynamic: dict[str, object],
         target_dynamic: dict[str, object],
+        source_pull_request_dynamic: dict[str, object],
+        target_pull_request_dynamic: dict[str, object],
         changes: list[TrackingSyncChange],
         stamp: str,
     ) -> None:
@@ -1505,6 +1789,15 @@ class TrackingLocal(TrackingBase):
             row = target_reactions[reaction_id]
             conn.execute("DELETE FROM comment_reactions WHERE id = ?", (reaction_id,))
             self._record_change(changes, "delete", "reaction", reaction_id, row["comment_id"], None, row, None, stamp)
+
+        source_entry_reactions = source_dynamic["entry_reactions"]
+        target_entry_reactions = target_dynamic["entry_reactions"]
+        for reaction_id in sorted(set(target_entry_reactions) - set(source_entry_reactions)):
+            row = target_entry_reactions[reaction_id]
+            conn.execute("DELETE FROM entry_reactions WHERE id = ?", (reaction_id,))
+            self._record_change(
+                changes, "delete", "entry_reaction", reaction_id, row["entry_id"], None, row, None, stamp
+            )
 
         for comment_id in sorted(set(target_comments) - set(source_comments)):
             row = target_comments[comment_id]
@@ -1542,6 +1835,40 @@ class TrackingLocal(TrackingBase):
                 pr_id,
                 None,
                 label,
+                None,
+                stamp,
+            )
+
+        source_pr_reactions = source_pull_request_dynamic["pull_request_reactions"]
+        target_pr_reactions = target_pull_request_dynamic["pull_request_reactions"]
+        for reaction_id in sorted(set(target_pr_reactions) - set(source_pr_reactions)):
+            row = target_pr_reactions[reaction_id]
+            conn.execute("DELETE FROM pull_request_comment_reactions WHERE id = ?", (reaction_id,))
+            self._record_change(
+                changes,
+                "delete",
+                "pull_request_reaction",
+                reaction_id,
+                row["comment_id"],
+                None,
+                row,
+                None,
+                stamp,
+            )
+
+        source_pr_comments = source_pull_request_dynamic["pull_request_comments"]
+        target_pr_comments = target_pull_request_dynamic["pull_request_comments"]
+        for comment_id in sorted(set(target_pr_comments) - set(source_pr_comments)):
+            row = target_pr_comments[comment_id]
+            conn.execute("DELETE FROM pull_request_comments WHERE id = ?", (comment_id,))
+            self._record_change(
+                changes,
+                "delete",
+                "pull_request_comment",
+                comment_id,
+                row["pull_request_id"],
+                None,
+                row,
                 None,
                 stamp,
             )

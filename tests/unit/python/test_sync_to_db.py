@@ -57,6 +57,20 @@ class SyncToDbTest(unittest.TestCase):
         # repo-level label creates are ignored (2 of them).
         self.assertEqual(summary["ignored"], 2)
 
+    def test_entry_reaction_maps_to_entry_reaction_task_on_the_entry(self) -> None:
+        entry = self.remote.add_entry("Gate").data.id
+        self.remote.add_entry_reaction(entry, "thumbs_up")
+
+        summary = self.sync()
+        self.assertTrue(summary["ok"])
+        task = next(
+            t for t in self.all_tasks() if t["action"] == "handle_entry_reaction_added"
+        )
+        # parent is the ENTRY (so the work path can resolve the entity's gate),
+        # not a comment id like a comment reaction.
+        self.assertEqual(str(task["post_id"]), str(entry))
+        self.assertEqual(task["payload"]["kind"], "thumbs_up")
+
     def test_label_entity_context_in_payload(self) -> None:
         entry = self.remote.add_entry("E").data.id
         self.remote.add_entry_label(entry, "status:todo")

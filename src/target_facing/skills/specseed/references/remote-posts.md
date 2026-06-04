@@ -29,8 +29,9 @@ Terminal = `{done, wont_do, deprecated}`. `wont_do` = never built; `deprecated`
 = was real, now retired.
 
 **A status change is a swap:** `remove_entry_label(id, "<tier>:status:<old>")`
-then `add_entry_label(id, "<tier>:status:<new>")`. The spec-change worker mostly
-*creates* items at `:status:todo` and *deprecates* retired ones; live status
+then `add_entry_label(id, "<tier>:status:<new>")`. The spec-change worker creates
+epics/tickets at `:status:todo`, creates **issues at `:status:awaiting_approval`**
+(the approval gate, see below), and *deprecates* retired ones; live status
 transitions belong to the impl agents, not this skill.
 
 ## Relationships (body links, not labels)
@@ -70,9 +71,26 @@ and note it.
 The triggering post carries `spec-change:<route>` plus a
 `spec-change:status:<state>` label: `open, awaiting_approval, approved, done,
 rejected`. As the worker, you advance its status with the same swap pattern:
-moving it to `awaiting_approval` when you ask a question, to `done` when the
-reconcile is enqueued (or leave that to the executor; record intent in
-`plan.json`). Replies to the request go on this post as comments.
+moving it to `awaiting_approval` when you ask a question **or when the run created
+gated issues** (the approval gate), and to `done` only for a spec-only change with
+no new issues. Record intent in `plan.json`. Replies to the request go on this
+post as comments.
+
+## Reactions + the approval gate
+
+Posts (not just comments) carry **reactions**: `add_entry_reaction(id, kind)`,
+read back on `get_entry(...).data.reactions`. The executor's deterministic
+approval system reads two on a post: **👍 `thumbs_up` = approve**, **👎
+`thumbs_down` = reject**, by an allowed approver (any non-bot human when no
+approver list is configured).
+
+This backs the **approval gate**: a newly-specced **issue** is created
+`issue:status:awaiting_approval`, so no impl agent claims it. The worker posts an
+`APR-NNNN` approval-request comment naming the batch. A human approves the token
+(`approve APR-NNNN` comment **or** 👍 on the issue) or rejects it (`reject
+APR-NNNN` / 👎). The executor then flips the issue `awaiting_approval -> todo`
+(claimable) or parks it `blocked`, with no agent run. Contract +
+helpers: `spec-change-protocol.md` ("Approval gate (APR-NNNN)").
 
 ## Draft / ignore
 

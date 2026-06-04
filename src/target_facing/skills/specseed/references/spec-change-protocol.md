@@ -153,6 +153,46 @@ A **status swap** = `remove_entry_label(id, "<tier>:status:<old>")` then
 `edit_entry(dashboard_id, body=<rendered markdown>)`. See `remote-posts.md` for
 the post/label model.
 
+## Approval gate (APR-NNNN): required before any new work
+
+**A run is NOT finished until it asks for human approval of the work it created.**
+You never make new work auto-implementable on your own. An impl agent claims an
+**issue** the moment it is `issue:status:todo`; so any issue you newly spec must
+be born **`issue:status:awaiting_approval`**, never `todo`. The executor flips it
+to `todo` (claimable) only after a human approves. This is a status gate, not a
+trust gate: there is no path where you create `todo` issues and "remember" to ask.
+
+This is **not** epic-gating. The gate is per newly-created issue, via its status
+label, plus one approval-request comment that names the batch.
+
+Steps, every route that creates issues:
+
+1. **Allocate one token** for the batch and a short summary of what you propose:
+
+   ```python
+   from specseed_target_src.executing.approvals import next_apr_id, approval_request_comment
+   apr_id = next_apr_id(STORAGE_DIR)          # e.g. "APR-0001", monotonic, persisted
+   request_body = approval_request_comment(apr_id, summary)  # carries the hidden marker
+   ```
+
+   Allocate at **plan time** and write `apr_id` + `summary` into `plan.json` so the
+   token is stable across re-runs (do NOT re-allocate in `apply.py`; read it from
+   `plan.json`). `STORAGE_DIR` = `<specseed_dir>/storage`.
+2. **Create the new issues at `awaiting_approval`.** In `plan.json.creates`, every
+   issue's labels are `["issue", "issue:status:awaiting_approval"]`. Tickets and
+   epics (PM groupings, not claimed by impl agents) stay `:status:todo`.
+3. **Post the approval request.** Put `request_body` as a `comments` entry on the
+   spec-change request post (and the same marker comment on each gated issue, so a
+   `approve APR-NNNN` on an issue resolves that issue). Swap the request status to
+   `spec-change:status:awaiting_approval`.
+4. **Stop.** The run ends parked. A human approves the token (`approve APR-NNNN`
+   comment **or** 👍 thumbs-up reaction on the issue), or rejects it (`reject
+   APR-NNNN` / 👎). The executor's deterministic approval system resolves the gate
+   with no agent run: 👍/approve flips the issue `awaiting_approval -> todo`,
+   👎/reject parks it `blocked`. See `remote-posts.md`.
+
+When no approver list is configured, any non-bot human may approve (the default).
+
 ## Enqueue + stop
 
 After writing `plan.json` and `apply.py`, enqueue the run and stop:
@@ -162,9 +202,9 @@ from specseed_target_src.scheduling.spec_change import enqueue_spec_change_run
 enqueue_spec_change_run(script_path, request_id=REQUEST_ID, route=ROUTE)
 ```
 
-> **Executor not implemented.** Nothing drains the queue yet (`executing/` is
-> empty). The task sits `pending`. This is expected and correct for now: the
-> skill's job ends at enqueue. Do not try to run `apply.py` yourself.
+The executor (`executing/`) drains the queue and runs `apply.py` as a
+permission-gated subprocess. Your job ends at the enqueue: do not run `apply.py`
+yourself, do not touch git or code.
 
 ## Idempotency
 
