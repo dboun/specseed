@@ -1,8 +1,8 @@
 """
-remote_github.py - GitHub implementation of the RemoteBase contract.
+tracking_remote_github.py - GitHub implementation of the TrackingBase contract.
 
 Stdlib-only adapter over the GitHub REST API. It uses GITHUB_PAT and
-GITHUB_REPO by default; both may be passed explicitly to RemoteGitHub.
+GITHUB_REPO by default; both may be passed explicitly to TrackingRemoteGitHub.
 """
 
 from __future__ import annotations
@@ -16,25 +16,25 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
-from remote_base import (
+from tracking_base import (
     REACTION_EYES,
     REACTION_HEART,
     REACTION_THUMBS_DOWN,
     REACTION_THUMBS_UP,
-    RemoteBase,
-    RemoteCommentId,
-    RemoteEntryComment,
-    RemoteEntryDetails,
-    RemoteEntryId,
-    RemoteEntryOpenState,
-    RemoteEntrySummary,
-    RemoteLabel,
-    RemoteLabelList,
-    RemoteLabelSet,
-    RemotePinState,
-    RemoteReaction,
-    RemoteReactionResult,
-    RemoteResult,
+    TrackingBase,
+    TrackingCommentId,
+    TrackingEntryComment,
+    TrackingEntryDetails,
+    TrackingEntryId,
+    TrackingEntryOpenState,
+    TrackingEntrySummary,
+    TrackingLabel,
+    TrackingLabelList,
+    TrackingLabelSet,
+    TrackingPinState,
+    TrackingReaction,
+    TrackingReactionResult,
+    TrackingResult,
 )
 
 
@@ -102,7 +102,7 @@ def _normalize_repo(raw: str) -> str:
     return f"{parts[0]}/{parts[1]}" if len(parts) >= 2 else repo
 
 
-class RemoteGitHub(RemoteBase):
+class TrackingRemoteGitHub(TrackingBase):
     """GitHub Issues-backed implementation of the provider-neutral interface."""
 
     def __init__(self, repo: str | None = None, token: str | None = None) -> None:
@@ -120,7 +120,7 @@ class RemoteGitHub(RemoteBase):
         labels: Optional[list[str]] = None,
         assignee: Optional[str] = None,
         updated_since: Optional[str] = None,
-    ) -> RemoteResult:
+    ) -> TrackingResult:
         try:
             state = "all" if is_open is None else ("open" if is_open else "closed")
             items = self._paginate(
@@ -137,11 +137,11 @@ class RemoteGitHub(RemoteBase):
                 for item in items
                 if "pull_request" not in item
             ]
-            return RemoteResult(ok=True, data=entries)
+            return TrackingResult(ok=True, data=entries)
         except Exception as exc:
             return self._error(exc)
 
-    def get_entry(self, entry_id: int | str) -> RemoteResult:
+    def get_entry(self, entry_id: int | str) -> TrackingResult:
         try:
             issue = self._request("GET", f"/repos/{self.repo}/issues/{entry_id}")
             summary = self._summary_from_issue(issue)
@@ -151,9 +151,9 @@ class RemoteGitHub(RemoteBase):
                     f"/repos/{self.repo}/issues/{entry_id}/comments"
                 )
             ]
-            return RemoteResult(
+            return TrackingResult(
                 ok=True,
-                data=RemoteEntryDetails(
+                data=TrackingEntryDetails(
                     id=summary.id,
                     title=summary.title,
                     labels=summary.labels,
@@ -170,23 +170,23 @@ class RemoteGitHub(RemoteBase):
         except Exception as exc:
             return self._error(exc)
 
-    def is_entry_open(self, entry_id: int | str) -> RemoteResult:
+    def is_entry_open(self, entry_id: int | str) -> TrackingResult:
         try:
             issue = self._request("GET", f"/repos/{self.repo}/issues/{entry_id}")
-            return RemoteResult(
+            return TrackingResult(
                 ok=True,
-                data=RemoteEntryOpenState(id=issue["number"], is_open=issue["state"] == "open"),
+                data=TrackingEntryOpenState(id=issue["number"], is_open=issue["state"] == "open"),
             )
         except Exception as exc:
             return self._error(exc)
 
-    def set_entry_open(self, entry_id: int | str) -> RemoteResult:
+    def set_entry_open(self, entry_id: int | str) -> TrackingResult:
         return self._set_entry_state(entry_id, True)
 
-    def set_entry_closed(self, entry_id: int | str) -> RemoteResult:
+    def set_entry_closed(self, entry_id: int | str) -> TrackingResult:
         return self._set_entry_state(entry_id, False)
 
-    def pin_entry(self, entry_id: int | str) -> RemoteResult:
+    def pin_entry(self, entry_id: int | str) -> TrackingResult:
         try:
             issue = self._request("GET", f"/repos/{self.repo}/issues/{entry_id}")
             try:
@@ -197,7 +197,7 @@ class RemoteGitHub(RemoteBase):
             except GitHubRemoteError as exc:
                 if "already pinned" not in exc.message.lower():
                     raise
-            return RemoteResult(ok=True, data=RemotePinState(id=issue["number"], pinned=True))
+            return TrackingResult(ok=True, data=TrackingPinState(id=issue["number"], pinned=True))
         except Exception as exc:
             return self._error(exc)
 
@@ -207,9 +207,9 @@ class RemoteGitHub(RemoteBase):
         body: Optional[str] = None,
         labels: Optional[list[str]] = None,
         assignees: Optional[list[str]] = None,
-    ) -> RemoteResult:
+    ) -> TrackingResult:
         if not title.strip():
-            return RemoteResult(ok=False, error="entry title is required")
+            return TrackingResult(ok=False, error="entry title is required")
         try:
             payload: dict[str, object] = {"title": title}
             if body is not None:
@@ -219,37 +219,37 @@ class RemoteGitHub(RemoteBase):
             if assignees:
                 payload["assignees"] = assignees
             issue = self._request("POST", f"/repos/{self.repo}/issues", body=payload)
-            return RemoteResult(ok=True, data=RemoteEntryId(id=issue["number"]))
+            return TrackingResult(ok=True, data=TrackingEntryId(id=issue["number"]))
         except Exception as exc:
             return self._error(exc)
 
-    def add_entry_comment(self, entry_id: int | str, body: str) -> RemoteResult:
+    def add_entry_comment(self, entry_id: int | str, body: str) -> TrackingResult:
         if not body:
-            return RemoteResult(ok=False, error="comment body is required")
+            return TrackingResult(ok=False, error="comment body is required")
         try:
             comment = self._request(
                 "POST",
                 f"/repos/{self.repo}/issues/{entry_id}/comments",
                 body={"body": body},
             )
-            return RemoteResult(ok=True, data=RemoteCommentId(id=comment["id"]))
+            return TrackingResult(ok=True, data=TrackingCommentId(id=comment["id"]))
         except Exception as exc:
             return self._error(exc)
 
     def add_entry_comment_reaction(
         self, entry_id: int | str, comment_id: int | str, reaction: str
-    ) -> RemoteResult:
+    ) -> TrackingResult:
         if not self.is_supported_reaction(reaction):
-            return RemoteResult(ok=False, error=f"unsupported reaction: {reaction}")
+            return TrackingResult(ok=False, error=f"unsupported reaction: {reaction}")
         try:
             self._request(
                 "POST",
                 f"/repos/{self.repo}/issues/comments/{comment_id}/reactions",
                 body={"content": GITHUB_REACTION_BY_REMOTE[reaction]},
             )
-            return RemoteResult(
+            return TrackingResult(
                 ok=True,
-                data=RemoteReactionResult(
+                data=TrackingReactionResult(
                     entry_id=entry_id,
                     comment_id=comment_id,
                     reaction=reaction,
@@ -258,12 +258,12 @@ class RemoteGitHub(RemoteBase):
         except Exception as exc:
             return self._error(exc)
 
-    def get_entry_labels(self, entry_id: int | str) -> RemoteResult:
+    def get_entry_labels(self, entry_id: int | str) -> TrackingResult:
         try:
             issue = self._request("GET", f"/repos/{self.repo}/issues/{entry_id}")
-            return RemoteResult(
+            return TrackingResult(
                 ok=True,
-                data=RemoteLabelSet(
+                data=TrackingLabelSet(
                     entry_id=issue["number"],
                     labels=[self._label_from_github(label) for label in issue.get("labels", [])],
                 ),
@@ -271,7 +271,7 @@ class RemoteGitHub(RemoteBase):
         except Exception as exc:
             return self._error(exc)
 
-    def add_entry_label(self, entry_id: int | str, label: str) -> RemoteResult:
+    def add_entry_label(self, entry_id: int | str, label: str) -> TrackingResult:
         try:
             self.ensure_label(label)
             labels = self._request(
@@ -279,9 +279,9 @@ class RemoteGitHub(RemoteBase):
                 f"/repos/{self.repo}/issues/{entry_id}/labels",
                 body={"labels": [label]},
             )
-            return RemoteResult(
+            return TrackingResult(
                 ok=True,
-                data=RemoteLabelSet(
+                data=TrackingLabelSet(
                     entry_id=entry_id,
                     labels=[self._label_from_github(item) for item in labels],
                 ),
@@ -289,10 +289,10 @@ class RemoteGitHub(RemoteBase):
         except Exception as exc:
             return self._error(exc)
 
-    def list_labels(self) -> RemoteResult:
+    def list_labels(self) -> TrackingResult:
         try:
             labels = [self._label_from_github(item) for item in self._paginate(f"/repos/{self.repo}/labels")]
-            return RemoteResult(ok=True, data=RemoteLabelList(labels=labels))
+            return TrackingResult(ok=True, data=TrackingLabelList(labels=labels))
         except Exception as exc:
             return self._error(exc)
 
@@ -301,7 +301,7 @@ class RemoteGitHub(RemoteBase):
         name: str,
         color: Optional[str] = None,
         description: Optional[str] = None,
-    ) -> RemoteResult:
+    ) -> TrackingResult:
         try:
             payload = {"name": name, "color": (color or "ededed").lstrip("#")}
             if description is not None:
@@ -311,7 +311,7 @@ class RemoteGitHub(RemoteBase):
                 f"/repos/{self.repo}/labels",
                 body=payload,
             )
-            return RemoteResult(ok=True, data=self._label_from_github(label))
+            return TrackingResult(ok=True, data=self._label_from_github(label))
         except GitHubRemoteError as exc:
             if exc.status == 422:
                 return self.ensure_label(name, color=color, description=description)
@@ -324,13 +324,13 @@ class RemoteGitHub(RemoteBase):
         name: str,
         color: Optional[str] = None,
         description: Optional[str] = None,
-    ) -> RemoteResult:
+    ) -> TrackingResult:
         try:
             label = self._request(
                 "GET",
                 f"/repos/{self.repo}/labels/{urllib.parse.quote(name, safe='')}",
             )
-            return RemoteResult(ok=True, data=self._label_from_github(label))
+            return TrackingResult(ok=True, data=self._label_from_github(label))
         except GitHubRemoteError as exc:
             if exc.status == 404:
                 return self.create_label(name, color=color, description=description)
@@ -338,19 +338,19 @@ class RemoteGitHub(RemoteBase):
         except Exception as exc:
             return self._error(exc)
 
-    def sync_from_remote(self, remote: object) -> RemoteResult:
-        return RemoteResult(ok=False, error="sync_from_remote is not implemented for GitHub")
+    def sync_from_remote(self, remote: object) -> TrackingResult:
+        return TrackingResult(ok=False, error="sync_from_remote is not implemented for GitHub")
 
-    def _set_entry_state(self, entry_id: int | str, is_open: bool) -> RemoteResult:
+    def _set_entry_state(self, entry_id: int | str, is_open: bool) -> TrackingResult:
         try:
             issue = self._request(
                 "PATCH",
                 f"/repos/{self.repo}/issues/{entry_id}",
                 body={"state": "open" if is_open else "closed"},
             )
-            return RemoteResult(
+            return TrackingResult(
                 ok=True,
-                data=RemoteEntryOpenState(id=issue["number"], is_open=issue["state"] == "open"),
+                data=TrackingEntryOpenState(id=issue["number"], is_open=issue["state"] == "open"),
             )
         except Exception as exc:
             return self._error(exc)
@@ -456,8 +456,8 @@ class RemoteGitHub(RemoteBase):
                     return part[start + 1:end]
         return None
 
-    def _summary_from_issue(self, issue: dict[str, object]) -> RemoteEntrySummary:
-        return RemoteEntrySummary(
+    def _summary_from_issue(self, issue: dict[str, object]) -> TrackingEntrySummary:
+        return TrackingEntrySummary(
             id=issue.get("number"),
             title=str(issue.get("title") or ""),
             labels=[self._label_from_github(label) for label in issue.get("labels", [])],
@@ -469,8 +469,8 @@ class RemoteGitHub(RemoteBase):
             updated_at=issue.get("updated_at"),
         )
 
-    def _comment_from_issue_comment(self, comment: dict[str, object]) -> RemoteEntryComment:
-        return RemoteEntryComment(
+    def _comment_from_issue_comment(self, comment: dict[str, object]) -> TrackingEntryComment:
+        return TrackingEntryComment(
             id=comment.get("id"),
             body=str(comment.get("body") or ""),
             author=self._login(comment.get("user")),
@@ -479,7 +479,7 @@ class RemoteGitHub(RemoteBase):
             reactions=self._reactions_for_comment(comment.get("id")),
         )
 
-    def _reactions_for_comment(self, comment_id: int | str) -> list[RemoteReaction]:
+    def _reactions_for_comment(self, comment_id: int | str) -> list[TrackingReaction]:
         reactions = self._paginate(f"/repos/{self.repo}/issues/comments/{comment_id}/reactions")
         grouped: dict[str, list[str]] = {}
         for reaction in reactions:
@@ -491,13 +491,13 @@ class RemoteGitHub(RemoteBase):
             if user:
                 grouped[kind].append(user)
         return [
-            RemoteReaction(kind=kind, count=len(users), users=users)
+            TrackingReaction(kind=kind, count=len(users), users=users)
             for kind, users in sorted(grouped.items())
         ]
 
     @staticmethod
-    def _label_from_github(label: dict[str, object]) -> RemoteLabel:
-        return RemoteLabel(
+    def _label_from_github(label: dict[str, object]) -> TrackingLabel:
+        return TrackingLabel(
             name=str(label.get("name") or ""),
             color=label.get("color"),
             description=label.get("description"),
@@ -507,10 +507,10 @@ class RemoteGitHub(RemoteBase):
     def _login(user: object) -> str | None:
         return user.get("login") if isinstance(user, dict) else None
 
-    def _error(self, exc: Exception) -> RemoteResult:
+    def _error(self, exc: Exception) -> TrackingResult:
         if isinstance(exc, GitHubRemoteError):
-            return RemoteResult(ok=False, error=exc.message)
-        return RemoteResult(ok=False, error=str(exc))
+            return TrackingResult(ok=False, error=exc.message)
+        return TrackingResult(ok=False, error=str(exc))
 
 
-__all__ = ["RemoteGitHub", "GitHubRemoteError"]
+__all__ = ["TrackingRemoteGitHub", "GitHubRemoteError"]

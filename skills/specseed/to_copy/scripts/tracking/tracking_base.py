@@ -1,5 +1,5 @@
 """
-remote_base.py - provider-neutral contract for remote entry trackers.
+tracking_base.py - provider-neutral contract for remote entry trackers.
 
 This module defines the shared issue-like interface that GitHub and GitLab
 implementations should inherit from. It deliberately avoids provider vocabulary
@@ -33,7 +33,7 @@ SUPPORTED_REACTIONS = frozenset(
 
 
 @dataclass(frozen=True)
-class RemoteResult:
+class TrackingResult:
     """Common return envelope for every remote operation.
 
     ok:
@@ -51,7 +51,7 @@ class RemoteResult:
 
 
 @dataclass(frozen=True)
-class RemoteLabel:
+class TrackingLabel:
     """Provider-neutral label metadata."""
 
     name: str
@@ -60,7 +60,7 @@ class RemoteLabel:
 
 
 @dataclass(frozen=True)
-class RemoteReaction:
+class TrackingReaction:
     """Reaction summary attached to an entry comment.
 
     kind must be one of SUPPORTED_REACTIONS. Implementations should map provider
@@ -74,7 +74,7 @@ class RemoteReaction:
 
 
 @dataclass(frozen=True)
-class RemoteEntryComment:
+class TrackingEntryComment:
     """Full normalized comment data for an entry."""
 
     id: int | str
@@ -82,16 +82,16 @@ class RemoteEntryComment:
     author: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
-    reactions: list[RemoteReaction] = field(default_factory=list)
+    reactions: list[TrackingReaction] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
-class RemoteEntrySummary:
+class TrackingEntrySummary:
     """Small entry shape returned by list_entries(...)."""
 
     id: int | str
     title: str
-    labels: list[RemoteLabel] = field(default_factory=list)
+    labels: list[TrackingLabel] = field(default_factory=list)
     is_open: bool = True
     url: Optional[str] = None
     author: Optional[str] = None
@@ -101,29 +101,29 @@ class RemoteEntrySummary:
 
 
 @dataclass(frozen=True)
-class RemoteEntryDetails(RemoteEntrySummary):
+class TrackingEntryDetails(TrackingEntrySummary):
     """Full entry shape returned by get_entry(...)."""
 
     body: Optional[str] = None
-    comments: list[RemoteEntryComment] = field(default_factory=list)
+    comments: list[TrackingEntryComment] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
-class RemoteEntryId:
+class TrackingEntryId:
     """Payload for operations that create an entry."""
 
     id: int | str
 
 
 @dataclass(frozen=True)
-class RemoteCommentId:
+class TrackingCommentId:
     """Payload for operations that create a comment."""
 
     id: int | str
 
 
 @dataclass(frozen=True)
-class RemoteEntryOpenState:
+class TrackingEntryOpenState:
     """Payload for entry open/closed queries and mutations."""
 
     id: int | str
@@ -131,7 +131,7 @@ class RemoteEntryOpenState:
 
 
 @dataclass(frozen=True)
-class RemotePinState:
+class TrackingPinState:
     """Payload for entry pinning operations."""
 
     id: int | str
@@ -139,22 +139,22 @@ class RemotePinState:
 
 
 @dataclass(frozen=True)
-class RemoteLabelSet:
+class TrackingLabelSet:
     """Payload for operations that return the labels on an entry."""
 
     entry_id: int | str
-    labels: list[RemoteLabel] = field(default_factory=list)
+    labels: list[TrackingLabel] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
-class RemoteLabelList:
+class TrackingLabelList:
     """Payload for operations that return repository/project labels."""
 
-    labels: list[RemoteLabel] = field(default_factory=list)
+    labels: list[TrackingLabel] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
-class RemoteReactionResult:
+class TrackingReactionResult:
     """Payload for adding a reaction to an entry comment."""
 
     entry_id: int | str
@@ -163,7 +163,7 @@ class RemoteReactionResult:
 
 
 @dataclass(frozen=True)
-class RemoteSyncChange:
+class TrackingSyncChange:
     """One mutation applied while syncing from another remote.
 
     Changes are returned in the same order they were applied. The resource
@@ -181,11 +181,11 @@ class RemoteSyncChange:
     at: Optional[str] = None
 
 
-class RemoteBase(ABC):
+class TrackingBase(ABC):
     """Abstract interface for GitHub/GitLab entry implementations.
 
     Implementations should catch provider-specific exceptions and return
-    RemoteResult(ok=False, error=..., data=None) instead of leaking raw API
+    TrackingResult(ok=False, error=..., data=None) instead of leaking raw API
     exceptions through this interface.
     """
 
@@ -201,76 +201,76 @@ class RemoteBase(ABC):
         labels: Optional[list[str]] = None,
         assignee: Optional[str] = None,
         updated_since: Optional[str] = None,
-    ) -> RemoteResult:
+    ) -> TrackingResult:
         """Return entry summaries for the configured remote repository/project.
 
         Implementations should:
-        - map provider issue IDs to RemoteEntrySummary.id;
-        - normalize labels into RemoteLabel objects;
-        - set RemoteEntrySummary.is_open from the provider open/closed state;
+        - map provider issue IDs to TrackingEntrySummary.id;
+        - normalize labels into TrackingLabel objects;
+        - set TrackingEntrySummary.is_open from the provider open/closed state;
         - include author, assignees, url, created_at, and updated_at when the
           provider makes them available;
         - apply filters when the provider supports them, or fetch then filter
           locally when that is reasonable.
 
         Expected success payload:
-            list[RemoteEntrySummary]
+            list[TrackingEntrySummary]
         """
 
     @abstractmethod
-    def get_entry(self, entry_id: int | str) -> RemoteResult:
+    def get_entry(self, entry_id: int | str) -> TrackingResult:
         """Return full normalized data for one entry.
 
         Implementations should fetch the entry body plus all comments. Comment
-        reactions should be normalized into RemoteReaction objects using only
+        reactions should be normalized into TrackingReaction objects using only
         SUPPORTED_REACTIONS. Provider-specific payloads must not be returned.
 
         Expected success payload:
-            RemoteEntryDetails
+            TrackingEntryDetails
         """
 
     @abstractmethod
-    def is_entry_open(self, entry_id: int | str) -> RemoteResult:
+    def is_entry_open(self, entry_id: int | str) -> TrackingResult:
         """Return whether an entry is currently open.
 
         This intentionally avoids a generic status field because callers may use
         "status" for specseed workflow state.
 
         Expected success payload:
-            RemoteEntryOpenState
+            TrackingEntryOpenState
         """
 
     @abstractmethod
-    def set_entry_open(self, entry_id: int | str) -> RemoteResult:
+    def set_entry_open(self, entry_id: int | str) -> TrackingResult:
         """Open or reopen an entry.
 
         Implementations should be idempotent when the provider allows it: an
         already-open entry should still return ok=True.
 
         Expected success payload:
-            RemoteEntryOpenState with is_open=True
+            TrackingEntryOpenState with is_open=True
         """
 
     @abstractmethod
-    def set_entry_closed(self, entry_id: int | str) -> RemoteResult:
+    def set_entry_closed(self, entry_id: int | str) -> TrackingResult:
         """Close an entry.
 
         Implementations should be idempotent when the provider allows it: an
         already-closed entry should still return ok=True.
 
         Expected success payload:
-            RemoteEntryOpenState with is_open=False
+            TrackingEntryOpenState with is_open=False
         """
 
     @abstractmethod
-    def pin_entry(self, entry_id: int | str) -> RemoteResult:
+    def pin_entry(self, entry_id: int | str) -> TrackingResult:
         """Pin an entry in the provider UI.
 
         Implementations should treat "already pinned" as success when the
         provider exposes that case.
 
         Expected success payload:
-            RemotePinState with pinned=True
+            TrackingPinState with pinned=True
         """
 
     @abstractmethod
@@ -280,24 +280,24 @@ class RemoteBase(ABC):
         body: Optional[str] = None,
         labels: Optional[list[str]] = None,
         assignees: Optional[list[str]] = None,
-    ) -> RemoteResult:
+    ) -> TrackingResult:
         """Create a new entry and return its provider ID.
 
         Implementations should create any requested labels first if the provider
         requires labels to exist before attaching them.
 
         Expected success payload:
-            RemoteEntryId
+            TrackingEntryId
         """
 
     @abstractmethod
-    def add_entry_comment(self, entry_id: int | str, body: str) -> RemoteResult:
+    def add_entry_comment(self, entry_id: int | str, body: str) -> TrackingResult:
         """Add a text comment to an entry and return the comment ID.
 
         File uploads/attachments are intentionally outside this interface.
 
         Expected success payload:
-            RemoteCommentId
+            TrackingCommentId
         """
 
     @abstractmethod
@@ -306,7 +306,7 @@ class RemoteBase(ABC):
         entry_id: int | str,
         comment_id: int | str,
         reaction: str,
-    ) -> RemoteResult:
+    ) -> TrackingResult:
         """Add a normalized reaction to an entry comment.
 
         reaction must be one of:
@@ -317,34 +317,34 @@ class RemoteBase(ABC):
         ok=False with an error string.
 
         Expected success payload:
-            RemoteReactionResult
+            TrackingReactionResult
         """
 
     @abstractmethod
-    def get_entry_labels(self, entry_id: int | str) -> RemoteResult:
+    def get_entry_labels(self, entry_id: int | str) -> TrackingResult:
         """Return the current labels attached to an entry.
 
         Expected success payload:
-            RemoteLabelSet
+            TrackingLabelSet
         """
 
     @abstractmethod
-    def add_entry_label(self, entry_id: int | str, label: str) -> RemoteResult:
+    def add_entry_label(self, entry_id: int | str, label: str) -> TrackingResult:
         """Attach label to an entry, creating the label first if missing.
 
         Implementations should not duplicate labels. If the entry already has
         the label, return ok=True and the current label set.
 
         Expected success payload:
-            RemoteLabelSet
+            TrackingLabelSet
         """
 
     @abstractmethod
-    def list_labels(self) -> RemoteResult:
+    def list_labels(self) -> TrackingResult:
         """Return all labels available in the remote repository/project.
 
         Expected success payload:
-            RemoteLabelList
+            TrackingLabelList
         """
 
     @abstractmethod
@@ -353,7 +353,7 @@ class RemoteBase(ABC):
         name: str,
         color: Optional[str] = None,
         description: Optional[str] = None,
-    ) -> RemoteResult:
+    ) -> TrackingResult:
         """Create a repository/project label.
 
         Implementations should normalize provider color requirements. For
@@ -362,7 +362,7 @@ class RemoteBase(ABC):
         existing label unless the provider makes that impractical.
 
         Expected success payload:
-            RemoteLabel
+            TrackingLabel
         """
 
     @abstractmethod
@@ -371,22 +371,22 @@ class RemoteBase(ABC):
         name: str,
         color: Optional[str] = None,
         description: Optional[str] = None,
-    ) -> RemoteResult:
+    ) -> TrackingResult:
         """Return an existing label or create it if it is missing.
 
         This is the explicit repository/project label helper used by
         add_entry_label(...) before attaching a label to an entry.
 
         Expected success payload:
-            RemoteLabel
+            TrackingLabel
         """
 
     @abstractmethod
-    def sync_from_remote(self, remote: Any) -> RemoteResult:
+    def sync_from_remote(self, remote: Any) -> TrackingResult:
         """Sync changes from another remote into this remote.
 
         Implementations should use timestamps and provider filters when
         available so unchanged child resources do not need to be fetched.
         Expected success payload:
-            list[RemoteSyncChange]
+            list[TrackingSyncChange]
         """

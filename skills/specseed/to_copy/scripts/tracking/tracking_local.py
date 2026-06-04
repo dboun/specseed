@@ -1,9 +1,9 @@
 """
-remote_local.py - local sqlite implementation of the RemoteBase contract.
+tracking_local.py - local sqlite implementation of the TrackingBase contract.
 
 This adapter gives specseed's remote-facing code a provider-shaped local
 backend. It stores entries, labels, comments, reactions, and pin state in a
-single sqlite database named remote_local.db by default.
+single sqlite database named tracking_local.db by default.
 
 Only Python stdlib is used.
 """
@@ -16,26 +16,26 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from remote_base import (
-    RemoteBase,
-    RemoteCommentId,
-    RemoteEntryComment,
-    RemoteEntryDetails,
-    RemoteEntryId,
-    RemoteEntryOpenState,
-    RemoteEntrySummary,
-    RemoteLabel,
-    RemoteLabelList,
-    RemoteLabelSet,
-    RemotePinState,
-    RemoteReaction,
-    RemoteReactionResult,
-    RemoteResult,
-    RemoteSyncChange,
+from tracking_base import (
+    TrackingBase,
+    TrackingCommentId,
+    TrackingEntryComment,
+    TrackingEntryDetails,
+    TrackingEntryId,
+    TrackingEntryOpenState,
+    TrackingEntrySummary,
+    TrackingLabel,
+    TrackingLabelList,
+    TrackingLabelSet,
+    TrackingPinState,
+    TrackingReaction,
+    TrackingReactionResult,
+    TrackingResult,
+    TrackingSyncChange,
 )
 
 
-DEFAULT_DB_PATH = Path(__file__).with_name("remote_local.db")
+DEFAULT_DB_PATH = Path(__file__).with_name("tracking_local.db")
 
 
 def _now() -> str:
@@ -58,7 +58,7 @@ def _assignees_from_json(value: str | None) -> list[str]:
     return [str(item) for item in loaded]
 
 
-class RemoteLocal(RemoteBase):
+class TrackingLocal(TrackingBase):
     """Local sqlite-backed implementation of the provider-neutral interface."""
 
     def __init__(self, db_path: str | Path = DEFAULT_DB_PATH, author: str = "local") -> None:
@@ -72,7 +72,7 @@ class RemoteLocal(RemoteBase):
         labels: Optional[list[str]] = None,
         assignee: Optional[str] = None,
         updated_since: Optional[str] = None,
-    ) -> RemoteResult:
+    ) -> TrackingResult:
         try:
             with self._connect() as conn:
                 rows = conn.execute(
@@ -101,11 +101,11 @@ class RemoteLocal(RemoteBase):
                     for entry in entries
                     if entry.updated_at is not None and entry.updated_at >= updated_since
                 ]
-            return RemoteResult(ok=True, data=entries)
+            return TrackingResult(ok=True, data=entries)
         except Exception as exc:
             return self._error(exc)
 
-    def get_entry(self, entry_id: int | str) -> RemoteResult:
+    def get_entry(self, entry_id: int | str) -> TrackingResult:
         try:
             with self._connect() as conn:
                 row = self._entry_row(conn, entry_id)
@@ -124,7 +124,7 @@ class RemoteLocal(RemoteBase):
                         (row["id"],),
                     ).fetchall()
                 ]
-                details = RemoteEntryDetails(
+                details = TrackingEntryDetails(
                     id=summary.id,
                     title=summary.title,
                     labels=summary.labels,
@@ -137,30 +137,30 @@ class RemoteLocal(RemoteBase):
                     body=row["body"],
                     comments=comments,
                 )
-            return RemoteResult(ok=True, data=details)
+            return TrackingResult(ok=True, data=details)
         except Exception as exc:
             return self._error(exc)
 
-    def is_entry_open(self, entry_id: int | str) -> RemoteResult:
+    def is_entry_open(self, entry_id: int | str) -> TrackingResult:
         try:
             with self._connect() as conn:
                 row = self._entry_row(conn, entry_id)
                 if row is None:
                     return self._missing_entry(entry_id)
-                return RemoteResult(
+                return TrackingResult(
                     ok=True,
-                    data=RemoteEntryOpenState(id=row["id"], is_open=bool(row["is_open"])),
+                    data=TrackingEntryOpenState(id=row["id"], is_open=bool(row["is_open"])),
                 )
         except Exception as exc:
             return self._error(exc)
 
-    def set_entry_open(self, entry_id: int | str) -> RemoteResult:
+    def set_entry_open(self, entry_id: int | str) -> TrackingResult:
         return self._set_entry_state(entry_id, True)
 
-    def set_entry_closed(self, entry_id: int | str) -> RemoteResult:
+    def set_entry_closed(self, entry_id: int | str) -> TrackingResult:
         return self._set_entry_state(entry_id, False)
 
-    def pin_entry(self, entry_id: int | str) -> RemoteResult:
+    def pin_entry(self, entry_id: int | str) -> TrackingResult:
         try:
             with self._connect() as conn:
                 row = self._entry_row(conn, entry_id)
@@ -170,7 +170,7 @@ class RemoteLocal(RemoteBase):
                     "INSERT OR IGNORE INTO pinned_entries(entry_id) VALUES (?)",
                     (row["id"],),
                 )
-            return RemoteResult(ok=True, data=RemotePinState(id=row["id"], pinned=True))
+            return TrackingResult(ok=True, data=TrackingPinState(id=row["id"], pinned=True))
         except Exception as exc:
             return self._error(exc)
 
@@ -180,9 +180,9 @@ class RemoteLocal(RemoteBase):
         body: Optional[str] = None,
         labels: Optional[list[str]] = None,
         assignees: Optional[list[str]] = None,
-    ) -> RemoteResult:
+    ) -> TrackingResult:
         if not title.strip():
-            return RemoteResult(ok=False, error="entry title is required")
+            return TrackingResult(ok=False, error="entry title is required")
         try:
             stamp = _now()
             with self._connect() as conn:
@@ -206,13 +206,13 @@ class RemoteLocal(RemoteBase):
                 for label in labels or []:
                     self._ensure_label_conn(conn, label)
                     self._attach_label_conn(conn, entry_id, label)
-            return RemoteResult(ok=True, data=RemoteEntryId(id=entry_id))
+            return TrackingResult(ok=True, data=TrackingEntryId(id=entry_id))
         except Exception as exc:
             return self._error(exc)
 
-    def add_entry_comment(self, entry_id: int | str, body: str) -> RemoteResult:
+    def add_entry_comment(self, entry_id: int | str, body: str) -> TrackingResult:
         if not body:
-            return RemoteResult(ok=False, error="comment body is required")
+            return TrackingResult(ok=False, error="comment body is required")
         try:
             stamp = _now()
             with self._connect() as conn:
@@ -227,7 +227,7 @@ class RemoteLocal(RemoteBase):
                     (row["id"], body, self.author, stamp, stamp),
                 )
                 self._touch_entry(conn, row["id"], stamp)
-            return RemoteResult(ok=True, data=RemoteCommentId(id=cursor.lastrowid))
+            return TrackingResult(ok=True, data=TrackingCommentId(id=cursor.lastrowid))
         except Exception as exc:
             return self._error(exc)
 
@@ -236,9 +236,9 @@ class RemoteLocal(RemoteBase):
         entry_id: int | str,
         comment_id: int | str,
         reaction: str,
-    ) -> RemoteResult:
+    ) -> TrackingResult:
         if not self.is_supported_reaction(reaction):
-            return RemoteResult(ok=False, error=f"unsupported reaction: {reaction}")
+            return TrackingResult(ok=False, error=f"unsupported reaction: {reaction}")
         try:
             with self._connect() as conn:
                 entry_row = self._entry_row(conn, entry_id)
@@ -246,7 +246,7 @@ class RemoteLocal(RemoteBase):
                     return self._missing_entry(entry_id)
                 comment_row = self._comment_row(conn, entry_row["id"], comment_id)
                 if comment_row is None:
-                    return RemoteResult(ok=False, error=f"comment not found: {comment_id}")
+                    return TrackingResult(ok=False, error=f"comment not found: {comment_id}")
                 conn.execute(
                     """
                     INSERT INTO comment_reactions(comment_id, kind, user)
@@ -255,9 +255,9 @@ class RemoteLocal(RemoteBase):
                     (comment_row["id"], reaction, self.author),
                 )
                 self._touch_entry(conn, entry_row["id"], _now())
-            return RemoteResult(
+            return TrackingResult(
                 ok=True,
-                data=RemoteReactionResult(
+                data=TrackingReactionResult(
                     entry_id=entry_row["id"],
                     comment_id=comment_row["id"],
                     reaction=reaction,
@@ -266,15 +266,15 @@ class RemoteLocal(RemoteBase):
         except Exception as exc:
             return self._error(exc)
 
-    def get_entry_labels(self, entry_id: int | str) -> RemoteResult:
+    def get_entry_labels(self, entry_id: int | str) -> TrackingResult:
         try:
             with self._connect() as conn:
                 row = self._entry_row(conn, entry_id)
                 if row is None:
                     return self._missing_entry(entry_id)
-                return RemoteResult(
+                return TrackingResult(
                     ok=True,
-                    data=RemoteLabelSet(
+                    data=TrackingLabelSet(
                         entry_id=row["id"],
                         labels=self._labels_for_entry(conn, row["id"]),
                     ),
@@ -282,7 +282,7 @@ class RemoteLocal(RemoteBase):
         except Exception as exc:
             return self._error(exc)
 
-    def add_entry_label(self, entry_id: int | str, label: str) -> RemoteResult:
+    def add_entry_label(self, entry_id: int | str, label: str) -> TrackingResult:
         try:
             with self._connect() as conn:
                 row = self._entry_row(conn, entry_id)
@@ -292,18 +292,18 @@ class RemoteLocal(RemoteBase):
                 self._attach_label_conn(conn, row["id"], label)
                 self._touch_entry(conn, row["id"], _now())
                 labels = self._labels_for_entry(conn, row["id"])
-            return RemoteResult(ok=True, data=RemoteLabelSet(entry_id=row["id"], labels=labels))
+            return TrackingResult(ok=True, data=TrackingLabelSet(entry_id=row["id"], labels=labels))
         except Exception as exc:
             return self._error(exc)
 
-    def list_labels(self) -> RemoteResult:
+    def list_labels(self) -> TrackingResult:
         try:
             with self._connect() as conn:
                 rows = conn.execute(
                     "SELECT name, color, description FROM labels ORDER BY name"
                 ).fetchall()
-                labels = [RemoteLabel(row["name"], row["color"], row["description"]) for row in rows]
-            return RemoteResult(ok=True, data=RemoteLabelList(labels=labels))
+                labels = [TrackingLabel(row["name"], row["color"], row["description"]) for row in rows]
+            return TrackingResult(ok=True, data=TrackingLabelList(labels=labels))
         except Exception as exc:
             return self._error(exc)
 
@@ -312,11 +312,11 @@ class RemoteLocal(RemoteBase):
         name: str,
         color: Optional[str] = None,
         description: Optional[str] = None,
-    ) -> RemoteResult:
+    ) -> TrackingResult:
         try:
             with self._connect() as conn:
                 label = self._ensure_label_conn(conn, name, color, description)
-            return RemoteResult(ok=True, data=label)
+            return TrackingResult(ok=True, data=label)
         except Exception as exc:
             return self._error(exc)
 
@@ -325,10 +325,10 @@ class RemoteLocal(RemoteBase):
         name: str,
         color: Optional[str] = None,
         description: Optional[str] = None,
-    ) -> RemoteResult:
+    ) -> TrackingResult:
         return self.create_label(name, color, description)
 
-    def sync_from_remote(self, remote: RemoteBase | str | Path) -> RemoteResult:
+    def sync_from_remote(self, remote: TrackingBase | str | Path) -> TrackingResult:
         """Make this local database match another local remote database.
 
         The source database is treated as authoritative for provider-visible
@@ -339,9 +339,9 @@ class RemoteLocal(RemoteBase):
         try:
             source = self._coerce_local_remote(remote)
             if self.db_path.resolve() == source.db_path.resolve():
-                return RemoteResult(ok=True, data=[])
+                return TrackingResult(ok=True, data=[])
 
-            changes: list[RemoteSyncChange] = []
+            changes: list[TrackingSyncChange] = []
             stamp = _now()
             with source._connect() as source_conn, self._connect() as target_conn:
                 source_snapshot = self._snapshot_static_resources(source_conn)
@@ -396,7 +396,7 @@ class RemoteLocal(RemoteBase):
                     stamp,
                 )
 
-            return RemoteResult(ok=True, data=changes)
+            return TrackingResult(ok=True, data=changes)
         except Exception as exc:
             return self._error(exc)
 
@@ -485,14 +485,14 @@ class RemoteLocal(RemoteBase):
 
     def _summary_from_row(
         self, conn: sqlite3.Connection, row: sqlite3.Row
-    ) -> RemoteEntrySummary:
+    ) -> TrackingEntrySummary:
         entry_id = row["id"]
-        return RemoteEntrySummary(
+        return TrackingEntrySummary(
             id=entry_id,
             title=row["title"],
             labels=self._labels_for_entry(conn, entry_id),
             is_open=bool(row["is_open"]),
-            url=f"local://remote_local/entries/{entry_id}",
+            url=f"local://tracking_local/entries/{entry_id}",
             author=row["author"],
             assignees=_assignees_from_json(row["assignees"]),
             created_at=row["created_at"],
@@ -501,8 +501,8 @@ class RemoteLocal(RemoteBase):
 
     def _comment_from_row(
         self, conn: sqlite3.Connection, row: sqlite3.Row
-    ) -> RemoteEntryComment:
-        return RemoteEntryComment(
+    ) -> TrackingEntryComment:
+        return TrackingEntryComment(
             id=row["id"],
             body=row["body"],
             author=row["author"],
@@ -513,7 +513,7 @@ class RemoteLocal(RemoteBase):
 
     def _labels_for_entry(
         self, conn: sqlite3.Connection, entry_id: int | str
-    ) -> list[RemoteLabel]:
+    ) -> list[TrackingLabel]:
         rows = conn.execute(
             """
             SELECT labels.name, labels.color, labels.description
@@ -524,11 +524,11 @@ class RemoteLocal(RemoteBase):
             """,
             (entry_id,),
         ).fetchall()
-        return [RemoteLabel(row["name"], row["color"], row["description"]) for row in rows]
+        return [TrackingLabel(row["name"], row["color"], row["description"]) for row in rows]
 
     def _reactions_for_comment(
         self, conn: sqlite3.Connection, comment_id: int | str
-    ) -> list[RemoteReaction]:
+    ) -> list[TrackingReaction]:
         rows = conn.execute(
             """
             SELECT kind, COUNT(*) AS count, GROUP_CONCAT(user, char(31)) AS users
@@ -542,7 +542,7 @@ class RemoteLocal(RemoteBase):
         reactions = []
         for row in rows:
             users = [user for user in (row["users"] or "").split(chr(31)) if user]
-            reactions.append(RemoteReaction(kind=row["kind"], count=row["count"], users=users))
+            reactions.append(TrackingReaction(kind=row["kind"], count=row["count"], users=users))
         return reactions
 
     def _ensure_label_conn(
@@ -551,7 +551,7 @@ class RemoteLocal(RemoteBase):
         name: str,
         color: Optional[str] = None,
         description: Optional[str] = None,
-    ) -> RemoteLabel:
+    ) -> TrackingLabel:
         if not name.strip():
             raise ValueError("label name is required")
         existing = conn.execute(
@@ -559,12 +559,12 @@ class RemoteLocal(RemoteBase):
             (name,),
         ).fetchone()
         if existing is not None:
-            return RemoteLabel(existing["name"], existing["color"], existing["description"])
+            return TrackingLabel(existing["name"], existing["color"], existing["description"])
         conn.execute(
             "INSERT INTO labels(name, color, description) VALUES (?, ?, ?)",
             (name, color, description),
         )
-        return RemoteLabel(name=name, color=color, description=description)
+        return TrackingLabel(name=name, color=color, description=description)
 
     def _attach_label_conn(
         self, conn: sqlite3.Connection, entry_id: int | str, label: str
@@ -574,7 +574,7 @@ class RemoteLocal(RemoteBase):
             (entry_id, label),
         )
 
-    def _set_entry_state(self, entry_id: int | str, is_open: bool) -> RemoteResult:
+    def _set_entry_state(self, entry_id: int | str, is_open: bool) -> TrackingResult:
         try:
             with self._connect() as conn:
                 row = self._entry_row(conn, entry_id)
@@ -584,9 +584,9 @@ class RemoteLocal(RemoteBase):
                     "UPDATE entries SET is_open = ?, updated_at = ? WHERE id = ?",
                     (1 if is_open else 0, _now(), row["id"]),
                 )
-            return RemoteResult(
+            return TrackingResult(
                 ok=True,
-                data=RemoteEntryOpenState(id=row["id"], is_open=is_open),
+                data=TrackingEntryOpenState(id=row["id"], is_open=is_open),
             )
         except Exception as exc:
             return self._error(exc)
@@ -596,18 +596,18 @@ class RemoteLocal(RemoteBase):
     ) -> None:
         conn.execute("UPDATE entries SET updated_at = ? WHERE id = ?", (stamp, entry_id))
 
-    def _missing_entry(self, entry_id: int | str) -> RemoteResult:
-        return RemoteResult(ok=False, error=f"entry not found: {entry_id}")
+    def _missing_entry(self, entry_id: int | str) -> TrackingResult:
+        return TrackingResult(ok=False, error=f"entry not found: {entry_id}")
 
-    def _error(self, exc: Exception) -> RemoteResult:
-        return RemoteResult(ok=False, error=str(exc))
+    def _error(self, exc: Exception) -> TrackingResult:
+        return TrackingResult(ok=False, error=str(exc))
 
-    def _coerce_local_remote(self, remote: RemoteBase | str | Path) -> "RemoteLocal":
-        if isinstance(remote, RemoteLocal):
+    def _coerce_local_remote(self, remote: TrackingBase | str | Path) -> "TrackingLocal":
+        if isinstance(remote, TrackingLocal):
             return remote
         if isinstance(remote, (str, Path)):
-            return RemoteLocal(db_path=remote, author=self.author)
-        raise TypeError("RemoteLocal.sync_from_remote requires RemoteLocal or sqlite db path")
+            return TrackingLocal(db_path=remote, author=self.author)
+        raise TypeError("TrackingLocal.sync_from_remote requires TrackingLocal or sqlite db path")
 
     def _snapshot_static_resources(self, conn: sqlite3.Connection) -> dict[str, object]:
         return {
@@ -679,7 +679,7 @@ class RemoteLocal(RemoteBase):
         conn: sqlite3.Connection,
         source: dict[str, object],
         target: dict[str, object],
-        changes: list[RemoteSyncChange],
+        changes: list[TrackingSyncChange],
         stamp: str,
     ) -> None:
         source_labels = source["labels"]
@@ -717,7 +717,7 @@ class RemoteLocal(RemoteBase):
         conn: sqlite3.Connection,
         source_entries: dict[int, dict[str, object]],
         target_entries: dict[int, dict[str, object]],
-        changes: list[RemoteSyncChange],
+        changes: list[TrackingSyncChange],
         stamp: str,
     ) -> set[int]:
         changed_entry_ids: set[int] = set()
@@ -790,7 +790,7 @@ class RemoteLocal(RemoteBase):
         conn: sqlite3.Connection,
         source: dict[str, object],
         target: dict[str, object],
-        changes: list[RemoteSyncChange],
+        changes: list[TrackingSyncChange],
         stamp: str,
     ) -> None:
         for entry_id, label in sorted(source["entry_labels"] - target["entry_labels"]):
@@ -807,7 +807,7 @@ class RemoteLocal(RemoteBase):
         conn: sqlite3.Connection,
         source: dict[str, object],
         target: dict[str, object],
-        changes: list[RemoteSyncChange],
+        changes: list[TrackingSyncChange],
         stamp: str,
     ) -> None:
         for entry_id in sorted(source["pinned_entries"] - target["pinned_entries"]):
@@ -819,7 +819,7 @@ class RemoteLocal(RemoteBase):
         conn: sqlite3.Connection,
         source: dict[str, object],
         target: dict[str, object],
-        changes: list[RemoteSyncChange],
+        changes: list[TrackingSyncChange],
         stamp: str,
     ) -> None:
         source_comments = source["comments"]
@@ -880,7 +880,7 @@ class RemoteLocal(RemoteBase):
         conn: sqlite3.Connection,
         source: dict[str, object],
         target: dict[str, object],
-        changes: list[RemoteSyncChange],
+        changes: list[TrackingSyncChange],
         stamp: str,
     ) -> None:
         source_reactions = source["reactions"]
@@ -941,7 +941,7 @@ class RemoteLocal(RemoteBase):
         target_entries: dict[int, dict[str, object]],
         source_dynamic: dict[str, object],
         target_dynamic: dict[str, object],
-        changes: list[RemoteSyncChange],
+        changes: list[TrackingSyncChange],
         stamp: str,
     ) -> None:
         source_comments = source_dynamic["comments"]
@@ -984,7 +984,7 @@ class RemoteLocal(RemoteBase):
 
     def _record_change(
         self,
-        changes: list[RemoteSyncChange],
+        changes: list[TrackingSyncChange],
         action: str,
         resource_type: str,
         resource_id: int | str,
@@ -995,7 +995,7 @@ class RemoteLocal(RemoteBase):
         stamp: str,
     ) -> None:
         changes.append(
-            RemoteSyncChange(
+            TrackingSyncChange(
                 action=action,
                 resource_type=resource_type,
                 resource_id=resource_id,
