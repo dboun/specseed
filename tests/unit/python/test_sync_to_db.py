@@ -11,10 +11,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.target.specseed_target_src.db.database import Database
-from src.target.specseed_target_src.scheduling.sync_to_db import sync_to_db
-from src.target.specseed_target_src.tracking.tracking_local import TrackingLocal
-from src.target.specseed_target_src.tracking.tracking_remote_local import TrackingRemoteLocal
+from src.target_facing.specseed_target_src.db.database import Database
+from src.target_facing.specseed_target_src.scheduling.sync_to_db import sync_to_db
+from src.target_facing.specseed_target_src.tracking.tracking_local import TrackingLocal
+from src.target_facing.specseed_target_src.tracking.tracking_remote_local import TrackingRemoteLocal
 
 
 class SyncToDbTest(unittest.TestCase):

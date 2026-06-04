@@ -1,0 +1,111 @@
+"""spec_change.py + resolve_remote.py - the spec-change worker's seams.
+
+Covers the enqueue helper the skill calls after writing a reconcile script, and
+the config-driven remote resolver the generated script imports. No GitHub/GitLab
+is contacted: the local stand-in is the resolved remote here.
+"""
+
+from __future__ import annotations
+
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+from src.target_facing.specseed_target_src.db.database import Database
+from src.target_facing.specseed_target_src.scheduling.spec_change import (
+    DEFAULT_SCRIPT_NAME,
+    SPEC_CHANGE_ACTION,
+    enqueue_spec_change_run,
+    spec_change_dir,
+    spec_change_root,
+)
+from src.target_facing.specseed_target_src.tracking.resolve_remote import (
+    resolve_local,
+    resolve_remote,
+)
+from src.target_facing.specseed_target_src.tracking.tracking_local import TrackingLocal
+from src.target_facing.specseed_target_src.tracking.tracking_remote_local import TrackingRemoteLocal
+
+
+class SpecChangePathsTest(unittest.TestCase):
+    def test_spec_change_dir_is_under_storage_spec_change(self) -> None:
+        with tempfile.TemporaryDirectory() as storage:
+            root = spec_change_root(storage)
+            self.assertEqual(root, Path(storage) / "spec-change")
+            self.assertEqual(spec_change_dir(42, storage), root / "42")
+
+
+class EnqueueSpecChangeTest(unittest.TestCase):
+    def _db(self) -> Database:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        return Database(db_path=Path(tmp.name) / "queue.db")
+
+    def test_enqueue_absolute_script_records_action_and_payload(self) -> None:
+        db = self._db()
+        with tempfile.TemporaryDirectory() as storage:
+            script = spec_change_dir("7", storage) / DEFAULT_SCRIPT_NAME
+            script.parent.mkdir(parents=True)
+            script.write_text("# apply\n", encoding="utf-8")
+
+            task_id = enqueue_spec_change_run(
+                script, request_id="7", route="adapt", db=db, storage=storage
+            )
+
+            task = db.get_task(task_id)
+            self.assertEqual(task["action"], SPEC_CHANGE_ACTION)
+            self.assertEqual(task["post_id"], "7")
+            self.assertEqual(task["payload"]["script"], DEFAULT_SCRIPT_NAME)
+            self.assertEqual(task["payload"]["dir"], str(script.parent.resolve()))
+            self.assertEqual(task["payload"]["route"], "adapt")
+            self.assertEqual(task["payload"]["request_id"], "7")
+            self.assertEqual(db.pending_count(), 1)
+
+    def test_enqueue_relative_script_resolves_against_request_dir(self) -> None:
+        db = self._db()
+        with tempfile.TemporaryDirectory() as storage:
+            task_id = enqueue_spec_change_run(
+                DEFAULT_SCRIPT_NAME, request_id="9", route="tweak", db=db, storage=storage
+            )
+            expected = spec_change_dir("9", storage).resolve()
+            self.assertEqual(db.get_task(task_id)["payload"]["dir"], str(expected))
+
+    def test_relative_script_without_request_id_is_rejected(self) -> None:
+        db = self._db()
+        with self.assertRaises(ValueError):
+            enqueue_spec_change_run(DEFAULT_SCRIPT_NAME, db=db)
+
+
+class ResolveRemoteTest(unittest.TestCase):
+    def _write_config(self, storage: str, config: dict, remote: dict | None = None) -> None:
+        (Path(storage) / "configuration.json").write_text(json.dumps(config), encoding="utf-8")
+        if remote is not None:
+            (Path(storage) / "remote.json").write_text(json.dumps(remote), encoding="utf-8")
+
+    def test_missing_config_resolves_to_local_stand_in(self) -> None:
+        with tempfile.TemporaryDirectory() as storage:
+            self.assertIsInstance(resolve_remote(storage), TrackingRemoteLocal)
+
+    def test_disabled_backend_resolves_to_local_stand_in(self) -> None:
+        with tempfile.TemporaryDirectory() as storage:
+            self._write_config(storage, {"backend": {"enabled": False}})
+            self.assertIsInstance(resolve_remote(storage), TrackingRemoteLocal)
+
+    def test_enabled_backend_without_repo_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as storage:
+            self._write_config(
+                storage,
+                {"backend": {"enabled": True, "provider": "github"}},
+                {"repo": None},
+            )
+            with self.assertRaises(ValueError):
+                resolve_remote(storage)
+
+    def test_resolve_local_returns_local_tracker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsInstance(resolve_local(Path(tmp) / "t.db"), TrackingLocal)
+
+
+if __name__ == "__main__":
+    unittest.main()

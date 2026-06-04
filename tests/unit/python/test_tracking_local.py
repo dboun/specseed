@@ -14,15 +14,15 @@ from pathlib import Path
 from datetime import datetime, timezone
 from unittest import mock
 
-from src.target.specseed_target_src.tracking import tracking_local
-from src.target.specseed_target_src.tracking.tracking_base import (
+from src.target_facing.specseed_target_src.tracking import tracking_local
+from src.target_facing.specseed_target_src.tracking.tracking_base import (
     TrackingEntryDetails,
     TrackingLabel,
     TrackingReaction,
     TrackingSyncChange,
 )
-from src.target.specseed_target_src.tracking.tracking_local import TrackingLocal
-from src.target.specseed_target_src.tracking.tracking_remote_local import TrackingRemoteLocal
+from src.target_facing.specseed_target_src.tracking.tracking_local import TrackingLocal
+from src.target_facing.specseed_target_src.tracking.tracking_remote_local import TrackingRemoteLocal
 
 
 class _FrozenDateTime(datetime):
@@ -137,6 +137,82 @@ class TrackingLocalTest(unittest.TestCase):
         self.assertEqual([label.name for label in first_attach.data.labels], ["urgent"])
         self.assertEqual([label.name for label in second_attach.data.labels], ["urgent"])
         self.assertEqual(listed.data.labels, [TrackingLabel("urgent", "ff0000", "Do first")])
+
+    def test_edit_entry_changes_title_and_body_independently(self) -> None:
+        tmp, local = self.make_local()
+        self.addCleanup(tmp.cleanup)
+        entry_id = local.add_entry("Old title", body="Old body").data.id
+
+        body_only = local.edit_entry(entry_id, body="New body")
+        title_only = local.edit_entry(entry_id, title="New title")
+
+        self.assertTrue(body_only.ok)
+        self.assertTrue(title_only.ok)
+        details = local.get_entry(entry_id).data
+        self.assertEqual(details.title, "New title")
+        self.assertEqual(details.body, "New body")
+
+        self.assertFalse(local.edit_entry(entry_id).ok)  # nothing to edit
+        self.assertFalse(local.edit_entry(entry_id, title="  ").ok)  # blank title
+        self.assertFalse(local.edit_entry(999, body="x").ok)  # missing entry
+
+    def test_remove_entry_label_is_idempotent_and_supports_status_swap(self) -> None:
+        tmp, local = self.make_local()
+        self.addCleanup(tmp.cleanup)
+        entry_id = local.add_entry(
+            "Work item", labels=["ticket", "ticket:status:todo"]
+        ).data.id
+
+        local.add_entry_label(entry_id, "ticket:status:in_progress")
+        removed = local.remove_entry_label(entry_id, "ticket:status:todo")
+        removed_again = local.remove_entry_label(entry_id, "ticket:status:todo")
+
+        self.assertTrue(removed.ok)
+        names = {label.name for label in removed.data.labels}
+        self.assertEqual(names, {"ticket", "ticket:status:in_progress"})
+        self.assertTrue(removed_again.ok)  # already gone -> still ok
+        self.assertFalse(local.remove_entry_label(999, "x").ok)  # missing entry
+
+    def test_delete_entry_removes_it_and_cascades(self) -> None:
+        tmp, local = self.make_local()
+        self.addCleanup(tmp.cleanup)
+        entry_id = local.add_entry("Doomed", labels=["epic"]).data.id
+        local.add_entry_comment(entry_id, "a comment")
+        local.pin_entry(entry_id)
+
+        deleted = local.delete_entry(entry_id)
+
+        self.assertTrue(deleted.ok)
+        self.assertEqual(deleted.data.id, entry_id)
+        self.assertFalse(local.get_entry(entry_id).ok)
+        self.assertFalse(local.delete_entry(entry_id).ok)  # already gone
+        with sqlite3.connect(local.db_path) as conn:
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM comments WHERE entry_id = ?", (entry_id,)).fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM entry_labels WHERE entry_id = ?", (entry_id,)).fetchone()[0],
+                0,
+            )
+
+    def test_sync_detects_remote_entry_deletion(self) -> None:
+        tmp_r, remote = self.make_local("remote")
+        tmp_l, local = self.make_local("local")
+        self.addCleanup(tmp_r.cleanup)
+        self.addCleanup(tmp_l.cleanup)
+        entry_id = remote.add_entry("Mirror me").data.id
+        local.sync_from_remote(remote)
+        self.assertTrue(local.get_entry(entry_id).ok)
+
+        remote.delete_entry(entry_id)
+        changes = local.sync_from_remote(remote)
+
+        self.assertTrue(changes.ok)
+        self.assertTrue(
+            any(c.resource_type == "entry" and c.action == "delete" for c in changes.data)
+        )
+        self.assertFalse(local.get_entry(entry_id).ok)
 
     def test_comments_and_reactions_are_returned_on_entry_details(self) -> None:
         tmp, local = self.make_local(author="alice")
