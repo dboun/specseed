@@ -15,6 +15,7 @@ No GitHub/GitLab.
 
 from __future__ import annotations
 
+import json
 import tempfile
 import threading
 import time
@@ -103,6 +104,23 @@ class SchedulerTest(unittest.TestCase):
         prompt = self.runner.calls[0]["prompt"]
         self.assertIn("spec-change", prompt)
         self.assertIn("adapt", prompt)
+
+    def test_run_once_writes_platform_log_under_storage(self) -> None:
+        self.remote.create_label("spec-change:adapt")
+        self.remote.add_entry("Adapt the widget", labels=["spec-change:adapt"])
+
+        sched = self._scheduler()
+        sched.run_once()
+
+        log_path = self.root / "storage" / "platform.log"
+        self.assertTrue(log_path.exists())
+        events = [
+            json.loads(line)["event"]
+            for line in log_path.read_text(encoding="utf-8").splitlines()
+        ]
+        self.assertIn("sync_to_db_complete", events)
+        self.assertIn("task_enqueued", events)
+        self.assertIn("task_complete", events)
 
     def test_run_once_runs_spec_change_script_through_worker(self) -> None:
         marker = self.root / "applied.txt"

@@ -45,6 +45,7 @@ from specseed_target_src.executing.agent_runner import (
     AgentRunner,
     build_runner,
 )
+from specseed_target_src.executing import platform_log
 from specseed_target_src.executing.scheduler import Scheduler
 from specseed_target_src.tracking.populate_defaults import populate_defaults
 from specseed_target_src.tracking.resolve_remote import (
@@ -64,7 +65,16 @@ def build_scheduler(
     db: Optional[Database] = None,
 ) -> Scheduler:
     storage_dir = Path(storage) if storage else default_storage_dir()
+    platform_log.configure(storage_dir)
     config = load_config(storage_dir)
+    platform_log.log_event(
+        "scheduler_build",
+        storage=str(storage_dir),
+        repo_root=str(Path(repo_root) if repo_root else Path.cwd()),
+        poll_interval=interval,
+        runner_injected=runner is not None,
+        db_injected=db is not None,
+    )
     return Scheduler(
         db=db or Database.instance(),
         runner=runner or build_runner(config),
@@ -113,15 +123,27 @@ def ensure_remote_seeded(storage: str | Path, config: dict) -> Optional[dict]:
     marker = _seed_marker_file(storage)
     try:
         if json.loads(marker.read_text(encoding="utf-8")) == desired:
+            platform_log.log_event("remote_seed_skipped", storage=str(storage), **desired)
             return None
     except (OSError, json.JSONDecodeError):
         pass
 
+    platform_log.log_event("remote_seed_start", storage=str(storage), **desired)
     remote = resolve_remote(storage)
     summary = populate_defaults(kind, tracker=remote, prune=False)
 
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text(json.dumps(desired, indent=2) + "\n", encoding="utf-8")
+    posts = summary.get("default_posts", {})
+    created = [title for title, info in posts.items() if info.get("created")]
+    platform_log.log_event(
+        "remote_seed_complete",
+        storage=str(storage),
+        backend=summary.get("backend"),
+        ensured_labels=len(summary.get("ensured_labels", [])),
+        default_posts=len(posts),
+        created_posts=created,
+    )
     return summary
 
 
@@ -134,46 +156,62 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
 
     storage_dir = Path(args.storage) if args.storage else default_storage_dir()
-    seeded = ensure_remote_seeded(storage_dir, load_config(storage_dir))
-    if seeded is not None:
-        posts = seeded.get("default_posts", {})
-        created = [title for title, info in posts.items() if info.get("created")]
-        print(
-            f"seeded {seeded['backend']}: {len(seeded.get('ensured_labels', []))} labels, "
-            f"{len(posts)} permanent posts"
-            + (f" (created: {', '.join(created)})" if created else " (already present)")
+    platform_log.configure(storage_dir)
+    platform_log.log_event(
+        "run_start",
+        storage=str(storage_dir),
+        repo_root=str(Path(args.repo_root) if args.repo_root else Path.cwd()),
+        interval=args.interval,
+        once=args.once,
+    )
+    try:
+        seeded = ensure_remote_seeded(storage_dir, load_config(storage_dir))
+        if seeded is not None:
+            posts = seeded.get("default_posts", {})
+            created = [title for title, info in posts.items() if info.get("created")]
+            print(
+                f"seeded {seeded['backend']}: {len(seeded.get('ensured_labels', []))} labels, "
+                f"{len(posts)} permanent posts"
+                + (f" (created: {', '.join(created)})" if created else " (already present)")
+            )
+
+        scheduler = build_scheduler(
+            storage=storage_dir,
+            repo_root=args.repo_root,
+            interval=args.interval,
         )
 
-    scheduler = build_scheduler(
-        storage=storage_dir,
-        repo_root=args.repo_root,
-        interval=args.interval,
-    )
+        if args.once:
+            summary = scheduler.run_once()
+            platform_log.log_event("run_once_complete", summary=summary)
+            print(json.dumps(summary, indent=2))
+            return 0
 
-    if args.once:
-        summary = scheduler.run_once()
-        print(json.dumps(summary, indent=2))
-        return 0
+        def _on_signal(signum, _frame):  # noqa: ANN001 - signal handler signature
+            platform_log.log_event("signal_received", signum=signum)
+            scheduler.request_stop()
 
-    def _on_signal(signum, _frame):  # noqa: ANN001 - signal handler signature
-        scheduler.request_stop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                signal.signal(sig, _on_signal)
+            except (ValueError, OSError):  # not the main thread / unsupported
+                pass
 
-    for sig in (signal.SIGINT, signal.SIGTERM):
+        scheduler.start()
+        print(f"specseed scheduler started (interval={scheduler.poll_interval}s). Ctrl-C to stop.")
         try:
-            signal.signal(sig, _on_signal)
-        except (ValueError, OSError):  # not the main thread / unsupported
-            pass
-
-    scheduler.start()
-    print(f"specseed scheduler started (interval={scheduler.poll_interval}s). Ctrl-C to stop.")
-    try:
-        while scheduler.is_running():
-            time.sleep(0.5)
-    except KeyboardInterrupt:
-        scheduler.request_stop()
-    scheduler.stop(timeout=30)
-    print("specseed scheduler stopped.")
-    return 0
+            while scheduler.is_running():
+                time.sleep(0.5)
+        except KeyboardInterrupt:
+            platform_log.log_event("keyboard_interrupt")
+            scheduler.request_stop()
+        scheduler.stop(timeout=30)
+        platform_log.log_event("run_stop", state=scheduler.state)
+        print("specseed scheduler stopped.")
+        return 0
+    except Exception as exc:
+        platform_log.log_event("run_error", error=repr(exc))
+        raise
 
 
 if __name__ == "__main__":

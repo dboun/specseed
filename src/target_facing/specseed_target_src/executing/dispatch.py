@@ -31,6 +31,7 @@ from typing import Any, Optional
 
 from specseed_target_src.executing import advance
 from specseed_target_src.executing import context as context_mod
+from specseed_target_src.executing import platform_log
 from specseed_target_src.executing.context import ExecutionContext
 from specseed_target_src.executing import prompts
 from specseed_target_src.scheduling.spec_change import SPEC_CHANGE_ACTION
@@ -124,6 +125,11 @@ def run_spec_change_script(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
     ``ctx.agent_timeout_s`` are honored via a terminate->wait->kill loop.
     """
     if not ctx.permissions.can_run_spec_change():
+        platform_log.log_event(
+            "spec_change_script_blocked",
+            task_id=task.get("task_id"),
+            reason="permission_denied",
+        )
         return HandlerOutcome(
             success=False,
             error="spec-change remote writes not permitted by config",
@@ -138,6 +144,13 @@ def run_spec_change_script(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
             error="spec-change payload missing dir/script",
         )
     script_path = os.path.join(str(script_dir), str(script_name))
+    platform_log.log_event(
+        "spec_change_script_start",
+        task_id=task.get("task_id"),
+        post_id=task.get("post_id"),
+        script=script_path,
+        cwd=str(ctx.repo_root),
+    )
 
     env = dict(os.environ)
     repo_root = str(ctx.repo_root)
@@ -159,6 +172,12 @@ def run_spec_change_script(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
             text=True,
         )
     except (OSError, ValueError) as exc:
+        platform_log.log_event(
+            "spec_change_script_launch_failed",
+            task_id=task.get("task_id"),
+            script=script_path,
+            error=repr(exc),
+        )
         return HandlerOutcome(
             success=False,
             error="failed to launch spec-change script: {0}".format(exc),
@@ -185,6 +204,13 @@ def run_spec_change_script(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
     returncode = proc.returncode
 
     if cancelled:
+        platform_log.log_event(
+            "spec_change_script_cancelled",
+            task_id=task.get("task_id"),
+            script=script_path,
+            returncode=returncode,
+            output=_truncate(_combine_output(stdout, stderr)),
+        )
         return HandlerOutcome(
             success=False,
             requeue=True,
@@ -192,6 +218,14 @@ def run_spec_change_script(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
             detail=_combine_output(stdout, stderr),
         )
     if timed_out:
+        platform_log.log_event(
+            "spec_change_script_timed_out",
+            task_id=task.get("task_id"),
+            script=script_path,
+            returncode=returncode,
+            timeout_s=timeout_s,
+            output=_truncate(_combine_output(stdout, stderr)),
+        )
         return HandlerOutcome(
             success=False,
             requeue=True,
@@ -199,11 +233,27 @@ def run_spec_change_script(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
             detail=_combine_output(stdout, stderr),
         )
     if returncode == 0:
-        return HandlerOutcome(success=True, detail=_combine_output(stdout, stderr))
+        output = _combine_output(stdout, stderr)
+        platform_log.log_event(
+            "spec_change_script_complete",
+            task_id=task.get("task_id"),
+            script=script_path,
+            returncode=returncode,
+            output=_truncate(output),
+        )
+        return HandlerOutcome(success=True, detail=output)
+    output = _combine_output(stdout, stderr)
+    platform_log.log_event(
+        "spec_change_script_failed",
+        task_id=task.get("task_id"),
+        script=script_path,
+        returncode=returncode,
+        output=_truncate(output),
+    )
     return HandlerOutcome(
         success=False,
         error="spec-change script exited with code {0}\n{1}".format(
-            returncode, _combine_output(stdout, stderr)
+            returncode, output
         ),
     )
 
@@ -231,11 +281,23 @@ def _combine_output(stdout: Optional[str], stderr: Optional[str]) -> str:
     return "\n".join(p for p in parts if p)
 
 
+def _truncate(text: str, limit: int = 4000) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "...[truncated]"
+
+
 def _run_work(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
     """Common path for every work handler: load entity, judge state, run agent."""
     post_id = task.get("post_id")
     entity, conversation = context_mod.load_entity(ctx, post_id)
     if entity is None:
+        platform_log.log_event(
+            "work_no_entity",
+            task_id=task.get("task_id"),
+            action=task.get("action"),
+            post_id=post_id,
+        )
         return HandlerOutcome(
             success=True,
             detail="no entity for post {0!r}; nothing to do".format(post_id),
@@ -243,17 +305,40 @@ def _run_work(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
 
     state_result = evaluate_entity_state(entity, ctx.config, conversation)
     intent = decide_intent(entity, state_result, task)
+    platform_log.log_event(
+        "work_intent_decided",
+        task_id=task.get("task_id"),
+        action=task.get("action"),
+        post_id=post_id,
+        tier=getattr(entity, "tier", None),
+        status=getattr(entity, "status", None),
+        intent=intent,
+        next_states=list(getattr(state_result, "next_states", []) or []),
+    )
 
     # Approval gates are resolved in code, with no agent run: an approver's
     # `approve <id>` comment moves an awaiting_approval entity forward.
     if getattr(entity, "status", None) == "awaiting_approval":
         resolved = advance.resolve_approval(ctx, entity, state_result, conversation)
+        platform_log.log_event(
+            "approval_resolved",
+            task_id=task.get("task_id"),
+            post_id=post_id,
+            detail=resolved or "awaiting_approval; no approver yet",
+        )
         return HandlerOutcome(
             success=True,
             detail=resolved or "awaiting_approval; no approver yet",
         )
 
     if intent == AgentIntent.NONE:
+        platform_log.log_event(
+            "work_no_action",
+            task_id=task.get("task_id"),
+            post_id=post_id,
+            tier=getattr(entity, "tier", None),
+            status=getattr(entity, "status", None),
+        )
         return HandlerOutcome(
             success=True,
             detail="no actionable intent (tier={0}, status={1})".format(
@@ -265,6 +350,13 @@ def _run_work(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
     # swap is a label remove + add). The local snapshot is stale, so skip the
     # expensive agent run if the remote shows the entity already moved on.
     if intent in (AgentIntent.IMPLEMENT, AgentIntent.REVIEW) and advance._is_stale(ctx, entity):
+        platform_log.log_event(
+            "work_stale_skipped",
+            task_id=task.get("task_id"),
+            post_id=post_id,
+            intent=intent,
+            status=getattr(entity, "status", None),
+        )
         return HandlerOutcome(
             success=True,
             detail="stale {0} event; remote already advanced past {1}".format(
@@ -286,6 +378,19 @@ def _run_work(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
         cwd=ctx.repo_root,
         cancel=ctx.cancel,
         timeout_s=ctx.agent_timeout_s,
+    )
+    platform_log.log_event(
+        "agent_result",
+        task_id=task.get("task_id"),
+        post_id=post_id,
+        intent=intent,
+        ok=getattr(result, "ok", False),
+        returncode=getattr(result, "returncode", None),
+        killed=getattr(result, "killed", False),
+        timed_out=getattr(result, "timed_out", False),
+        duration_s=getattr(result, "duration_s", None),
+        error=getattr(result, "error", None),
+        stdout_chars=len(getattr(result, "stdout", "") or ""),
     )
 
     if getattr(result, "ok", False):
@@ -316,6 +421,12 @@ def _run_work(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
 def dispatch(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
     """Route a claimed task to its handler and return the outcome."""
     action = task.get("action")
+    platform_log.log_event(
+        "dispatch_start",
+        task_id=task.get("task_id"),
+        action=action,
+        post_id=task.get("post_id"),
+    )
 
     if action == SPEC_CHANGE_ACTION:
         return run_spec_change_script(ctx, task)
@@ -324,6 +435,13 @@ def dispatch(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
         payload = task.get("payload") or {}
         reason = payload.get("reason")
         interrupted = payload.get("interrupted_task_id")
+        platform_log.log_event(
+            "cleanup_recorded",
+            task_id=task.get("task_id"),
+            post_id=task.get("post_id"),
+            reason=reason,
+            interrupted_task_id=interrupted,
+        )
         return HandlerOutcome(
             success=True,
             detail="cleanup recorded (reason={0}, interrupted_task_id={1})".format(
@@ -334,6 +452,7 @@ def dispatch(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
     if action in _WORK_ACTIONS:
         return _run_work(ctx, task)
 
+    platform_log.log_event("dispatch_unknown_action", task_id=task.get("task_id"), action=action)
     return HandlerOutcome(success=False, error="unknown action: {0!r}".format(action))
 
 

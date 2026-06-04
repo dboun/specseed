@@ -31,6 +31,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from specseed_target_src.db.database import Database
+from specseed_target_src.executing import platform_log
 from specseed_target_src.tasks.cleanup_task import CleanupTask
 from specseed_target_src.tasks.handle_comment_added import HandleCommentAdded
 from specseed_target_src.tasks.handle_comment_updated import HandleCommentUpdated
@@ -50,8 +51,15 @@ def sync_to_db(local: Any, remote: Any, db: Optional[Database] = None) -> dict[s
     Returns a summary dict; on a failed sync, ``{"ok": False, "error": ...}``.
     """
     db = db or Database.instance()
+    platform_log.log_event(
+        "sync_to_db_start",
+        local=type(local).__name__,
+        remote=type(remote).__name__,
+        db_path=str(getattr(db, "db_path", "")),
+    )
     result = local.sync_from_remote(remote)
     if not result.ok:
+        platform_log.log_event("sync_to_db_failed", error=result.error)
         return {"ok": False, "error": result.error}
 
     summary = {
@@ -67,6 +75,13 @@ def sync_to_db(local: Any, remote: Any, db: Optional[Database] = None) -> dict[s
     seen_keys: set[tuple] = set()  # within-run coalescing for entry edits
 
     for change in result.data:
+        platform_log.log_event(
+            "sync_change",
+            resource_type=getattr(change, "resource_type", None),
+            resource_id=getattr(change, "resource_id", None),
+            action=getattr(change, "action", None),
+            field=getattr(change, "field", None),
+        )
         if _is_entry_teardown(change):
             _teardown_post(db, str(change.resource_id), change.action, summary)
             continue
@@ -74,19 +89,34 @@ def sync_to_db(local: Any, remote: Any, db: Optional[Database] = None) -> dict[s
         task = _build_task(change)
         if task is None:
             summary["ignored"] += 1
+            platform_log.log_event(
+                "sync_change_ignored",
+                resource_type=getattr(change, "resource_type", None),
+                resource_id=getattr(change, "resource_id", None),
+                action=getattr(change, "action", None),
+            )
             continue
 
         key = task.resource_key()
         if task.ACTION == HandleEntryUpdated.ACTION:
             if key in seen_keys:
                 summary["coalesced"] += 1
+                platform_log.log_event("sync_change_coalesced", action=task.ACTION, resource_key=key)
                 continue
             seen_keys.add(key)
 
         summary["superseded"] += _supersede(db, task)
-        task.enqueue(db)
+        task_id = task.enqueue(db)
         summary["enqueued"] += 1
+        platform_log.log_event(
+            "task_enqueued",
+            task_id=task_id,
+            action=task.ACTION,
+            post_id=task.post_id,
+            resource_key=key,
+        )
 
+    platform_log.log_event("sync_to_db_complete", summary=summary)
     return summary
 
 
@@ -151,15 +181,29 @@ def _supersede(db: Database, task: Any) -> int:
         if resource_key(row["action"], row["post_id"], row["payload"]) == key:
             db.remove(row["task_id"])
             removed += 1
+            platform_log.log_event(
+                "task_superseded",
+                removed_task_id=row["task_id"],
+                new_action=task.ACTION,
+                post_id=task.post_id,
+                resource_key=key,
+            )
     return removed
 
 
 def _teardown_post(db: Database, post_id: str, action: str, summary: dict[str, Any]) -> None:
+    platform_log.log_event("entry_teardown_start", post_id=post_id, action=action)
     in_progress: list[dict[str, Any]] = []
     for row in db.tasks_for(post_id):
         if row["status"] == "pending":
             db.remove(row["task_id"])
             summary["superseded"] += 1
+            platform_log.log_event(
+                "task_removed_for_teardown",
+                task_id=row["task_id"],
+                post_id=post_id,
+                action=row["action"],
+            )
         elif row["status"] == "in_progress":
             in_progress.append(row)
 
@@ -170,6 +214,12 @@ def _teardown_post(db: Database, post_id: str, action: str, summary: dict[str, A
             post_id, reason=f"entry_{action}", interrupted_task_id=row["task_id"]
         ).enqueue(db)
         summary["cleanups"] += 1
+        platform_log.log_event(
+            "cleanup_enqueued_for_teardown",
+            post_id=post_id,
+            interrupted_task_id=row["task_id"],
+            reason=f"entry_{action}",
+        )
 
 
 def _request_interrupt(row: dict[str, Any]) -> None:
@@ -188,3 +238,4 @@ def _request_interrupt(row: dict[str, Any]) -> None:
     from specseed_target_src.executing import cancellation
 
     cancellation.cancel(int(row["task_id"]))
+    platform_log.log_event("task_interrupt_requested", task_id=row["task_id"], action=row["action"])

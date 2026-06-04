@@ -36,6 +36,7 @@ from specseed_target_src.tracking.resolve_remote import (
     resolve_remote,
 )
 from specseed_target_src.executing import cancellation
+from specseed_target_src.executing import platform_log
 from specseed_target_src.executing.agent_runner import (
     AgentRunner,
     DEFAULT_AGENT_TIMEOUT_S,
@@ -82,6 +83,8 @@ class Scheduler:
         self.runner = runner
         self.config = config or {}
         self.storage = Path(storage) if storage else None
+        if self.storage is not None:
+            platform_log.configure(self.storage)
         self.repo_root = Path(repo_root) if repo_root else Path.cwd()
         self.permissions = permissions or Permissions(self.config)
         self.agent_timeout_s = agent_timeout_s
@@ -116,26 +119,37 @@ class Scheduler:
     def start(self) -> None:
         """Start the background loop (non-blocking). Idempotent while alive."""
         if self._thread is not None and self._thread.is_alive():
+            platform_log.log_event("scheduler_start_skipped", reason="already_alive")
             return
         self._stop.clear()
         self._next_poll_at = 0.0
         with self._state_lock:
             self._state = RUNNING
         self._started_at = _now_iso()
+        platform_log.log_event(
+            "scheduler_start",
+            repo_root=str(self.repo_root),
+            storage=str(self.storage) if self.storage else None,
+            poll_interval=self.poll_interval,
+            agent_timeout_s=self.agent_timeout_s,
+        )
         self._thread = threading.Thread(target=self._loop, name="specseed-scheduler", daemon=True)
         self._thread.start()
 
     def stop(self, timeout: Optional[float] = None) -> None:
         """Hard stop: cancel the in-flight task and join the loop thread."""
+        platform_log.log_event("scheduler_stop_requested", timeout=timeout)
         self.request_stop()
         thread = self._thread
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=timeout)
+            platform_log.log_event("scheduler_stop_joined", alive=thread.is_alive())
 
     def request_stop(self) -> None:
         with self._state_lock:
             self._state = STOPPED
         self._stop.set()
+        platform_log.log_event("scheduler_request_stop", current_task_id=self._current_task_id)
         if self._current_task_id is not None:
             cancellation.cancel(self._current_task_id)
 
@@ -143,11 +157,13 @@ class Scheduler:
         with self._state_lock:
             if self._state != STOPPED:
                 self._state = PAUSED
+                platform_log.log_event("scheduler_pause")
 
     def resume(self) -> None:
         with self._state_lock:
             if self._state != STOPPED:
                 self._state = RUNNING
+                platform_log.log_event("scheduler_resume")
         self._next_poll_at = 0.0  # sync promptly on resume
 
     @property
@@ -180,6 +196,7 @@ class Scheduler:
     # the loop
     # ------------------------------------------------------------------ #
     def _loop(self) -> None:
+        platform_log.log_event("scheduler_loop_start")
         while not self._stop.is_set():
             self._process_control()
             if self._stop.is_set():
@@ -197,6 +214,7 @@ class Scheduler:
 
             if not did_work and not self._stop.is_set():
                 self._stop.wait(timeout=self._idle_sleep())
+        platform_log.log_event("scheduler_loop_exit", state=self.state)
 
     def _idle_sleep(self) -> float:
         if self.state != RUNNING:
@@ -218,10 +236,17 @@ class Scheduler:
             task = self.db.claim_next()
             if task is None:
                 break
+            platform_log.log_event(
+                "task_claimed",
+                task_id=task.get("task_id"),
+                action=task.get("action"),
+                post_id=task.get("post_id"),
+            )
             self._process_task(task)
             drained += 1
         summary = dict(self._last_sync or {})
         summary["drained"] = drained
+        platform_log.log_event("scheduler_run_once_summary", summary=summary)
         return summary
 
     # ------------------------------------------------------------------ #
@@ -229,15 +254,20 @@ class Scheduler:
     # ------------------------------------------------------------------ #
     def _ensure_trackers(self) -> None:
         if self._remote is None:
+            platform_log.log_event("tracker_remote_resolve_start")
             self._remote = self._remote_factory()
+            platform_log.log_event("tracker_remote_resolve_complete", type=type(self._remote).__name__)
         if self._local is None:
+            platform_log.log_event("tracker_local_resolve_start")
             self._local = self._local_factory()
+            platform_log.log_event("tracker_local_resolve_complete", type=type(self._local).__name__)
 
     def _ensure_control(self) -> Optional[ControlChannel]:
         if self._control is None:
             try:
                 self._ensure_trackers()
             except Exception:
+                platform_log.log_event("control_init_failed")
                 return None
             self._control = ControlChannel(
                 self._remote,
@@ -253,10 +283,12 @@ class Scheduler:
             return
         try:
             commands = channel.poll()
-        except Exception:
+        except Exception as exc:
+            platform_log.log_event("control_poll_error", error=repr(exc))
             return
         for command in commands:
             verb = command.verb
+            platform_log.log_event("control_command", verb=verb, author=command.author)
             if verb == "pause":
                 self.pause()
             elif verb == "start":
@@ -265,18 +297,23 @@ class Scheduler:
                 self.request_stop()
             elif verb == "status":
                 try:
-                    channel.post_status(render_status(self.status()))
-                except Exception:
+                    posted = channel.post_status(render_status(self.status()))
+                    platform_log.log_event("control_status_posted", posted=posted)
+                except Exception as exc:
+                    platform_log.log_event("control_status_post_error", error=repr(exc))
                     pass
 
     def _sync(self) -> None:
         try:
             self._ensure_trackers()
+            platform_log.log_event("sync_start")
             summary = sync_to_db(self._local, self._remote, db=self.db)
         except Exception as exc:  # never let a bad poll kill the loop
             summary = {"ok": False, "error": repr(exc)}
+            platform_log.log_event("sync_error", error=repr(exc))
         self._last_sync = summary
         self._last_poll_at = _now_iso()
+        platform_log.log_event("sync_complete", summary=summary)
 
     def _make_context(self, cancel: threading.Event) -> ExecutionContext:
         self._ensure_trackers()
@@ -297,21 +334,44 @@ class Scheduler:
         task_id = int(task["task_id"])
         cancel = cancellation.register(task_id)
         self._current_task_id = task_id
+        platform_log.log_event(
+            "task_start",
+            task_id=task_id,
+            action=task.get("action"),
+            post_id=task.get("post_id"),
+            attempts=task.get("attempts"),
+        )
         try:
             outcome = self._run_in_worker(task, cancel)
         except Exception as exc:  # pragma: no cover - defensive
             outcome = HandlerOutcome(success=False, error=f"handler crashed: {exc!r}")
+            platform_log.log_event("task_handler_crash", task_id=task_id, error=repr(exc))
         finally:
             self._current_task_id = None
             cancellation.clear(task_id)
 
         if outcome is None:
             self.db.requeue(task_id)
+            platform_log.log_event("task_requeued", task_id=task_id, reason="worker_no_outcome")
             return
         if outcome.requeue:
             self.db.requeue(task_id)
+            platform_log.log_event(
+                "task_requeued",
+                task_id=task_id,
+                success=outcome.success,
+                error=outcome.error,
+                detail=outcome.detail,
+            )
         else:
             self.db.complete(task_id, outcome.success, outcome.error)
+            platform_log.log_event(
+                "task_complete",
+                task_id=task_id,
+                success=outcome.success,
+                error=outcome.error,
+                detail=outcome.detail,
+            )
 
     def _run_in_worker(self, task: dict[str, Any], cancel: threading.Event) -> Optional[HandlerOutcome]:
         """Run dispatch on its own thread, governed by stop + the 6h backstop."""
@@ -323,11 +383,26 @@ class Scheduler:
 
         worker = threading.Thread(target=target, name=f"specseed-task-{task['task_id']}", daemon=True)
         worker.start()
+        platform_log.log_event(
+            "task_worker_start",
+            task_id=task.get("task_id"),
+            worker_name=worker.name,
+            timeout_s=self.agent_timeout_s,
+        )
         deadline = time.monotonic() + self.agent_timeout_s if self.agent_timeout_s else None
+        logged_stop_cancel = False
+        logged_timeout_cancel = False
         while worker.is_alive():
             if self._stop.is_set():
                 cancel.set()
+                if not logged_stop_cancel:
+                    platform_log.log_event("task_worker_cancelled_by_stop", task_id=task.get("task_id"))
+                    logged_stop_cancel = True
             if deadline is not None and time.monotonic() >= deadline:
                 cancel.set()
+                if not logged_timeout_cancel:
+                    platform_log.log_event("task_worker_cancelled_by_timeout", task_id=task.get("task_id"))
+                    logged_timeout_cancel = True
             worker.join(timeout=self.tick)
+        platform_log.log_event("task_worker_exit", task_id=task.get("task_id"), has_outcome="outcome" in holder)
         return holder.get("outcome")

@@ -27,6 +27,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
+from specseed_target_src.executing import platform_log
+
 
 # Hard cap on a single agent run. The scheduler also enforces this at the thread
 # level as a backstop, but the runner owns the primary deadline.
@@ -81,6 +83,15 @@ class SubprocessAgentRunner(AgentRunner):
         argv = self.build_command(prompt, cwd)
         start = time.monotonic()
         deadline = start + timeout_s if timeout_s and timeout_s > 0 else None
+        platform_log.log_event(
+            "agent_subprocess_start",
+            runner=type(self).__name__,
+            cwd=str(cwd),
+            binary=argv[0] if argv else None,
+            argv=argv,
+            timeout_s=timeout_s,
+            prompt_chars=len(prompt),
+        )
         try:
             proc = subprocess.Popen(
                 argv,
@@ -91,6 +102,12 @@ class SubprocessAgentRunner(AgentRunner):
                 text=True,
             )
         except (OSError, ValueError) as exc:
+            platform_log.log_event(
+                "agent_subprocess_launch_failed",
+                runner=type(self).__name__,
+                cwd=str(cwd),
+                error=repr(exc),
+            )
             return AgentResult(ok=False, error=f"failed to launch agent: {exc}",
                                duration_s=time.monotonic() - start)
 
@@ -123,10 +140,21 @@ class SubprocessAgentRunner(AgentRunner):
         while proc.poll() is None:
             if cancel is not None and cancel.is_set():
                 killed = True
+                platform_log.log_event(
+                    "agent_subprocess_cancel_requested",
+                    runner=type(self).__name__,
+                    pid=proc.pid,
+                )
                 self._stop(proc)
                 break
             if deadline is not None and time.monotonic() >= deadline:
                 timed_out = True
+                platform_log.log_event(
+                    "agent_subprocess_timeout",
+                    runner=type(self).__name__,
+                    pid=proc.pid,
+                    timeout_s=timeout_s,
+                )
                 self._stop(proc)
                 break
             time.sleep(self.poll_interval)
@@ -145,6 +173,18 @@ class SubprocessAgentRunner(AgentRunner):
         else:
             error = None
         ok = (returncode == 0) and not killed and not timed_out
+        platform_log.log_event(
+            "agent_subprocess_complete",
+            runner=type(self).__name__,
+            pid=proc.pid,
+            ok=ok,
+            returncode=returncode,
+            killed=killed,
+            timed_out=timed_out,
+            duration_s=duration,
+            error=error,
+            stdout_chars=len(stdout),
+        )
         return AgentResult(
             ok=ok,
             returncode=returncode,
