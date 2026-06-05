@@ -14,15 +14,15 @@ from pathlib import Path
 from datetime import datetime, timezone
 from unittest import mock
 
-from src.target_facing.specseed_target_src.tracking import tracking_local
-from src.target_facing.specseed_target_src.tracking.tracking_base import (
+from specseed_runtime.tracking import tracking_local
+from specseed_runtime.tracking.tracking_base import (
     TrackingEntryDetails,
     TrackingLabel,
     TrackingReaction,
     TrackingSyncChange,
 )
-from src.target_facing.specseed_target_src.tracking.tracking_local import TrackingLocal
-from src.target_facing.specseed_target_src.tracking.tracking_remote_local import TrackingRemoteLocal
+from specseed_runtime.tracking.tracking_local import TrackingLocal
+from specseed_runtime.tracking.tracking_remote_local import TrackingRemoteLocal
 
 
 class _FrozenDateTime(datetime):

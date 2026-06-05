@@ -32,7 +32,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from specseed_target_src.state_machines.base import approver_usernames
+from specseed_runtime.state_machines.base import approver_usernames
 
 
 # Action-class gate taxonomy honoured by the implementation agent. Each class maps to a

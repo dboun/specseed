@@ -18,7 +18,7 @@ from __future__ import annotations
 import fcntl
 from pathlib import Path
 
-from specseed_target_src.state_machines.approvals import (  # re-export for the worker
+from specseed_runtime.state_machines.approvals import (  # re-export for the worker
     APPROVAL_REQUEST_MARKER,
     APR_RE,
     apr_ids_in_text,

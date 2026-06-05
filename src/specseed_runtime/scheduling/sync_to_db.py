@@ -30,21 +30,21 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from specseed_target_src.db.database import Database
-from specseed_target_src.executing import platform_log
-from specseed_target_src.tasks.cleanup_task import CleanupTask
-from specseed_target_src.tasks.handle_comment_added import HandleCommentAdded
-from specseed_target_src.tasks.handle_comment_updated import HandleCommentUpdated
-from specseed_target_src.tasks.handle_entry_created import HandleEntryCreated
-from specseed_target_src.tasks.handle_entry_reaction_added import HandleEntryReactionAdded
-from specseed_target_src.tasks.handle_entry_reaction_removed import HandleEntryReactionRemoved
-from specseed_target_src.tasks.handle_entry_reopened import HandleEntryReopened
-from specseed_target_src.tasks.handle_entry_updated import HandleEntryUpdated
-from specseed_target_src.tasks.handle_label_added import HandleLabelAdded
-from specseed_target_src.tasks.handle_label_removed import HandleLabelRemoved
-from specseed_target_src.tasks.handle_reaction_added import HandleReactionAdded
-from specseed_target_src.tasks.handle_reaction_removed import HandleReactionRemoved
-from specseed_target_src.tasks.task_base import resource_key
+from specseed_runtime.db.database import Database
+from specseed_runtime.executing import platform_log
+from specseed_runtime.tasks.cleanup_task import CleanupTask
+from specseed_runtime.tasks.handle_comment_added import HandleCommentAdded
+from specseed_runtime.tasks.handle_comment_updated import HandleCommentUpdated
+from specseed_runtime.tasks.handle_entry_created import HandleEntryCreated
+from specseed_runtime.tasks.handle_entry_reaction_added import HandleEntryReactionAdded
+from specseed_runtime.tasks.handle_entry_reaction_removed import HandleEntryReactionRemoved
+from specseed_runtime.tasks.handle_entry_reopened import HandleEntryReopened
+from specseed_runtime.tasks.handle_entry_updated import HandleEntryUpdated
+from specseed_runtime.tasks.handle_label_added import HandleLabelAdded
+from specseed_runtime.tasks.handle_label_removed import HandleLabelRemoved
+from specseed_runtime.tasks.handle_reaction_added import HandleReactionAdded
+from specseed_runtime.tasks.handle_reaction_removed import HandleReactionRemoved
+from specseed_runtime.tasks.task_base import resource_key
 
 
 def sync_to_db(local: Any, remote: Any, db: Optional[Database] = None) -> dict[str, Any]:
@@ -273,7 +273,7 @@ def _request_interrupt(row: dict[str, Any]) -> None:
     Imported lazily to keep ``scheduling`` free of an import-time dependency on
     ``executing`` (which imports ``scheduling``).
     """
-    from specseed_target_src.executing import cancellation
+    from specseed_runtime.executing import cancellation
 
     cancellation.cancel(int(row["task_id"]))
     platform_log.log_event("task_interrupt_requested", task_id=row["task_id"], action=row["action"])

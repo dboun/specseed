@@ -13,14 +13,14 @@ import time
 import unittest
 from pathlib import Path
 
-from src.target_facing.specseed_target_src.db.database import Database
-from src.target_facing.specseed_target_src.executing.agent_runner import FakeAgentRunner
-from src.target_facing.specseed_target_src.executing.context import ExecutionContext
-from src.target_facing.specseed_target_src.executing.dispatch import dispatch
-from src.target_facing.specseed_target_src.executing.permissions import Permissions
-from src.target_facing.specseed_target_src.scheduling.spec_change import SPEC_CHANGE_ACTION
-from src.target_facing.specseed_target_src.tracking.tracking_local import TrackingLocal
-from src.target_facing.specseed_target_src.tracking.tracking_remote_local import (
+from specseed_runtime.db.database import Database
+from specseed_runtime.executing.agent_runner import FakeAgentRunner
+from specseed_runtime.executing.context import ExecutionContext
+from specseed_runtime.executing.dispatch import dispatch
+from specseed_runtime.executing.permissions import Permissions
+from specseed_runtime.scheduling.spec_change import SPEC_CHANGE_ACTION
+from specseed_runtime.tracking.tracking_local import TrackingLocal
+from specseed_runtime.tracking.tracking_remote_local import (
     TrackingRemoteLocal,
 )
 
@@ -83,7 +83,7 @@ class SpecChangeExecutorTest(unittest.TestCase):
         marker = self.root / "import_marker.txt"
         script_dir, _ = self._write_script(
             "import importlib\n"
-            "importlib.import_module('src.target_facing.specseed_target_src.scheduling.spec_change')\n"
+            "importlib.import_module('specseed_runtime.scheduling.spec_change')\n"
             "from pathlib import Path\n"
             "Path(r'{0}').write_text('imported')\n".format(marker)
         )

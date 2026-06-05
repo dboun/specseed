@@ -7,13 +7,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.target_facing.specseed_target_src.tracking.populate_defaults import (
+from specseed_runtime.tracking.populate_defaults import (
     DEFAULT_POSTS,
     DESIRED_LABELS,
     FIRST_ADAPT_DRAFT_TITLE,
     populate_defaults,
 )
-from src.target_facing.specseed_target_src.tracking.tracking_remote_local import TrackingRemoteLocal
+from specseed_runtime.tracking.tracking_remote_local import TrackingRemoteLocal
 
 
 class PopulateDefaultsTest(unittest.TestCase):

@@ -11,10 +11,12 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from src.target_facing.specseed_target_src.migrating import m_0_3_0__0_3_1
-from src.target_facing.specseed_target_src.migrating import migrate
-from src.target_facing.specseed_target_src import storage_paths
+from specseed_runtime.migrating import m_0_3_0__0_3_1
+from specseed_runtime.migrating import m_0_3_1__0_4_0
+from specseed_runtime.migrating import migrate
+from specseed_runtime import storage_paths
 
 
 def _fixture_tree(root: Path, version: str = "0.3.1") -> tuple[Path, Path]:
@@ -63,16 +65,17 @@ class RunMigrationsTest(unittest.TestCase):
 
             applied = migrate.run_migrations(storage=storage, specseed_dir=specseed_dir)
 
-            self.assertEqual(applied, ["m_0_3_0__0_3_1"])
-            self.assertEqual(migrate.storage_version(storage), "0.3.1")
+            # The whole chain up to the running engine, in order.
+            self.assertEqual(applied, ["m_0_3_0__0_3_1", "m_0_3_1__0_4_0"])
+            self.assertEqual(migrate.storage_version(storage), migrate.code_version())
 
     def test_current_storage_is_noop(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             specseed_dir, storage = _fixture_tree(Path(tmp), version="0.3.1")
-            migrate.write_storage_version("0.3.1", storage)
+            migrate.write_storage_version(migrate.code_version(), storage)
 
             self.assertEqual(migrate.run_migrations(storage=storage, specseed_dir=specseed_dir), [])
-            self.assertEqual(migrate.storage_version(storage), "0.3.1")
+            self.assertEqual(migrate.storage_version(storage), migrate.code_version())
 
     def test_newer_storage_never_rewritten_backwards(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -83,19 +86,21 @@ class RunMigrationsTest(unittest.TestCase):
             self.assertEqual(migrate.storage_version(storage), "0.9.9")
 
     def test_z_bump_without_hop_fast_forwards(self) -> None:
+        # A z-bump beyond the last hop (no migration) just fast-forwards the marker.
         with tempfile.TemporaryDirectory() as tmp:
-            specseed_dir, storage = _fixture_tree(Path(tmp), version="0.3.2")
-            migrate.write_storage_version("0.3.1", storage)
+            specseed_dir, storage = _fixture_tree(Path(tmp))
+            migrate.write_storage_version("0.4.0", storage)
 
-            applied = migrate.run_migrations(storage=storage, specseed_dir=specseed_dir)
+            with mock.patch.object(migrate, "code_version", return_value="0.4.1"):
+                applied = migrate.run_migrations(storage=storage, specseed_dir=specseed_dir)
 
             self.assertEqual(applied, [])
-            self.assertEqual(migrate.storage_version(storage), "0.3.2")
+            self.assertEqual(migrate.storage_version(storage), "0.4.1")
 
     def test_specseed_dir_derived_from_storage_parent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             specseed_dir, storage = _fixture_tree(Path(tmp))
-            stray = specseed_dir / "specseed_target_src" / "db" / "specseed.db"
+            stray = specseed_dir / "specseed_runtime" / "db" / "specseed.db"
             stray.parent.mkdir(parents=True)
             stray.write_bytes(b"queue")
 
@@ -110,14 +115,14 @@ class Hop_0_3_0__0_3_1_Test(unittest.TestCase):
     def _old_shape(self, root: Path) -> tuple[Path, Path]:
         specseed_dir, storage = _fixture_tree(root)
         for rel, name in (
-            ("specseed_target_src/db", "specseed.db"),
-            ("specseed_target_src/tracking", "tracking_local.db"),
-            ("specseed_target_src/tracking", "tracking_remote_local.db"),
+            ("specseed_runtime/db", "specseed.db"),
+            ("specseed_runtime/tracking", "tracking_local.db"),
+            ("specseed_runtime/tracking", "tracking_remote_local.db"),
         ):
             path = specseed_dir / rel / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(name.encode())
-        wal = specseed_dir / "specseed_target_src" / "db" / "specseed.db-wal"
+        wal = specseed_dir / "specseed_runtime" / "db" / "specseed.db-wal"
         wal.write_bytes(b"wal")
         storage.mkdir(parents=True)
         (storage / "configuration.json").write_text(
@@ -129,13 +134,15 @@ class Hop_0_3_0__0_3_1_Test(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             specseed_dir, storage = self._old_shape(Path(tmp))
 
-            applied = migrate.run_migrations(storage=storage, specseed_dir=specseed_dir)
+            # Pin the engine to 0.3.1 so only this hop runs (the chain stops there).
+            with mock.patch.object(migrate, "code_version", return_value="0.3.1"):
+                applied = migrate.run_migrations(storage=storage, specseed_dir=specseed_dir)
 
             self.assertEqual(applied, ["m_0_3_0__0_3_1"])
             for name in ("specseed.db", "tracking_local.db", "tracking_remote_local.db"):
                 self.assertEqual((storage / name).read_bytes(), name.encode())
             self.assertEqual((storage / "specseed.db-wal").read_bytes(), b"wal")
-            self.assertEqual(list((specseed_dir / "specseed_target_src").rglob("*.db*")), [])
+            self.assertEqual(list((specseed_dir / "specseed_runtime").rglob("*.db*")), [])
             cfg = json.loads((storage / "configuration.json").read_text(encoding="utf-8"))
             self.assertNotIn("version", cfg)
             self.assertEqual(cfg["dev_branch"], "custom")
@@ -144,10 +151,11 @@ class Hop_0_3_0__0_3_1_Test(unittest.TestCase):
     def test_idempotent_second_run_changes_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             specseed_dir, storage = self._old_shape(Path(tmp))
-            migrate.run_migrations(storage=storage, specseed_dir=specseed_dir)
-            before = {p.name: p.read_bytes() for p in storage.iterdir() if p.is_file()}
+            with mock.patch.object(migrate, "code_version", return_value="0.3.1"):
+                migrate.run_migrations(storage=storage, specseed_dir=specseed_dir)
+                before = {p.name: p.read_bytes() for p in storage.iterdir() if p.is_file()}
 
-            self.assertEqual(migrate.run_migrations(storage=storage, specseed_dir=specseed_dir), [])
+                self.assertEqual(migrate.run_migrations(storage=storage, specseed_dir=specseed_dir), [])
 
             after = {p.name: p.read_bytes() for p in storage.iterdir() if p.is_file()}
             self.assertEqual(before, after)
@@ -161,7 +169,7 @@ class Hop_0_3_0__0_3_1_Test(unittest.TestCase):
 
             self.assertEqual((storage / "specseed.db").read_bytes(), b"newer-data")
             # the stray stays put for the human to inspect
-            self.assertTrue((specseed_dir / "specseed_target_src" / "db" / "specseed.db").exists())
+            self.assertTrue((specseed_dir / "specseed_runtime" / "db" / "specseed.db").exists())
 
     def test_unmigratable_old_storage_fails_loud(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -170,6 +178,50 @@ class Hop_0_3_0__0_3_1_Test(unittest.TestCase):
 
             with self.assertRaises(RuntimeError):
                 migrate.run_migrations(storage=storage, specseed_dir=specseed_dir)
+
+
+class Hop_0_3_1__0_4_0_Test(unittest.TestCase):
+    """Deletes engine code an old installer copied into the target; keeps data."""
+
+    def _installed_old_shape(self, root: Path) -> tuple[Path, Path]:
+        specseed_dir, storage = _fixture_tree(root)  # also writes skills/ (copied code)
+        # Old installs copied the engine in, under either package name.
+        for code_dir in ("specseed_runtime", "specseed_target_src"):
+            (specseed_dir / code_dir / "executing").mkdir(parents=True)
+            (specseed_dir / code_dir / "executing" / "run.py").write_text("# copied\n", encoding="utf-8")
+        storage.mkdir(parents=True)
+        (storage / "configuration.json").write_text('{"keep": true}\n', encoding="utf-8")
+        (specseed_dir / "spec").mkdir()
+        (specseed_dir / "spec" / "vision.md").write_text("# vision\n", encoding="utf-8")
+        migrate.write_storage_version("0.3.1", storage)
+        return specseed_dir, storage
+
+    def test_deletes_copied_code_keeps_storage_and_spec(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            specseed_dir, storage = self._installed_old_shape(Path(tmp))
+
+            applied = migrate.run_migrations(storage=storage, specseed_dir=specseed_dir)
+
+            self.assertIn("m_0_3_1__0_4_0", applied)
+            self.assertFalse((specseed_dir / "specseed_runtime").exists())
+            self.assertFalse((specseed_dir / "specseed_target_src").exists())
+            self.assertFalse((specseed_dir / "skills").exists())
+            # data survives untouched
+            self.assertEqual(
+                (storage / "configuration.json").read_text(encoding="utf-8"), '{"keep": true}\n'
+            )
+            self.assertEqual((specseed_dir / "spec" / "vision.md").read_text(encoding="utf-8"), "# vision\n")
+            self.assertEqual(migrate.storage_version(storage), migrate.code_version())
+
+    def test_run_returns_deleted_dirs_and_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            specseed_dir, _storage = self._installed_old_shape(Path(tmp))
+
+            deleted = {p.name for p in m_0_3_1__0_4_0.run(_storage, specseed_dir)}
+            self.assertEqual(deleted, {"specseed_runtime", "specseed_target_src", "skills"})
+
+            # nothing left to delete the second time
+            self.assertEqual(m_0_3_1__0_4_0.run(_storage, specseed_dir), [])
 
 
 if __name__ == "__main__":

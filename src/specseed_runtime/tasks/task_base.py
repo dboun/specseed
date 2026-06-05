@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from specseed_target_src.entities.entity_base import Entity, EntityRef
+from specseed_runtime.entities.entity_base import Entity, EntityRef
 
 
 def resource_key(action: str, post_id: Optional[str], payload: dict[str, Any]) -> tuple:

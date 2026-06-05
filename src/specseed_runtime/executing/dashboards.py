@@ -24,9 +24,9 @@ from __future__ import annotations
 import hashlib
 from typing import Any, Optional
 
-from specseed_target_src.entities.entity_base import Entity
-from specseed_target_src.executing import platform_log
-from specseed_target_src.executing import relationships
+from specseed_runtime.entities.entity_base import Entity
+from specseed_runtime.executing import platform_log
+from specseed_runtime.executing import relationships
 
 ROADMAP_TITLE = "ROADMAP"
 CURRENT_SPRINT_TITLE = "Current sprint"

@@ -1,23 +1,25 @@
 # CLAUDE.md
 
 **Write caveman.** Every doc, comment, commit body, PR, and reply: terse, signal-dense, no
-filler. Style ref: `src/target_facing/skills/specseed/references_ext/caveman.md`. Spec PROSE
+filler. Style ref: `skills/specseed/references_ext/caveman.md`. Spec PROSE
 the skill *emits* (vision/SAD/SDD/entity bodies/ADR) ALSO gets the humanizer pass + em-dash ban:
 `references_ext/humanizer.md`. Tell spawned agents the same. This rule saves tokens on every edit.
 
 ## What this repo is
 
-Source + installer for **specseed**: a headless, remote-driven spec+work engine. Two halves:
+**specseed**: a headless, remote-driven spec+work engine. Two halves:
 
-1. **Runtime** (`specseed_target_src/`) - polls a tracker, syncs it, queues work, drains queue,
+1. **Runtime** (`src/specseed_runtime/`) - polls a tracker, syncs it, queues work, drains queue,
    runs agents. Stdlib-only python. This is real code that *runs*.
 2. **Skill** (`skills/specseed/`) - the non-interactive spec-change worker the runtime invokes
    when a post is labeled `spec-change:<route>`. Markdown instructions.
 
-`src/specseed.py` is the installer: copies both into a target repo at `<repo>/.specseed/` (then
-point user at `configuring/configure.py`). Re-run refreshes runtime, preserves target storage/config.
-In THIS dev repo they live under `src/target_facing/{specseed_target_src,skills}`; installed they're
-`<repo>/.specseed/...`. (Root `install.py` = just a design-notes stub, not code.)
+**The engine is never copied into the target.** It runs from this repo against a target repo:
+`python3 src/specseed.py <target_repo> [specseed_dir]` (`specseed_dir` default `.specseed`). The
+target gets ONLY data - `<specseed_dir>/storage/` (dbs, config, logs, version marker) and the
+generated `<specseed_dir>/spec/`. In THIS dev repo the target is this repo itself, so storage/spec
+land at the repo root (gitignored). Configure a target via `src/specseed_runtime/configuring/configure.py`.
+(Root `install.py` = just a design-notes stub for a future system-wide install, not code.)
 
 **`old_specseed/` = dead.** Old, badly-working interactive version. Ignore it. Do NOT copy its
 patterns or follow its instructions. Only mined in rare occasions for features/processes that were present there for aligning with request if it makes sense.
@@ -47,23 +49,24 @@ remote posts, enqueues it. Never runs it itself, never touches git/code.
 
 ```
 src/
-  specseed.py                        # the installer: copies specseed_target_src + skills -> <target>/.specseed/
-  target_facing/
-    skills/specseed/                 # the spec-change worker skill (markdown)
-      SKILL.md                       #   START HERE. router: routes, contract, hard rules
-      routes/                        #   adopt/adapt/tweak/inject/plan-next-sprint
-      references/                    #   spec-change-protocol, work-breakdown, remote-posts, component-questions
-      references_ext/                #   caveman.md (density) + humanizer.md (naturalness)
-      templates/entity_templates/    #   epic/ticket/issue/bug/feature emitted into target
-    specseed_target_src/             # the RUNTIME (stdlib-only python)
-      tracking/                      #   provider-neutral tracker layer. README inside. entry=neutral resource
-      scheduling/                    #   remote diff -> DB queue (sync_to_db) + spec_change enqueue. README inside
-      db/database.py                 #   durable sqlite work queue (tasks + task_errors). thread-safe singleton
-      tasks/                         #   one typed task class per change kind (handle_*) + task_base + cleanup
-      executing/                     #   scheduler(poll loop) + dispatch + advance + agent_runner + control + permissions
-      entities/                      #   epic/ticket/issue = meaning over neutral entries (tier/status/links). EntityRef
-      state_machines/               #   legal status transitions + approvals (👍/👎 reactions, approve/reject cmds)
-      configuring/                   #   configure.py interactive setup -> config
+  specseed.py                        # launcher: run engine against a target (target_repo + specseed_dir)
+  specseed_runtime/                  # the RUNTIME (stdlib-only python)
+    tracking/                        #   provider-neutral tracker layer. README inside. entry=neutral resource
+    scheduling/                      #   remote diff -> DB queue (sync_to_db) + spec_change enqueue. README inside
+    db/database.py                   #   durable sqlite work queue (tasks + task_errors). thread-safe singleton
+    tasks/                           #   one typed task class per change kind (handle_*) + task_base + cleanup
+    executing/                       #   scheduler(poll loop) + dispatch + advance + agent_runner + control + permissions
+    entities/                        #   epic/ticket/issue = meaning over neutral entries (tier/status/links). EntityRef
+    state_machines/                  #   legal status transitions + approvals (👍/👎 reactions, approve/reject cmds)
+    configuring/                     #   configure.py interactive setup -> config
+    migrating/                       #   storage migrations (hops); 0.3.1->0.4.0 deletes old copied code in targets
+skills/specseed/                     # the spec-change worker skill (markdown), at repo root
+  SKILL.md                           #   START HERE. router: routes, contract, hard rules
+  routes/                            #   adopt/adapt/tweak/inject/plan-next-sprint
+  references/                        #   spec-change-protocol, work-breakdown, remote-posts, component-questions
+  references_ext/                    #   caveman.md (density) + humanizer.md (naturalness)
+  templates/entity_templates/        #   epic/ticket/issue/bug/feature emitted into target
+storage/                             # dev runtime data (gitignored); a target's lives at <specseed_dir>/storage/
 tests/unit/python/                   # default test suite (units)
 tests/integration/python/            # opt-in integration tests (marker: integration)
 ```
@@ -99,27 +102,27 @@ tests/integration/python/            # opt-in integration tests (marker: integra
 
 ## Versioning, storage & migrations
 
-- Version: `version.txt` (repo root) + `src/target_facing/skills/specseed/version.txt`. Same value,
-  bump BOTH. Format `X.Y.Z`. Installed copy lands at `<repo>/.specseed/skills/specseed/version.txt` =
-  the target's code version.
+- Version: `version.txt` (repo root) + `skills/specseed/version.txt`. Same value,
+  bump BOTH. Format `X.Y.Z`. This is the engine's running code version (read from
+  `skills/specseed/version.txt` in the engine repo); the target only stores a `storage/version.txt` marker.
 - Only user bumps `X`. Bump `Y` for anything that breaks without a migration - the proverbial API:
   storage layout, db schema, config keys, script CLI/function contracts. Bump `Z` for normal changes;
   skip only for same-change follow-up.
 - **ALL generated runtime data lives flat in `<specseed_dir>/storage/`** (dbs, configuration.json,
-  remote.json, token, logs, version.txt marker). Never module-adjacent - installer wipes runtime dirs
-  on re-run, preserves only storage/. Default paths come from `specseed_target_src/storage_paths.py`;
-  new data files route through it.
+  remote.json, token, logs, version.txt marker). Never module-adjacent - the engine isn't in the
+  target, so anything not under `<specseed_dir>/` is lost. Default paths come from
+  `specseed_runtime/storage_paths.py`; new data files route through it.
 - `storage/version.txt` = what version last shaped storage. Code version vs marker diff drives
   migrations. Pre-0.3.0 storage unsupported (missing marker = 0.3.0).
-- Y/X bump that touches storage shape -> author a hop `specseed_target_src/migrating/m_<from>__<to>.py`
+- Y/X bump that touches storage shape -> author a hop `specseed_runtime/migrating/m_<from>__<to>.py`
   (`FROM`/`TO` consts + `run(storage, specseed_dir)`), append to `MIGRATIONS` in `migrating/migrate.py`.
   One hop spans consecutive migration-bearing versions only; hops chain, run one by one, never restate
   older hops.
 - Migrations idempotent: safe twice, preserve user-custom values, never clobber an existing dest,
   only rewrite old/default-shaped data. May delete old files when clearly superseded.
-- Entrypoints that migrate-before-read: `executing/run.py` (startup), `configuring/configure.py`
-  (main), installer `src/specseed.py` (rescues stray `*.db` pre-wipe, shells out to the installed
-  `migrating/migrate.py` post-copy).
+- Entrypoints that migrate-before-read: `executing/run.py` (startup, via the `src/specseed.py`
+  launcher), `configuring/configure.py` (main). The 0.3.1->0.4.0 hop deletes any engine code an old
+  installer copied into a target's `<specseed_dir>/`.
 - Hop tests: old-shape fixture -> `run_migrations()` -> assert upgraded files + marker; run twice for
   idempotency. Copy the pattern in `tests/unit/python/test_migrating.py`. Verify each entrypoint
   triggers.

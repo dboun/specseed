@@ -15,7 +15,7 @@ The post's title + body + comments are the instructions. Read them and the
 current work posts from the **local** tracker only.
 
 ```python
-from specseed_target_src.tracking.resolve_remote import resolve_local
+from specseed_runtime.tracking.resolve_remote import resolve_local
 local = resolve_local()                      # TrackingLocal, the read cache
 post = local.get_entry(REQUEST_ID).data       # title, body, comments
 work = local.list_entries(is_open=None).data  # current epics/tickets/issues
@@ -82,13 +82,15 @@ import json
 import pathlib
 import sys
 
+# The engine is not in the target repo. The scheduler runs this script with the
+# engine's src/ on PYTHONPATH; in the dev repo the walk below also finds it.
 _HERE = pathlib.Path(__file__).resolve()
 for _root in _HERE.parents:
-    if (_root / "src" / "target_facing" / "specseed_target_src").is_dir():
-        sys.path.insert(0, str(_root))
+    if (_root / "src" / "specseed_runtime").is_dir():
+        sys.path.insert(0, str(_root / "src"))
         break
 
-from specseed_target_src.tracking.resolve_remote import resolve_remote
+from specseed_runtime.tracking.resolve_remote import resolve_remote
 
 
 def _ok(result, what):
@@ -170,7 +172,7 @@ Steps, every route that creates issues:
 1. **Allocate one token** for the batch and a short summary of what you propose:
 
    ```python
-   from specseed_target_src.executing.approvals import next_apr_id, approval_request_comment
+   from specseed_runtime.executing.approvals import next_apr_id, approval_request_comment
    apr_id = next_apr_id(STORAGE_DIR)          # e.g. "APR-0001", monotonic, persisted
    request_body = approval_request_comment(apr_id, summary)  # carries the hidden marker
    ```
@@ -198,13 +200,18 @@ When no approver list is configured, any non-bot human may approve (the default)
 After writing `plan.json` and `apply.py`, enqueue the run and stop:
 
 ```python
-from specseed_target_src.scheduling.spec_change import enqueue_spec_change_run
+from specseed_runtime.scheduling.spec_change import enqueue_spec_change_run
 enqueue_spec_change_run(script_path, request_id=REQUEST_ID, route=ROUTE)
 ```
 
 The executor (`executing/`) drains the queue and runs `apply.py` as a
 permission-gated subprocess. Your job ends at the enqueue: do not run `apply.py`
 yourself, do not touch git or code.
+
+**Chat mode** (no runner; see `references/chat-mode.md`): there is nothing to
+enqueue and no remote. Still write `plan.json` + `apply.py` (inert here, runs
+later under a real runner), then bundle the working dir into one downloadable zip
+and offer it — early and refreshed, never pasted into the output.
 
 ## Idempotency
 

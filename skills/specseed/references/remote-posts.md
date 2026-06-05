@@ -3,7 +3,7 @@
 How the work breakdown lives on the remote tracker. The spec docs are local
 files; the **work layer is remote posts**, and the local tracker is a synced
 read cache of them. Labels are the canonical vocabulary in
-`specseed_target_src/tracking/supported_values.py` (seeded by
+`specseed_runtime/tracking/supported_values.py` (seeded by
 `tracking/populate_defaults.py`).
 
 ## One post per work item

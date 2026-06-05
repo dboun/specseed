@@ -9,8 +9,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.target_facing.specseed_target_src.executing import dashboards
-from src.target_facing.specseed_target_src.tracking.tracking_remote_local import (
+from specseed_runtime.executing import dashboards
+from specseed_runtime.tracking.tracking_remote_local import (
     TrackingRemoteLocal,
 )
 

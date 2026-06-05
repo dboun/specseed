@@ -13,14 +13,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.target_facing.specseed_target_src.db.database import Database
-from src.target_facing.specseed_target_src.executing.agent_runner import AgentResult, FakeAgentRunner
-from src.target_facing.specseed_target_src.executing.scheduler import Scheduler
-from src.target_facing.specseed_target_src.tracking.tracking_local import TrackingLocal
-from src.target_facing.specseed_target_src.tracking.tracking_remote_local import TrackingRemoteLocal
-from src.target_facing.specseed_target_src.entities import issue as _issue  # noqa: F401
-from src.target_facing.specseed_target_src.entities import epic as _epic  # noqa: F401
-from src.target_facing.specseed_target_src.entities import ticket as _ticket  # noqa: F401
+from specseed_runtime.db.database import Database
+from specseed_runtime.executing.agent_runner import AgentResult, FakeAgentRunner
+from specseed_runtime.executing.scheduler import Scheduler
+from specseed_runtime.tracking.tracking_local import TrackingLocal
+from specseed_runtime.tracking.tracking_remote_local import TrackingRemoteLocal
+from specseed_runtime.entities import issue as _issue  # noqa: F401
+from specseed_runtime.entities import epic as _epic  # noqa: F401
+from specseed_runtime.entities import ticket as _ticket  # noqa: F401
 
 
 class LifecycleTest(unittest.TestCase):

@@ -10,7 +10,7 @@ import os
 import unittest
 from pathlib import Path
 
-from src.target_facing.specseed_target_src.executing.agent_runner import (
+from specseed_runtime.executing.agent_runner import (
     AgentResult,
     ClaudeAgentRunner,
     CodexAgentRunner,
@@ -79,8 +79,13 @@ class RunnerFromSpecTest(unittest.TestCase):
         if some_key is not None:
             self.assertIn(some_key, env)
 
-    def test_child_env_none_without_overrides(self) -> None:
-        self.assertIsNone(ClaudeAgentRunner()._child_env())
+    def test_child_env_always_puts_engine_on_pythonpath(self) -> None:
+        # Even with no provider overrides, the agent must be able to import the
+        # engine (not in the target) - so src/ is always on PYTHONPATH.
+        env = ClaudeAgentRunner()._child_env()
+        self.assertIsNotNone(env)
+        engine_src = str(Path(__file__).resolve().parents[3] / "src")
+        self.assertIn(engine_src, env["PYTHONPATH"].split(os.pathsep))
 
 
 class BuildRunnerChainsTest(unittest.TestCase):

@@ -46,17 +46,18 @@ from pathlib import Path
 def _add_package_parent_to_path():
     current = Path(__file__).resolve()
     for parent in current.parents:
-        if (parent / "src" / "target_facing").exists():
-            sys.path.insert(0, str(parent / "src" / "target_facing"))
+        if (parent / "src" / "specseed_runtime").is_dir():
+            sys.path.insert(0, str(parent / "src"))
             return
-        if (parent / "specseed_target_src").exists():
+        if (parent / "specseed_runtime").exists():
             sys.path.insert(0, str(parent))
             return
 
 
 _add_package_parent_to_path()
 
-from specseed_target_src.migrating.migrate import run_migrations
+from specseed_runtime.migrating.migrate import run_migrations
+from specseed_runtime.storage_paths import default_storage_dir as _dev_default_storage_dir
 
 DEFAULT_POLL_INTERVAL = 45
 DEFAULT_SPECSEED_DIR = ".specseed"
@@ -109,12 +110,11 @@ DEFAULT_AGENT_GATES = {
 
 
 # --------------------------------------------------------------------------- #
-# paths — storage is `../../storage/` relative to THIS file when already installed
-# under the target repo's specseed dir.
+# paths — a real config run passes --storage (<target>/<specseed_dir>/storage).
+# The dev default is this code repo's own storage/ (see storage_paths.py).
 # --------------------------------------------------------------------------- #
 def default_storage_dir():
-    # configuring/ -> specseed_target_src/ -> specseed dir + storage/
-    return Path(__file__).resolve().parent.parent.parent / "storage"
+    return _dev_default_storage_dir()
 
 
 def repo_root_from_cwd():
@@ -882,7 +882,7 @@ def _print_start_help(storage):
     """Tell the human how to launch the scheduler now that config is written."""
     repo_root = repo_root_from_cwd()
     specseed_dir = _relative_to_repo(specseed_dir_from_storage(storage), repo_root)
-    run_script = specseed_dir / "specseed_target_src" / "executing" / "run.py"
+    run_script = specseed_dir / "specseed_runtime" / "executing" / "run.py"
     print(
         "\nNext: start the scheduler from your repo root.\n"
         f"  python3 {shlex.quote(run_script.as_posix())}\n"

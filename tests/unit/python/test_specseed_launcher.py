@@ -1,117 +1,84 @@
-"""specseed.py installer behavior."""
+"""src/specseed.py launcher behavior - runs the engine against a target, never copies code."""
 
 from __future__ import annotations
 
-import json
+import importlib.util
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from src import specseed
+
+def _load_launcher():
+    """Load src/specseed.py as a module (it sits beside the package, not in it)."""
+    path = Path(__file__).resolve().parents[3] / "src" / "specseed.py"
+    spec = importlib.util.spec_from_file_location("specseed_launcher", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
-class SpecseedInstallerTest(unittest.TestCase):
-    def test_installs_runtime_and_preserves_storage(self) -> None:
+specseed = _load_launcher()
+
+
+class ResolvePathsTest(unittest.TestCase):
+    def test_relative_specseed_dir_joins_under_target(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp) / "target"
-            repo.mkdir()
-            install_root = repo / ".specseed"
-            storage_file = install_root / "storage" / "configuration.json"
-            stale_file = install_root / "specseed_target_src" / "stale.txt"
-            storage_file.parent.mkdir(parents=True)
-            stale_file.parent.mkdir(parents=True)
-            storage_file.write_text('{"keep": true}\n', encoding="utf-8")
-            stale_file.write_text("old\n", encoding="utf-8")
+            target = Path(tmp).resolve()
+            got_target, storage = specseed.resolve_paths(str(target), ".specseed")
+            self.assertEqual(got_target, target)
+            self.assertEqual(storage, target / ".specseed" / "storage")
 
-            installed_at, copied, summary = specseed.install(repo)
-
-            self.assertEqual(installed_at, install_root.resolve())
-            self.assertEqual({p.name for p in copied}, {"specseed_target_src", "skills"})
-            self.assertTrue((install_root / "specseed_target_src" / "configuring" / "configure.py").is_file())
-            self.assertTrue((install_root / "skills" / "specseed" / "SKILL.md").is_file())
-            self.assertEqual(storage_file.read_text(encoding="utf-8"), '{"keep": true}\n')
-            self.assertFalse(stale_file.exists())
-            self.assertEqual(summary["rescued"], [])
-
-    def test_custom_install_dir_configure_command(self) -> None:
+    def test_absolute_specseed_dir_respected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp) / "target"
-            repo.mkdir()
+            target = Path(tmp) / "repo"
+            target.mkdir()
+            abs_dir = Path(tmp) / "elsewhere" / "seed"
+            _t, storage = specseed.resolve_paths(str(target), str(abs_dir))
+            self.assertEqual(storage, abs_dir.resolve() / "storage")
 
-            installed_at, _copied, _summary = specseed.install(repo, "seedmeta")
-            command = specseed.configure_command(repo.resolve(), installed_at)
 
-            self.assertIn("python3 seedmeta/specseed_target_src/configuring/configure.py", command)
+class ParseArgsTest(unittest.TestCase):
+    def test_defaults(self) -> None:
+        args = specseed.parse_args(["/some/repo"])
+        self.assertEqual(args.target_repo, "/some/repo")
+        self.assertEqual(args.specseed_dir, ".specseed")
+        self.assertFalse(args.once)
+        self.assertIsNone(args.interval)
 
-    def test_install_writes_storage_version_marker(self) -> None:
+    def test_positional_dir_and_flags(self) -> None:
+        args = specseed.parse_args(["/some/repo", "seedmeta", "--once", "--interval", "30"])
+        self.assertEqual(args.specseed_dir, "seedmeta")
+        self.assertTrue(args.once)
+        self.assertEqual(args.interval, 30.0)
+
+
+class MainTest(unittest.TestCase):
+    def test_missing_target_returns_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp) / "target"
-            repo.mkdir()
+            missing = Path(tmp) / "nope"
+            rc = specseed.main([str(missing)])
+            self.assertEqual(rc, 1)
 
-            installed_at, _copied, summary = specseed.install(repo)
-
-            shipped = (installed_at / "skills" / "specseed" / "version.txt").read_text(encoding="utf-8").strip()
-            marker = (installed_at / "storage" / "version.txt").read_text(encoding="utf-8").strip()
-            self.assertEqual(marker, shipped)
-            self.assertIn("storage", summary["migration"])
-
-    def test_reinstall_rescues_stray_databases_into_storage(self) -> None:
-        """Pre-0.3.1 dbs sat inside the runtime dirs the installer wipes."""
+    def test_delegates_to_run_with_storage_and_repo_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp) / "target"
-            repo.mkdir()
-            install_root = repo / ".specseed"
-            old_db = install_root / "specseed_target_src" / "db" / "specseed.db"
-            old_wal = Path(str(old_db) + "-wal")
-            old_tracking = install_root / "specseed_target_src" / "tracking" / "tracking_local.db"
-            old_db.parent.mkdir(parents=True)
-            old_tracking.parent.mkdir(parents=True)
-            old_db.write_bytes(b"queue-bytes")
-            old_wal.write_bytes(b"wal-bytes")
-            old_tracking.write_bytes(b"tracking-bytes")
+            target = Path(tmp).resolve()
+            with mock.patch.object(specseed.run_mod, "main", return_value=0) as run_main:
+                rc = specseed.main([str(target), ".specseed", "--once", "--interval", "15"])
 
-            _installed_at, _copied, summary = specseed.install(repo)
-
-            storage = install_root / "storage"
-            self.assertEqual(
-                {p.name for p in summary["rescued"]},
-                {"specseed.db", "tracking_local.db"},
-            )
-            self.assertEqual((storage / "specseed.db").read_bytes(), b"queue-bytes")
-            self.assertEqual((storage / "specseed.db-wal").read_bytes(), b"wal-bytes")
-            self.assertEqual((storage / "tracking_local.db").read_bytes(), b"tracking-bytes")
-            # the runtime tree got wiped+refreshed; no stray dbs survive in it
-            self.assertEqual(list((install_root / "specseed_target_src").rglob("*.db")), [])
-
-    def test_rescue_never_clobbers_existing_storage_db(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            install_root = Path(tmp) / ".specseed"
-            stray = install_root / "specseed_target_src" / "db" / "specseed.db"
-            kept = install_root / "storage" / "specseed.db"
-            stray.parent.mkdir(parents=True)
-            kept.parent.mkdir(parents=True)
-            stray.write_bytes(b"old")
-            kept.write_bytes(b"new")
-
-            rescued = specseed.rescue_stray_databases(install_root)
-
-            self.assertEqual(rescued, [])
-            self.assertEqual(kept.read_bytes(), b"new")
-            self.assertEqual(stray.read_bytes(), b"old")  # stays put, not deleted
-
-    def test_reinstall_drops_legacy_config_version_key(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp) / "target"
-            repo.mkdir()
-            config = repo / ".specseed" / "storage" / "configuration.json"
-            config.parent.mkdir(parents=True)
-            config.write_text(json.dumps({"version": 1, "dev_branch": "custom"}) + "\n", encoding="utf-8")
-
-            specseed.install(repo)
-
-            cfg = json.loads(config.read_text(encoding="utf-8"))
-            self.assertNotIn("version", cfg)
-            self.assertEqual(cfg["dev_branch"], "custom")
+            self.assertEqual(rc, 0)
+            argv = run_main.call_args.args[0]
+            storage = str(target / ".specseed" / "storage")
+            self.assertIn("--storage", argv)
+            self.assertEqual(argv[argv.index("--storage") + 1], storage)
+            self.assertIn("--repo-root", argv)
+            self.assertEqual(argv[argv.index("--repo-root") + 1], str(target))
+            self.assertIn("--once", argv)
+            self.assertEqual(argv[argv.index("--interval") + 1], "15.0")
+            # storage got created; no engine code landed in the target
+            self.assertTrue((target / ".specseed" / "storage").is_dir())
+            self.assertFalse((target / ".specseed" / "specseed_runtime").exists())
+            self.assertFalse((target / ".specseed" / "skills").exists())
 
 
 if __name__ == "__main__":

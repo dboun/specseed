@@ -11,10 +11,133 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.target_facing.specseed_target_src.db.database import Database
-from src.target_facing.specseed_target_src.scheduling.sync_to_db import sync_to_db
-from src.target_facing.specseed_target_src.tracking.tracking_local import TrackingLocal
-from src.target_facing.specseed_target_src.tracking.tracking_remote_local import TrackingRemoteLocal
+from specseed_runtime.db.database import Database
+from specseed_runtime.scheduling.sync_to_db import sync_to_db
+from specseed_runtime.tracking.comment import TrackingEntryComment, TrackingReaction
+from specseed_runtime.tracking.post import (
+    TrackingEntryDetails,
+    TrackingEntryId,
+    TrackingEntryOpenState,
+    TrackingLabel,
+    TrackingLabelList,
+    TrackingLabelSet,
+    TrackingPinState,
+)
+from specseed_runtime.tracking.pull_request import (
+    TrackingPullRequestDetails,
+    TrackingPullRequestId,
+    TrackingPullRequestOpenState,
+)
+from specseed_runtime.tracking.tracking_base import (
+    TrackingBase,
+    TrackingCommentId,
+    TrackingReactionResult,
+    TrackingResult,
+)
+from specseed_runtime.tracking.tracking_local import TrackingLocal
+from specseed_runtime.tracking.tracking_remote_local import TrackingRemoteLocal
+
+
+class ProviderRemoteStub(TrackingBase):
+    def __init__(self) -> None:
+        labels = [TrackingLabel("bug", "d73a4a")]
+        self.entry = TrackingEntryDetails(
+            id=7,
+            title="Provider bug",
+            labels=labels,
+            is_open=True,
+            author="alice",
+            assignees=["agent"],
+            created_at="2026-06-04T10:00:00Z",
+            updated_at="2026-06-05T01:00:00Z",
+            body="Crash from provider remote",
+            comments=[
+                TrackingEntryComment(
+                    id=70,
+                    body="please fix",
+                    author="alice",
+                    created_at="2026-06-05T01:01:00Z",
+                    updated_at="2026-06-05T01:01:00Z",
+                    reactions=[TrackingReaction("heart", count=1, users=["bob"])],
+                )
+            ],
+            reactions=[TrackingReaction("thumbs_up", count=1, users=["carol"])],
+        )
+
+    def list_entries(self, is_open=None, labels=None, assignee=None, updated_since=None):
+        return TrackingResult(ok=True, data=[self.entry])
+
+    def get_entry(self, entry_id):
+        return TrackingResult(ok=True, data=self.entry)
+
+    def list_labels(self):
+        return TrackingResult(ok=True, data=TrackingLabelList(labels=list(self.entry.labels)))
+
+    def list_pull_requests(self, is_open=None, labels=None, assignee=None, updated_since=None):
+        return TrackingResult(ok=True, data=[])
+
+    def get_pull_request(self, pull_request_id):
+        return TrackingResult(ok=False, error=f"pull request not found: {pull_request_id}")
+
+    def sync_from_remote(self, remote):
+        return TrackingResult(ok=False, error="not implemented")
+
+    def is_entry_open(self, entry_id):
+        return TrackingResult(ok=True, data=TrackingEntryOpenState(id=entry_id, is_open=True))
+
+    def set_entry_open(self, entry_id):
+        return TrackingResult(ok=True, data=TrackingEntryOpenState(id=entry_id, is_open=True))
+
+    def set_entry_closed(self, entry_id):
+        return TrackingResult(ok=True, data=TrackingEntryOpenState(id=entry_id, is_open=False))
+
+    def pin_entry(self, entry_id):
+        return TrackingResult(ok=True, data=TrackingPinState(id=entry_id, pinned=True))
+
+    def delete_entry(self, entry_id):
+        return TrackingResult(ok=True, data=TrackingEntryId(id=entry_id))
+
+    def edit_entry(self, entry_id, title=None, body=None):
+        return TrackingResult(ok=True, data=TrackingEntryId(id=entry_id))
+
+    def add_entry(self, title, body=None, labels=None, assignees=None):
+        return TrackingResult(ok=True, data=TrackingEntryId(id=7))
+
+    def add_entry_comment(self, entry_id, body):
+        return TrackingResult(ok=True, data=TrackingCommentId(id=70))
+
+    def add_entry_comment_reaction(self, entry_id, comment_id, reaction):
+        return TrackingResult(ok=True, data=TrackingReactionResult(entry_id, comment_id, reaction))
+
+    def add_entry_reaction(self, entry_id, reaction):
+        return TrackingResult(ok=True, data=TrackingReactionResult(entry_id, entry_id, reaction))
+
+    def get_entry_labels(self, entry_id):
+        return TrackingResult(ok=True, data=TrackingLabelSet(entry_id=entry_id, labels=list(self.entry.labels)))
+
+    def add_entry_label(self, entry_id, label):
+        return self.get_entry_labels(entry_id)
+
+    def remove_entry_label(self, entry_id, label):
+        return TrackingResult(ok=True, data=TrackingLabelSet(entry_id=entry_id, labels=[]))
+
+    def create_label(self, name, color=None, description=None):
+        return TrackingResult(ok=True, data=TrackingLabel(name, color, description))
+
+    def ensure_label(self, name, color=None, description=None):
+        return self.create_label(name, color, description)
+
+    def add_pull_request(self, title, source_branch, target_branch, body=None, labels=None, assignees=None):
+        return TrackingResult(ok=True, data=TrackingPullRequestId(id=1))
+
+    def add_pull_request_comment(self, pull_request_id, body):
+        return TrackingResult(ok=True, data=TrackingCommentId(id=1))
+
+    def add_pull_request_comment_reaction(self, pull_request_id, comment_id, reaction):
+        return TrackingResult(ok=True, data=TrackingReactionResult(pull_request_id, comment_id, reaction))
+
+    def set_pull_request_closed(self, pull_request_id):
+        return TrackingResult(ok=True, data=TrackingPullRequestOpenState(id=pull_request_id, is_open=False))
 
 
 class SyncToDbTest(unittest.TestCase):
@@ -150,6 +273,22 @@ class SyncToDbTest(unittest.TestCase):
         second = self.sync()
         self.assertEqual(second["changes"], 0)
         self.assertEqual(second["enqueued"], 0)
+
+    def test_provider_remote_syncs_into_local_without_type_crash(self) -> None:
+        provider = ProviderRemoteStub()
+
+        first = sync_to_db(self.local, provider, db=self.db)
+        self.assertTrue(first["ok"])
+        self.assertNotIn("error", first)
+        self.assertIn("handle_entry_created", self.actions())
+        self.assertIn("handle_label_added", self.actions())
+        self.assertIn("handle_comment_added", self.actions())
+        self.assertIn("handle_reaction_added", self.actions())
+        self.assertIn("handle_entry_reaction_added", self.actions())
+
+        second = sync_to_db(self.local, provider, db=self.db)
+        self.assertTrue(second["ok"])
+        self.assertEqual(second["changes"], 0)
 
 
 if __name__ == "__main__":

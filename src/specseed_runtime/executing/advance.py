@@ -32,12 +32,12 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
-from specseed_target_src.entities.entity_base import (
+from specseed_runtime.entities.entity_base import (
     Entity,
     STATUS_LABEL_PREFIX,
 )
-from specseed_target_src.executing import platform_log
-from specseed_target_src.executing import relationships
+from specseed_runtime.executing import platform_log
+from specseed_runtime.executing import relationships
 
 
 # Hidden marker stamped on every review comment so attempts can be counted from
@@ -82,7 +82,7 @@ def remote_status(ctx: Any, post_id: Any) -> Optional[str]:
     if data is None:
         return None
     names = [str(getattr(lbl, "name", lbl)) for lbl in getattr(data, "labels", []) or []]
-    from specseed_target_src.entities.entity_base import Entity
+    from specseed_runtime.entities.entity_base import Entity
     return Entity.status_from_labels(names)
 
 

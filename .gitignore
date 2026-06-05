@@ -246,8 +246,7 @@ configuration.json
 .playground/
 .playground_mine/
 
-src/target_facing/storage/
-
 # Generated runtime data: everything lands flat in the storage dir.
+# Dev storage is <repo>/storage/; a target's is <target>/<specseed_dir>/storage/.
 .specseed/
 storage/

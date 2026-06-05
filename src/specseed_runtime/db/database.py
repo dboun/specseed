@@ -35,7 +35,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
-from specseed_target_src.storage_paths import storage_db_path
+from specseed_runtime.storage_paths import storage_db_path
 
 
 DEFAULT_DB_PATH = storage_db_path("specseed.db")

@@ -19,7 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from specseed_target_src.executing.permissions import Permissions
+from specseed_runtime.executing.permissions import Permissions
 
 
 # The recognized operator verbs (first whitespace token of a comment body).

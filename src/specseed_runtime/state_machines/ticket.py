@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Optional
 
-from specseed_target_src.entities.ticket import Ticket
-from specseed_target_src.state_machines.base import (
+from specseed_runtime.entities.ticket import Ticket
+from specseed_runtime.state_machines.base import (
     StateMachineResult,
     current_state,
     evaluate_entity_state,

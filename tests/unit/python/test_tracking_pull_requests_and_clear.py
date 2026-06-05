@@ -6,9 +6,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.target_facing.specseed_target_src.tracking.clear_everything import clear_everything
-from src.target_facing.specseed_target_src.tracking.pull_request import TrackingPullRequestDetails
-from src.target_facing.specseed_target_src.tracking.tracking_remote_local import TrackingRemoteLocal
+from specseed_runtime.tracking.clear_everything import clear_everything
+from specseed_runtime.tracking.pull_request import TrackingPullRequestDetails
+from specseed_runtime.tracking.tracking_remote_local import TrackingRemoteLocal
 
 
 class TrackingPullRequestAndClearTest(unittest.TestCase):

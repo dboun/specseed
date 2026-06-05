@@ -22,9 +22,9 @@ TO = "0.3.1"
 
 # (dir relative to the specseed dir, sqlite filename) of every 0.3.0 default.
 _DB_LOCATIONS = (
-    ("specseed_target_src/db", "specseed.db"),
-    ("specseed_target_src/tracking", "tracking_local.db"),
-    ("specseed_target_src/tracking", "tracking_remote_local.db"),
+    ("specseed_runtime/db", "specseed.db"),
+    ("specseed_runtime/tracking", "tracking_local.db"),
+    ("specseed_runtime/tracking", "tracking_remote_local.db"),
 )
 _SIDECAR_SUFFIXES = ("-wal", "-shm")
 

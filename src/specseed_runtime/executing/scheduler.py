@@ -30,23 +30,23 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from specseed_target_src.scheduling.sync_to_db import sync_to_db
-from specseed_target_src.tracking.resolve_remote import (
+from specseed_runtime.scheduling.sync_to_db import sync_to_db
+from specseed_runtime.tracking.resolve_remote import (
     load_remote_state,
     resolve_local,
     resolve_remote,
 )
-from specseed_target_src.executing import cancellation
-from specseed_target_src.executing import dashboards as dashboards_mod
-from specseed_target_src.executing import platform_log
-from specseed_target_src.executing.agent_runner import (
+from specseed_runtime.executing import cancellation
+from specseed_runtime.executing import dashboards as dashboards_mod
+from specseed_runtime.executing import platform_log
+from specseed_runtime.executing.agent_runner import (
     AgentRunner,
     DEFAULT_AGENT_TIMEOUT_S,
 )
-from specseed_target_src.executing.context import ExecutionContext
-from specseed_target_src.executing.control import ControlChannel, render_status
-from specseed_target_src.executing.dispatch import HandlerOutcome, dispatch
-from specseed_target_src.executing.permissions import Permissions
+from specseed_runtime.executing.context import ExecutionContext
+from specseed_runtime.executing.control import ControlChannel, render_status
+from specseed_runtime.executing.dispatch import HandlerOutcome, dispatch
+from specseed_runtime.executing.permissions import Permissions
 
 
 RUNNING = "running"

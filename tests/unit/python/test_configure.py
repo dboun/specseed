@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from src.target_facing.specseed_target_src.configuring import configure
+from specseed_runtime.configuring import configure
 
 
 def _local_answers(*, specseed="seedmeta", dev_branch="", write=""):

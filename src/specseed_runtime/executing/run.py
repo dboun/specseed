@@ -9,9 +9,9 @@ cleanly.
 
 Usage (run from the target repo root):
 
-    python3 -m specseed_target_src.executing.run
-    python3 -m specseed_target_src.executing.run --once
-    python3 -m specseed_target_src.executing.run --interval 30
+    python3 -m specseed_runtime.executing.run
+    python3 -m specseed_runtime.executing.run --once
+    python3 -m specseed_runtime.executing.run --interval 30
 
 Only Python stdlib is used.
 """
@@ -30,28 +30,28 @@ from typing import Optional
 def _add_package_parent_to_path() -> None:
     current = Path(__file__).resolve()
     for parent in current.parents:
-        if (parent / "src" / "target_facing").exists():
-            sys.path.insert(0, str(parent / "src" / "target_facing"))
+        if (parent / "src" / "specseed_runtime").is_dir():
+            sys.path.insert(0, str(parent / "src"))
             return
-        if (parent / "specseed_target_src").exists():
+        if (parent / "specseed_runtime").exists():
             sys.path.insert(0, str(parent))
             return
 
 
 _add_package_parent_to_path()
 
-from specseed_target_src.db.database import Database
-from specseed_target_src.executing.agent_runner import (
+from specseed_runtime.db.database import Database
+from specseed_runtime.executing.agent_runner import (
     AgentRunner,
     RunnerChains,
     build_runner_chains,
 )
-from specseed_target_src.executing import platform_log
-from specseed_target_src.executing.scheduler import Scheduler
-from specseed_target_src.migrating.migrate import run_migrations
-from specseed_target_src.storage_paths import storage_db_path
-from specseed_target_src.tracking.populate_defaults import populate_defaults
-from specseed_target_src.tracking.resolve_remote import (
+from specseed_runtime.executing import platform_log
+from specseed_runtime.executing.scheduler import Scheduler
+from specseed_runtime.migrating.migrate import run_migrations
+from specseed_runtime.storage_paths import storage_db_path
+from specseed_runtime.tracking.populate_defaults import populate_defaults
+from specseed_runtime.tracking.resolve_remote import (
     default_storage_dir,
     load_config,
     load_remote_state,

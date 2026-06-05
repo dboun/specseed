@@ -3,12 +3,12 @@ Tkinter UI for the local specseed tracking database.
 
 Run from the repository root:
 
-    python3.13 src/target_facing/specseed_target_src/tracking/tracking_local_ui.py
+    python3.13 src/specseed_runtime/tracking/tracking_local_ui.py
 
 Optional:
 
-    python3.13 src/target_facing/specseed_target_src/tracking/tracking_local_ui.py --db /path/to/tracking_local.db
-    python3.13 src/target_facing/specseed_target_src/tracking/tracking_local_ui.py --author your-name
+    python3.13 src/specseed_runtime/tracking/tracking_local_ui.py --db /path/to/tracking_local.db
+    python3.13 src/specseed_runtime/tracking/tracking_local_ui.py --author your-name
 
 This UI uses TrackingLocal's public methods for reads and writes. It does not
 write sqlite directly.
@@ -27,18 +27,18 @@ from typing import Any, Optional
 def _add_repo_root_to_path() -> None:
     current = Path(__file__).resolve()
     for parent in current.parents:
-        if (parent / "src" / "target_facing").exists():
-            sys.path.insert(0, str(parent / "src" / "target_facing"))
+        if (parent / "src" / "specseed_runtime").is_dir():
+            sys.path.insert(0, str(parent / "src"))
             return
-        if (parent / "specseed_target_src").exists():
+        if (parent / "specseed_runtime").exists():
             sys.path.insert(0, str(parent))
             return
 
 
 _add_repo_root_to_path()
 
-from specseed_target_src.tracking.supported_values import SUPPORTED_REACTIONS
-from specseed_target_src.tracking.tracking_local import (
+from specseed_runtime.tracking.supported_values import SUPPORTED_REACTIONS
+from specseed_runtime.tracking.tracking_local import (
     DEFAULT_DB_PATH,
     TrackingLocal,
 )

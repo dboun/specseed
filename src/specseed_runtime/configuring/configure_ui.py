@@ -4,11 +4,11 @@ configure_ui.py — Tkinter setup UI for specseed, run INSIDE a target repo.
 
 Run from the repository root:
 
-    python3.13 src/target_facing/specseed_target_src/configuring/configure_ui.py
+    python3.13 src/specseed_runtime/configuring/configure_ui.py
 
 Optional:
 
-    python3.13 src/target_facing/specseed_target_src/configuring/configure_ui.py --storage PATH
+    python3.13 src/specseed_runtime/configuring/configure_ui.py --storage PATH
 
 The Save button stays fixed at the top. The options form scrolls below it.
 Choices hide or reveal dependent options, and saving reuses configure.py's
@@ -27,17 +27,17 @@ from tkinter import messagebox, ttk
 def _add_repo_root_to_path() -> None:
     current = Path(__file__).resolve()
     for parent in current.parents:
-        if (parent / "src" / "target_facing").exists():
-            sys.path.insert(0, str(parent / "src" / "target_facing"))
+        if (parent / "src" / "specseed_runtime").is_dir():
+            sys.path.insert(0, str(parent / "src"))
             return
-        if (parent / "specseed_target_src").exists():
+        if (parent / "specseed_runtime").exists():
             sys.path.insert(0, str(parent))
             return
 
 
 _add_repo_root_to_path()
 
-from specseed_target_src.configuring import configure
+from specseed_runtime.configuring import configure
 
 
 class ConfigureUI(tk.Tk):

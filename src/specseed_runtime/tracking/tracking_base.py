@@ -16,8 +16,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from specseed_target_src.tracking.comment import TrackingComment, TrackingEntryComment, TrackingReaction
-from specseed_target_src.tracking.post import (
+from specseed_runtime.tracking.comment import TrackingComment, TrackingEntryComment, TrackingReaction
+from specseed_runtime.tracking.post import (
     TrackingEntryDetails,
     TrackingEntryId,
     TrackingEntryOpenState,
@@ -31,13 +31,13 @@ from specseed_target_src.tracking.post import (
     TrackingPostOpenState,
     TrackingPostSummary,
 )
-from specseed_target_src.tracking.pull_request import (
+from specseed_runtime.tracking.pull_request import (
     TrackingPullRequestDetails,
     TrackingPullRequestId,
     TrackingPullRequestOpenState,
     TrackingPullRequestSummary,
 )
-from specseed_target_src.tracking.supported_values import (
+from specseed_runtime.tracking.supported_values import (
     REACTION_EYES,
     REACTION_HEART,
     REACTION_THUMBS_DOWN,

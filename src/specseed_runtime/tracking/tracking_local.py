@@ -10,6 +10,7 @@ Only Python stdlib is used.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import threading
@@ -17,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
-from specseed_target_src.tracking.tracking_base import (
+from specseed_runtime.tracking.tracking_base import (
     TrackingBase,
     TrackingCommentId,
     TrackingEntryComment,
@@ -35,13 +36,13 @@ from specseed_target_src.tracking.tracking_base import (
     TrackingResult,
     TrackingSyncChange,
 )
-from specseed_target_src.tracking.pull_request import (
+from specseed_runtime.tracking.pull_request import (
     TrackingPullRequestDetails,
     TrackingPullRequestId,
     TrackingPullRequestOpenState,
     TrackingPullRequestSummary,
 )
-from specseed_target_src.storage_paths import storage_db_path
+from specseed_runtime.storage_paths import storage_db_path
 
 
 DEFAULT_DB_PATH = storage_db_path("tracking_local.db")
@@ -442,18 +443,20 @@ class TrackingLocal(TrackingBase):
         return self.create_label(name, color, description)
 
     def sync_from_remote(self, remote: TrackingBase | str | Path) -> TrackingResult:
-        """Make this local database match another local remote database.
+        """Make this local database match another remote.
 
-        The source database is treated as authoritative for provider-visible
-        resources. Entry ``updated_at`` values are used to avoid reading
-        comments and reactions for entries whose top-level timestamp is
-        unchanged in both databases.
+        The source is treated as authoritative for provider-visible resources.
+        Entry ``updated_at`` values are used to avoid reading comments and
+        reactions for entries whose top-level timestamp is unchanged in both
+        databases.
         """
         try:
+            if not isinstance(remote, TrackingLocal) and not isinstance(remote, (str, Path)):
+                return self._sync_from_provider_remote(remote)
+
             source = self._coerce_local_remote(remote)
             if self.db_path.resolve() == source.db_path.resolve():
                 return TrackingResult(ok=True, data=[])
-
             changes: list[TrackingSyncChange] = []
             stamp = _now()
             with source._connect() as source_conn, self._connect() as target_conn:
@@ -564,6 +567,307 @@ class TrackingLocal(TrackingBase):
             return TrackingResult(ok=True, data=changes)
         except Exception as exc:
             return self._error(exc)
+
+    def _sync_from_provider_remote(self, remote: TrackingBase) -> TrackingResult:
+        source_static, source_entries, source_dynamic, source_pull_requests, source_pr_dynamic = (
+            self._snapshot_provider_remote(remote)
+        )
+        changes: list[TrackingSyncChange] = []
+        stamp = _now()
+
+        with self._connect() as target_conn:
+            target_snapshot = self._snapshot_static_resources(target_conn)
+            target_entries = self._rows_by_id(
+                target_conn,
+                """
+                SELECT id, title, body, is_open, author, assignees, created_at, updated_at
+                FROM entries
+                """,
+            )
+            target_pull_requests = self._rows_by_id(
+                target_conn,
+                """
+                SELECT id, title, body, is_open, is_merged, author, assignees,
+                       source_branch, target_branch, created_at, updated_at
+                FROM pull_requests
+                """,
+            )
+            pull_request_ids = set(source_pull_requests) | set(target_pull_requests)
+            target_pull_request_dynamic = self._snapshot_pull_request_dynamic_resources(
+                target_conn, pull_request_ids
+            )
+
+            self._sync_labels(target_conn, source_static, target_snapshot, changes, stamp)
+
+            self._entry_sort_labels = self._labels_by_entry(source_static)
+            changed_entry_ids = self._sync_entries(
+                target_conn,
+                source_entries,
+                target_entries,
+                changes,
+                stamp,
+            )
+            changed_entry_ids.update(self._entry_ids_for_changed_relationships(source_static, target_snapshot))
+            changed_entry_ids.update(set(target_entries) - set(source_entries))
+            target_dynamic = self._snapshot_dynamic_resources(target_conn, changed_entry_ids)
+            source_changed_dynamic = self._filter_entry_dynamic(source_dynamic, changed_entry_ids)
+
+            self._sync_entry_labels(target_conn, source_static, target_snapshot, changes, stamp)
+            self._sync_pins(target_conn, source_static, target_snapshot, changes, stamp)
+            self._sync_comments(target_conn, source_changed_dynamic, target_dynamic, changes, stamp)
+            self._sync_reactions(target_conn, source_changed_dynamic, target_dynamic, changes, stamp)
+            self._sync_entry_reactions(target_conn, source_changed_dynamic, target_dynamic, changes, stamp)
+            self._sync_pull_requests(
+                target_conn,
+                source_pull_requests,
+                target_pull_requests,
+                changes,
+                stamp,
+            )
+            self._sync_pull_request_labels(
+                target_conn, source_static, target_snapshot, changes, stamp
+            )
+            self._sync_pull_request_comments(
+                target_conn,
+                source_pr_dynamic,
+                target_pull_request_dynamic,
+                changes,
+                stamp,
+            )
+            self._sync_pull_request_reactions(
+                target_conn,
+                source_pr_dynamic,
+                target_pull_request_dynamic,
+                changes,
+                stamp,
+            )
+            self._delete_removed_resources(
+                target_conn,
+                source_static,
+                target_snapshot,
+                source_entries,
+                target_entries,
+                source_pull_requests,
+                target_pull_requests,
+                source_changed_dynamic,
+                target_dynamic,
+                source_pr_dynamic,
+                target_pull_request_dynamic,
+                changes,
+                stamp,
+            )
+
+        return TrackingResult(ok=True, data=changes)
+
+    def _snapshot_provider_remote(
+        self, remote: TrackingBase
+    ) -> tuple[dict[str, object], dict[int, dict[str, object]], dict[str, object], dict[int, dict[str, object]], dict[str, object]]:
+        stamp = _now()
+        source_static: dict[str, object] = {
+            "labels": {},
+            "entry_labels": set(),
+            "pinned_entries": set(),
+            "pull_request_labels": set(),
+        }
+        source_entries: dict[int, dict[str, object]] = {}
+        source_dynamic: dict[str, object] = {
+            "comments": {},
+            "reactions": {},
+            "entry_reactions": {},
+        }
+        source_pull_requests: dict[int, dict[str, object]] = {}
+        source_pr_dynamic: dict[str, object] = {
+            "pull_request_comments": {},
+            "pull_request_reactions": {},
+        }
+
+        labels = self._provider_data(remote.list_labels(), "list_labels")
+        for label in getattr(labels, "labels", []) or []:
+            self._remember_provider_label(source_static, label)
+
+        entries = self._provider_data(remote.list_entries(), "list_entries") or []
+        for summary in entries:
+            detail = self._provider_data(
+                remote.get_entry(getattr(summary, "id", None)),
+                f"get_entry({getattr(summary, 'id', None)})",
+            )
+            entry_id = self._sqlite_provider_id(getattr(detail, "id", getattr(summary, "id", None)))
+            source_entries[entry_id] = {
+                "id": entry_id,
+                "title": str(getattr(detail, "title", "") or ""),
+                "body": getattr(detail, "body", None),
+                "is_open": 1 if bool(getattr(detail, "is_open", True)) else 0,
+                "author": getattr(detail, "author", None),
+                "assignees": _assignees_to_json(getattr(detail, "assignees", None)),
+                "created_at": getattr(detail, "created_at", None) or stamp,
+                "updated_at": getattr(detail, "updated_at", None) or getattr(detail, "created_at", None) or stamp,
+            }
+            for label in getattr(detail, "labels", []) or []:
+                self._remember_provider_label(source_static, label)
+                source_static["entry_labels"].add((entry_id, label.name))
+            self._remember_provider_comments(
+                source_dynamic["comments"],
+                source_dynamic["reactions"],
+                "comment_reaction",
+                entry_id,
+                "entry_id",
+                getattr(detail, "comments", []) or [],
+                stamp,
+            )
+            self._remember_provider_reactions(
+                source_dynamic["entry_reactions"],
+                "entry_reaction",
+                entry_id,
+                "entry_id",
+                getattr(detail, "reactions", []) or [],
+            )
+
+        pull_requests = self._provider_data(remote.list_pull_requests(), "list_pull_requests") or []
+        for summary in pull_requests:
+            detail = self._provider_data(
+                remote.get_pull_request(getattr(summary, "id", None)),
+                f"get_pull_request({getattr(summary, 'id', None)})",
+            )
+            pr_id = self._sqlite_provider_id(getattr(detail, "id", getattr(summary, "id", None)))
+            source_pull_requests[pr_id] = {
+                "id": pr_id,
+                "title": str(getattr(detail, "title", "") or ""),
+                "body": getattr(detail, "body", None),
+                "is_open": 1 if bool(getattr(detail, "is_open", True)) else 0,
+                "is_merged": 1 if bool(getattr(detail, "is_merged", False)) else 0,
+                "author": getattr(detail, "author", None),
+                "assignees": _assignees_to_json(getattr(detail, "assignees", None)),
+                "source_branch": str(getattr(detail, "source_branch", "") or ""),
+                "target_branch": str(getattr(detail, "target_branch", "") or ""),
+                "created_at": getattr(detail, "created_at", None) or stamp,
+                "updated_at": getattr(detail, "updated_at", None) or getattr(detail, "created_at", None) or stamp,
+            }
+            for label in getattr(detail, "labels", []) or []:
+                self._remember_provider_label(source_static, label)
+                source_static["pull_request_labels"].add((pr_id, label.name))
+            self._remember_provider_comments(
+                source_pr_dynamic["pull_request_comments"],
+                source_pr_dynamic["pull_request_reactions"],
+                "pull_request_reaction",
+                pr_id,
+                "pull_request_id",
+                getattr(detail, "comments", []) or [],
+                stamp,
+            )
+
+        return source_static, source_entries, source_dynamic, source_pull_requests, source_pr_dynamic
+
+    def _provider_data(self, result: TrackingResult, action: str) -> object:
+        if not result.ok:
+            raise RuntimeError(f"{action} failed: {result.error}")
+        return result.data
+
+    def _remember_provider_label(self, source_static: dict[str, object], label: TrackingLabel) -> None:
+        name = str(getattr(label, "name", "") or "")
+        if not name:
+            return
+        labels = source_static["labels"]
+        existing = labels.get(name)
+        row = {
+            "name": name,
+            "color": getattr(label, "color", None),
+            "description": getattr(label, "description", None),
+        }
+        if existing is None:
+            labels[name] = row
+            return
+        if existing.get("color") is None and row["color"] is not None:
+            existing["color"] = row["color"]
+        if existing.get("description") is None and row["description"] is not None:
+            existing["description"] = row["description"]
+
+    def _remember_provider_comments(
+        self,
+        comments: dict[int, dict[str, object]],
+        reactions: dict[int, dict[str, object]],
+        reaction_scope: str,
+        parent_id: int,
+        parent_field: str,
+        provider_comments: list[TrackingEntryComment],
+        stamp: str,
+    ) -> None:
+        for comment in provider_comments:
+            comment_id = self._sqlite_provider_id(getattr(comment, "id", None))
+            comments[comment_id] = {
+                "id": comment_id,
+                parent_field: parent_id,
+                "body": str(getattr(comment, "body", "") or ""),
+                "author": getattr(comment, "author", None),
+                "created_at": getattr(comment, "created_at", None) or stamp,
+                "updated_at": getattr(comment, "updated_at", None) or getattr(comment, "created_at", None) or stamp,
+            }
+            self._remember_provider_reactions(
+                reactions,
+                reaction_scope,
+                comment_id,
+                "comment_id",
+                getattr(comment, "reactions", []) or [],
+            )
+
+    def _remember_provider_reactions(
+        self,
+        rows: dict[int, dict[str, object]],
+        scope: str,
+        parent_id: int,
+        parent_field: str,
+        provider_reactions: list[TrackingReaction],
+    ) -> None:
+        for reaction in provider_reactions:
+            users = sorted(str(user) for user in (getattr(reaction, "users", []) or []) if user)
+            if not users:
+                users = ["" for _ in range(int(getattr(reaction, "count", 0) or 0))]
+            for index, user in enumerate(users):
+                kind = str(getattr(reaction, "kind", "") or "")
+                if not kind:
+                    continue
+                reaction_id = self._stable_provider_id(scope, parent_id, kind, user, index)
+                rows[reaction_id] = {
+                    "id": reaction_id,
+                    parent_field: parent_id,
+                    "kind": kind,
+                    "user": user or None,
+                }
+
+    def _filter_entry_dynamic(
+        self, source_dynamic: dict[str, object], entry_ids: set[int | str]
+    ) -> dict[str, object]:
+        if not entry_ids:
+            return {"comments": {}, "reactions": {}, "entry_reactions": {}}
+        comments = {
+            comment_id: row
+            for comment_id, row in source_dynamic["comments"].items()
+            if row["entry_id"] in entry_ids
+        }
+        comment_ids = set(comments)
+        return {
+            "comments": comments,
+            "reactions": {
+                reaction_id: row
+                for reaction_id, row in source_dynamic["reactions"].items()
+                if row["comment_id"] in comment_ids
+            },
+            "entry_reactions": {
+                reaction_id: row
+                for reaction_id, row in source_dynamic["entry_reactions"].items()
+                if row["entry_id"] in entry_ids
+            },
+        }
+
+    def _sqlite_provider_id(self, value: object) -> int:
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+        if isinstance(value, str) and value.strip().isdigit():
+            return int(value.strip())
+        raise ValueError(f"provider id must be integer-compatible: {value!r}")
+
+    def _stable_provider_id(self, *parts: object) -> int:
+        raw = "\x1f".join(str(part) for part in parts)
+        return int(hashlib.sha256(raw.encode("utf-8")).hexdigest()[:15], 16)
 
     def list_pull_requests(
         self,

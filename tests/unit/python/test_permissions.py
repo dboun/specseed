@@ -7,12 +7,12 @@ from __future__ import annotations
 
 import unittest
 
-from src.target_facing.specseed_target_src.executing.permissions import (
+from specseed_runtime.executing.permissions import (
     AGENT_CATEGORIES,
     DEFAULT_AGENT_GATES,
     Permissions,
 )
-from src.target_facing.specseed_target_src.executing.prompts import (
+from specseed_runtime.executing.prompts import (
     build_implement_prompt,
     render_action_gates,
     render_git_policy,

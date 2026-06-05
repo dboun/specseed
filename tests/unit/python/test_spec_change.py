@@ -12,20 +12,20 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.target_facing.specseed_target_src.db.database import Database
-from src.target_facing.specseed_target_src.scheduling.spec_change import (
+from specseed_runtime.db.database import Database
+from specseed_runtime.scheduling.spec_change import (
     DEFAULT_SCRIPT_NAME,
     SPEC_CHANGE_ACTION,
     enqueue_spec_change_run,
     spec_change_dir,
     spec_change_root,
 )
-from src.target_facing.specseed_target_src.tracking.resolve_remote import (
+from specseed_runtime.tracking.resolve_remote import (
     resolve_local,
     resolve_remote,
 )
-from src.target_facing.specseed_target_src.tracking.tracking_local import TrackingLocal
-from src.target_facing.specseed_target_src.tracking.tracking_remote_local import TrackingRemoteLocal
+from specseed_runtime.tracking.tracking_local import TrackingLocal
+from specseed_runtime.tracking.tracking_remote_local import TrackingRemoteLocal
 
 
 class SpecChangePathsTest(unittest.TestCase):

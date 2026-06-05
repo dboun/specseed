@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import ClassVar, Optional
 
-from specseed_target_src.entities.entity_base import Entity
+from specseed_runtime.entities.entity_base import Entity
 
 
 @Entity.register

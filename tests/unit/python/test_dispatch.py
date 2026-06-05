@@ -10,27 +10,27 @@ import threading
 import unittest
 from pathlib import Path
 
-from src.target_facing.specseed_target_src.db.database import Database
-from src.target_facing.specseed_target_src.executing.agent_runner import (
+from specseed_runtime.db.database import Database
+from specseed_runtime.executing.agent_runner import (
     AgentResult,
     FakeAgentRunner,
     RunnerChains,
 )
-from src.target_facing.specseed_target_src.executing.context import ExecutionContext
-from src.target_facing.specseed_target_src.executing import dispatch as dispatch_mod
-from src.target_facing.specseed_target_src.executing.dispatch import (
+from specseed_runtime.executing.context import ExecutionContext
+from specseed_runtime.executing import dispatch as dispatch_mod
+from specseed_runtime.executing.dispatch import (
     AgentIntent,
     HandlerOutcome,
     decide_intent,
     dispatch,
 )
-from src.target_facing.specseed_target_src.executing.permissions import Permissions
-from src.target_facing.specseed_target_src.entities.entity_base import Entity
+from specseed_runtime.executing.permissions import Permissions
+from specseed_runtime.entities.entity_base import Entity
 # Importing the tier modules registers Epic/Ticket/Issue in the tier registry.
-from src.target_facing.specseed_target_src.entities import issue as _issue  # noqa: F401
-from src.target_facing.specseed_target_src.state_machines.base import evaluate_entity_state
-from src.target_facing.specseed_target_src.tracking.tracking_local import TrackingLocal
-from src.target_facing.specseed_target_src.tracking.tracking_remote_local import (
+from specseed_runtime.entities import issue as _issue  # noqa: F401
+from specseed_runtime.state_machines.base import evaluate_entity_state
+from specseed_runtime.tracking.tracking_local import TrackingLocal
+from specseed_runtime.tracking.tracking_remote_local import (
     TrackingRemoteLocal,
 )
 
@@ -195,7 +195,12 @@ class DispatchRoutingTest(DispatchTestBase):
         self.assertEqual(len(self.runner.calls), 1)
         self.assertIn("adopt", self.runner.calls[0]["prompt"])
         self.assertIn("spec-change worker", self.runner.calls[0]["prompt"])
-        self.assertIn("seedmeta/skills/specseed/SKILL.md", self.runner.calls[0]["prompt"])
+        # Skill docs come from the engine (absolute path), not the target's specseed dir.
+        from specseed_runtime.storage_paths import default_specseed_dir
+        skill_dir = str(default_specseed_dir() / "skills" / "specseed")
+        self.assertIn(f"{skill_dir}/SKILL.md", self.runner.calls[0]["prompt"])
+        # spec/ and apply.py still live under the target's specseed dir
+        self.assertIn("seedmeta/spec/", self.runner.calls[0]["prompt"])
 
     def test_inject_label_runs_inject_route_prompt(self) -> None:
         eid = self._seed_local_entry("Manual hotfix", ["spec-change:inject"])
@@ -221,7 +226,7 @@ class DispatchRoutingTest(DispatchTestBase):
     def test_spec_change_skipped_when_apply_already_queued(self) -> None:
         # A prior run already wrote+enqueued apply.py; a second trigger for the
         # same request must not re-run the (expensive) worker.
-        from src.target_facing.specseed_target_src.scheduling.spec_change import (
+        from specseed_runtime.scheduling.spec_change import (
             enqueue_spec_change_run,
         )
 

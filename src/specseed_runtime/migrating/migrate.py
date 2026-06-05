@@ -15,9 +15,9 @@ and an idempotent ``run(storage, specseed_dir)``. A hop spans consecutive
 migration-bearing versions only - never restates older hops; the chain runs
 them one by one.
 
-Runnable directly (the installer shells out to it after refreshing the tree):
+Runnable directly against a target's storage:
 
-    python3 <specseed_dir>/specseed_target_src/migrating/migrate.py [--storage PATH]
+    python3 src/specseed_runtime/migrating/migrate.py --storage <target>/.specseed/storage
 
 Only Python stdlib is used.
 """
@@ -33,18 +33,19 @@ from typing import Optional
 def _add_package_parent_to_path() -> None:
     current = Path(__file__).resolve()
     for parent in current.parents:
-        if (parent / "src" / "target_facing").exists():
-            sys.path.insert(0, str(parent / "src" / "target_facing"))
+        if (parent / "src" / "specseed_runtime").is_dir():
+            sys.path.insert(0, str(parent / "src"))
             return
-        if (parent / "specseed_target_src").exists():
+        if (parent / "specseed_runtime").exists():
             sys.path.insert(0, str(parent))
             return
 
 
 _add_package_parent_to_path()
 
-from specseed_target_src.migrating import m_0_3_0__0_3_1
-from specseed_target_src.storage_paths import (
+from specseed_runtime.migrating import m_0_3_0__0_3_1
+from specseed_runtime.migrating import m_0_3_1__0_4_0
+from specseed_runtime.storage_paths import (
     default_specseed_dir,
     default_storage_dir,
     skill_version_file,
@@ -56,7 +57,7 @@ from specseed_target_src.storage_paths import (
 BASELINE_VERSION = "0.3.0"
 
 # Ordered hop chain, oldest first. Append new hops here; never edit shipped ones.
-MIGRATIONS = (m_0_3_0__0_3_1,)
+MIGRATIONS = (m_0_3_0__0_3_1, m_0_3_1__0_4_0)
 
 
 def parse_version(text: str) -> tuple[int, ...]:
@@ -64,21 +65,18 @@ def parse_version(text: str) -> tuple[int, ...]:
 
 
 def code_version(specseed_dir: Optional[str | Path] = None) -> str:
-    """The version of the code that is running (or installed at specseed_dir).
+    """The version of the running engine: ``<engine>/skills/specseed/version.txt``.
 
-    Falls back to the running tree's own version file when ``specseed_dir``
-    has none (e.g. migrating an explicit --storage dir that lives elsewhere).
+    ``specseed_dir`` is accepted for call compatibility but ignored. The engine is
+    never copied into a target, so a target's leftover copied ``skills/`` (from an
+    old installer) must not shadow the real running version - it would pin the
+    chain below the deletion hop and the stale code would never get cleaned up.
     """
-    candidates = []
-    if specseed_dir:
-        candidates.append(skill_version_file(specseed_dir))
-    candidates.append(skill_version_file())
-    for path in candidates:
-        try:
-            return path.read_text(encoding="utf-8").strip()
-        except OSError:
-            continue
-    raise FileNotFoundError(f"no skill version file found (looked at: {', '.join(map(str, candidates))})")
+    path = skill_version_file()
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise FileNotFoundError(f"no engine version file at {path}") from exc
 
 
 def storage_version(storage: Optional[str | Path] = None) -> str:
@@ -120,6 +118,10 @@ def run_migrations(
 
     applied: list[str] = []
     for hop in MIGRATIONS:
+        # Never migrate past the running engine. Hops are ordered, so once one
+        # lands beyond the target, every later hop does too.
+        if parse_version(hop.TO) > parse_version(target):
+            break
         if parse_version(current) >= parse_version(hop.TO):
             continue
         if parse_version(current) < parse_version(hop.FROM):

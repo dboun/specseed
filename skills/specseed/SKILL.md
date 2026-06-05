@@ -1,6 +1,6 @@
 ---
 name: specseed
-description: Non-interactive spec-change worker. Invoked by the specseed scheduler when a remote spec-change post is labeled spec-change:<route> (adopt, adapt, tweak, inject, plan-next-sprint). Edits the local spec under <specseed_dir>/spec/ and emits a Python script that projects the matching work-breakdown changes onto the remote tracker posts.
+description: Non-interactive spec-change worker (form-free; clarifies via the questions protocol). In runner mode the specseed scheduler invokes it when a remote post is labeled spec-change:<route> (adopt, adapt, tweak, inject, plan-next-sprint); it edits the local spec under <specseed_dir>/spec/ and emits a Python script projecting the work-breakdown onto the remote tracker. Also runs in plain Claude chat (web/app) with no runner: use it to draft or evolve a project spec + work breakdown from the conversation and download the artifacts as a zip to add to a repo or resume in Claude Code.
 ---
 
 # specseed (spec-change worker)
@@ -21,11 +21,30 @@ It does two things, every time, though some routes may have no spec-file edits:
 It never runs the script itself, never touches git or branches, and never edits
 application code (adopt *reads* code; it never writes it).
 
-> **Path mapping.** Installed, the specseed tree lives under `<repo>/<specseed_dir>/`:
-> `<specseed_dir>/spec/`, `<specseed_dir>/storage/`, `<specseed_dir>/specseed_target_src/`,
-> `<specseed_dir>/skills/specseed/`. In this development repo those map to
-> `src/target_facing/{spec,storage,specseed_target_src,skills}`. Paths below use the
-> installed `<specseed_dir>/...` form.
+## Mode (runner vs chat)
+
+Two ways in. **Runner mode is the default and the rest of this doc assumes it.**
+
+- **Runner mode** (the scheduler invokes you): a `spec-change:<route>` label + a
+  request id are handed in, the runtime is present. Read the local cache, edit
+  `spec/`, emit `plan.json` + `apply.py`, enqueue, stop. Everything below applies.
+- **Chat mode** (a human invokes you in plain Claude web/app, no scheduler, no
+  runtime): inputs come from the conversation, outputs are bundled into one
+  **downloadable zip** offered early and refreshed — never dumped in output — so
+  the human can drop them into a repo or resume in Claude Code. No enqueue, no
+  `apply.py` run. See `references/chat-mode.md`. **Do not let chat-mode steps leak
+  into runner mode.**
+
+Both modes stay non-interactive form-wise: no popup forms. When you must clarify,
+use the questions protocol (runner: async comment; chat: live questions).
+
+> **Path mapping.** The engine is never copied into the target. A target holds only
+> `<specseed_dir>/spec/`, `<specseed_dir>/storage/`, and a version marker (default
+> `<specseed_dir>` = `<target>/.specseed`). The engine code (`specseed_runtime/`,
+> `skills/`) lives in the engine repo at `<engine>/src/specseed_runtime` and
+> `<engine>/skills`. In this development repo the target IS this repo, so
+> `<specseed_dir>/{spec,storage}` map to repo-root `{spec,storage}/`. Paths below use
+> the `<specseed_dir>/...` form for target data and `specseed_runtime/...` for engine code.
 
 ## What this skill is NOT
 
@@ -78,10 +97,11 @@ Read `references/spec-change-protocol.md` first. The shape is always:
    renders from the work posts. A status swap is `remove_entry_label` then
    `add_entry_label`. See the protocol for the canonical header and the
    per-provider notes (GitHub cannot hard-delete issues, so close instead).
-4. **Enqueue it.** Call `scheduling/spec_change.enqueue_spec_change_run(...)`.
-   The scheduler (`specseed_target_src/executing/`) drains the queue and runs the
+4. **Enqueue it (runner mode).** Call `scheduling/spec_change.enqueue_spec_change_run(...)`.
+   The scheduler (`specseed_runtime/executing/`) drains the queue and runs the
    script as a permission-gated subprocess. Your job ends at the enqueue: do not
-   run the script yourself.
+   run the script yourself. **Chat mode:** skip the enqueue — bundle the artifacts
+   into a zip and offer it for download instead (`references/chat-mode.md`).
 
 ## Doc style (spec prose only)
 
@@ -110,10 +130,11 @@ the issue to `todo`. This is a status gate, not a promise. It is **not**
 epic-gating. Full contract + helpers in `references/spec-change-protocol.md`
 ("Approval gate (APR-NNNN)").
 
-## Async clarification (the only "question" path)
+## Async clarification (the question path in runner mode)
 
-This worker cannot interview a human live. When a request is too ambiguous to
-proceed safely:
+In runner mode this worker cannot interview a human live (chat mode asks live via
+the questions protocol — `references/chat-mode.md`). When a request is too
+ambiguous to proceed safely:
 
 1. Make the spec edits you ARE confident about (if any), or none.
 2. In `apply.py`, the remote action is a **comment** on the spec-change post
@@ -153,4 +174,4 @@ here. You do NOT evaluate or enforce them. But when an issue you spec obviously
 demands a gated action (a deploy, a destructive migration, a new dependency), say so
 in the issue body so the human reading the plan is not surprised when the impl agent
 parks for approval. The runtime renders the live policy into the impl prompt; the
-authoritative list lives in `specseed_target_src/executing/permissions.py`.
+authoritative list lives in `specseed_runtime/executing/permissions.py`.

@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.target_facing.specseed_target_src.executing.control import (
+from specseed_runtime.executing.control import (
     CONTROL_TITLE,
     ControlChannel,
     ControlCommand,
@@ -17,8 +17,8 @@ from src.target_facing.specseed_target_src.executing.control import (
     parse_control_commands,
     render_status,
 )
-from src.target_facing.specseed_target_src.executing.permissions import Permissions
-from src.target_facing.specseed_target_src.tracking.tracking_remote_local import (
+from specseed_runtime.executing.permissions import Permissions
+from specseed_runtime.tracking.tracking_remote_local import (
     TrackingRemoteLocal,
 )
 

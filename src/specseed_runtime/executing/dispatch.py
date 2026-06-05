@@ -27,15 +27,16 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Optional
 
-from specseed_target_src.executing import advance
-from specseed_target_src.executing import context as context_mod
-from specseed_target_src.executing import platform_log
-from specseed_target_src.executing.context import ExecutionContext
-from specseed_target_src.executing import prompts
-from specseed_target_src.scheduling.spec_change import SPEC_CHANGE_ACTION
-from specseed_target_src.state_machines.base import evaluate_entity_state
+from specseed_runtime.executing import advance
+from specseed_runtime.executing import context as context_mod
+from specseed_runtime.executing import platform_log
+from specseed_runtime.executing.context import ExecutionContext
+from specseed_runtime.executing import prompts
+from specseed_runtime.scheduling.spec_change import SPEC_CHANGE_ACTION
+from specseed_runtime.state_machines.base import evaluate_entity_state
 
 
 # How often the spec-change subprocess wait loop checks cancel/timeout.
@@ -205,10 +206,11 @@ def run_spec_change_script(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
     """Run a generated spec-change ``apply.py`` as a gated subprocess.
 
     Gated by ``ctx.permissions.can_run_spec_change()``. The script imports
-    ``src.target_facing...`` so it runs with ``cwd=ctx.repo_root`` and
-    ``PYTHONPATH`` pointed at the repo root; the script path is the absolute
-    join of the payload's ``dir`` + ``script``. ``ctx.cancel`` and
-    ``ctx.agent_timeout_s`` are honored via a terminate->wait->kill loop.
+    ``specseed_runtime...`` (the engine, which is NOT in the target repo), so it
+    runs with ``cwd=ctx.repo_root`` and ``PYTHONPATH`` carrying the engine's
+    ``src/`` plus the repo root; the script path is the absolute join of the
+    payload's ``dir`` + ``script``. ``ctx.cancel`` and ``ctx.agent_timeout_s``
+    are honored via a terminate->wait->kill loop.
     """
     if not ctx.permissions.can_run_spec_change():
         platform_log.log_event(
@@ -240,8 +242,13 @@ def run_spec_change_script(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
 
     env = dict(os.environ)
     repo_root = str(ctx.repo_root)
+    # The engine is not copied into the target, so the generated apply.py finds
+    # ``specseed_runtime`` via the engine's own src/ dir (this file: executing/ ->
+    # specseed_runtime/ -> src/). Repo root stays on the path for target-local imports.
+    engine_src = str(Path(__file__).resolve().parents[2])
     existing = env.get("PYTHONPATH")
-    env["PYTHONPATH"] = repo_root if not existing else os.pathsep.join([repo_root, existing])
+    parts = [engine_src, repo_root] + ([existing] if existing else [])
+    env["PYTHONPATH"] = os.pathsep.join(parts)
 
     argv = [sys.executable, script_path]
     start = time.monotonic()

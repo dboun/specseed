@@ -10,23 +10,23 @@ import threading
 import unittest
 from pathlib import Path
 
-from src.target_facing.specseed_target_src.db.database import Database
-from src.target_facing.specseed_target_src.executing.agent_runner import (
+from specseed_runtime.db.database import Database
+from specseed_runtime.executing.agent_runner import (
     AgentResult,
     FakeAgentRunner,
 )
-from src.target_facing.specseed_target_src.executing import advance
-from src.target_facing.specseed_target_src.executing.advance import (
+from specseed_runtime.executing import advance
+from specseed_runtime.executing.advance import (
     REVIEW_MARKER,
     parse_review,
 )
-from src.target_facing.specseed_target_src.executing.context import ExecutionContext
-from src.target_facing.specseed_target_src.executing.dispatch import dispatch
-from src.target_facing.specseed_target_src.executing.permissions import Permissions
-from src.target_facing.specseed_target_src.entities.entity_base import Entity
-from src.target_facing.specseed_target_src.entities import issue as _issue  # noqa: F401
-from src.target_facing.specseed_target_src.tracking.tracking_local import TrackingLocal
-from src.target_facing.specseed_target_src.tracking.tracking_remote_local import (
+from specseed_runtime.executing.context import ExecutionContext
+from specseed_runtime.executing.dispatch import dispatch
+from specseed_runtime.executing.permissions import Permissions
+from specseed_runtime.entities.entity_base import Entity
+from specseed_runtime.entities import issue as _issue  # noqa: F401
+from specseed_runtime.tracking.tracking_local import TrackingLocal
+from specseed_runtime.tracking.tracking_remote_local import (
     TrackingRemoteLocal,
 )
 
@@ -280,28 +280,28 @@ class ApprovalGateTest(_Base):
 
 
 def _load(ctx, eid):
-    from src.target_facing.specseed_target_src.executing.context import load_entity
+    from specseed_runtime.executing.context import load_entity
     return load_entity(ctx, str(eid))
 
 
 class RelationshipsParseTest(unittest.TestCase):
     def test_parent_links(self) -> None:
-        from src.target_facing.specseed_target_src.executing import relationships as r
+        from specseed_runtime.executing import relationships as r
         self.assertEqual(r.parent_id("## Links\nTicket: #41\nDepends on: #9", "ticket"), "41")
         self.assertEqual(r.parent_id("Epic: #12  Issues: #1", "epic"), "12")
         self.assertIsNone(r.parent_id("no links here", "epic"))
 
     def test_child_links_inline(self) -> None:
-        from src.target_facing.specseed_target_src.executing import relationships as r
+        from specseed_runtime.executing import relationships as r
         self.assertEqual(r.child_ids("Issues: #8, #9, #10", "issues"), ["8", "9", "10"])
 
     def test_child_links_section(self) -> None:
-        from src.target_facing.specseed_target_src.executing import relationships as r
+        from specseed_runtime.executing import relationships as r
         body = "# Epic\n\n## Tickets\n#7\n#8\n\n## Goal\nstuff #99"
         self.assertEqual(r.child_ids(body, "tickets"), ["7", "8"])
 
     def test_depends_on_not_mistaken_for_children(self) -> None:
-        from src.target_facing.specseed_target_src.executing import relationships as r
+        from specseed_runtime.executing import relationships as r
         self.assertEqual(r.child_ids("Ticket: #2\nDepends on: #5", "issues"), [])
 
 

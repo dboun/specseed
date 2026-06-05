@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-from specseed_target_src.executing import platform_log
+from specseed_runtime.executing import platform_log
 
 
 # Hard cap on a single agent run. The scheduler also enforces this at the thread
@@ -93,9 +93,15 @@ class SubprocessAgentRunner(AgentRunner):
         raise NotImplementedError
 
     def _child_env(self) -> Optional[dict[str, str]]:
-        if not self.env_overrides:
-            return None
-        return {**os.environ, **self.env_overrides}
+        env = {**os.environ, **self.env_overrides}
+        # The agent runs in the target (cwd=repo_root) but may execute python that
+        # imports the engine (e.g. enqueue a spec-change run). The engine is not in
+        # the target, so put its src/ on PYTHONPATH (this file: executing/ ->
+        # specseed_runtime/ -> src/).
+        engine_src = str(Path(__file__).resolve().parents[2])
+        existing = env.get("PYTHONPATH")
+        env["PYTHONPATH"] = engine_src if not existing else os.pathsep.join([engine_src, existing])
+        return env
 
     def run(
         self,

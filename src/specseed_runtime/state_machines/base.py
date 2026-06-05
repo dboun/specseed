@@ -12,8 +12,8 @@ from dataclasses import asdict, dataclass, field
 import re
 from typing import Any, Iterable, Optional
 
-from specseed_target_src.entities.entity_base import Entity
-from specseed_target_src.state_machines.approvals import requested_apr_ids
+from specseed_runtime.entities.entity_base import Entity
+from specseed_runtime.state_machines.approvals import requested_apr_ids
 
 
 DEFAULT_STATE = "todo"

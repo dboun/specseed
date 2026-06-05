@@ -3,9 +3,13 @@ storage_paths.py - the single seam for where generated runtime data lives.
 
 Everything specseed generates at runtime (sqlite databases, config files, the
 storage version marker, logs) belongs in ``<specseed_dir>/storage/`` - flat, no
-subdirs. The installer wipes and re-copies the runtime dirs on every re-run and
-preserves ONLY ``storage/``, so a data file defaulting anywhere else is a data
-file that dies on upgrade. Modules derive their default paths from here.
+subdirs. Code never lives there: a run reads/writes only the target's
+``<specseed_dir>/`` (storage, spec, version marker) and never copies the engine
+in. Modules derive their default paths from here.
+
+``default_specseed_dir`` is the dev default only: this code repo's root, where
+``storage/`` and ``skills/`` sit during development. Real runs against a target
+pass storage in explicitly (``<target>/<specseed_dir>/storage``).
 
 Only Python stdlib is used.
 """
@@ -16,12 +20,11 @@ from pathlib import Path
 
 
 def default_specseed_dir() -> Path:
-    """The dir holding specseed_target_src/ + skills/ + storage/.
+    """Dev default: this code repo's root (holds skills/ + dev storage/).
 
-    ``<repo>/.specseed`` when installed; ``src/target_facing`` in the dev repo.
+    storage_paths.py -> specseed_runtime/ -> src/ -> repo root.
     """
-    # specseed_target_src/ -> specseed dir
-    return Path(__file__).resolve().parents[1]
+    return Path(__file__).resolve().parents[2]
 
 
 def default_storage_dir() -> Path:

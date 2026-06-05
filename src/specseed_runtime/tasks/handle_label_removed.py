@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any, Optional
 
-from specseed_target_src.tasks.task_base import Task, entity_ref_for_label
+from specseed_runtime.tasks.task_base import Task, entity_ref_for_label
 
 
 @dataclass

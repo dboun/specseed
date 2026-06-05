@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
-from specseed_target_src.tracking.comment import TrackingComment
-from specseed_target_src.tracking.post import TrackingLabel
+from specseed_runtime.tracking.comment import TrackingComment
+from specseed_runtime.tracking.post import TrackingLabel
 
 
 @dataclass(frozen=True)

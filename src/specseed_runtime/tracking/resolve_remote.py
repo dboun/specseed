@@ -28,12 +28,12 @@ import json
 from pathlib import Path
 from typing import Optional
 
-from specseed_target_src.storage_paths import default_storage_dir, storage_db_path
-from specseed_target_src.tracking.tracking_base import TrackingBase
-from specseed_target_src.tracking.tracking_local import TrackingLocal
-from specseed_target_src.tracking.tracking_remote_github import TrackingRemoteGitHub
-from specseed_target_src.tracking.tracking_remote_gitlab import TrackingRemoteGitLab
-from specseed_target_src.tracking.tracking_remote_local import TrackingRemoteLocal
+from specseed_runtime.storage_paths import default_storage_dir, storage_db_path
+from specseed_runtime.tracking.tracking_base import TrackingBase
+from specseed_runtime.tracking.tracking_local import TrackingLocal
+from specseed_runtime.tracking.tracking_remote_github import TrackingRemoteGitHub
+from specseed_runtime.tracking.tracking_remote_gitlab import TrackingRemoteGitLab
+from specseed_runtime.tracking.tracking_remote_local import TrackingRemoteLocal
 
 
 def _resolve_storage(storage: Optional[str | Path]) -> Path:

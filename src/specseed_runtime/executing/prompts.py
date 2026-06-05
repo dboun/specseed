@@ -6,8 +6,8 @@ Permissions and approvals are decided programmatically (see ``permissions.py`` a
 the state machine), never inside these prompts.
 
 Headless ``claude -p`` drops user-invoked slash commands, so prompts are plain
-task descriptions that point the agent at the installed skill docs rather than
-``/specseed`` invocations.
+task descriptions that point the agent at the engine's skill docs (an absolute
+path - the engine is not in the target) rather than ``/specseed`` invocations.
 
 Only Python stdlib is used.
 """
@@ -17,10 +17,18 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from specseed_target_src.executing.permissions import (
+from specseed_runtime.executing.permissions import (
     AGENT_CATEGORIES,
     Permissions,
 )
+from specseed_runtime.storage_paths import default_specseed_dir
+
+
+def _engine_skill_dir() -> str:
+    """Absolute path to the engine's skill docs - they live with the engine, not
+    in the target. The agent runs in the target (cwd=repo_root), so it needs the
+    full path to read SKILL.md / routes."""
+    return str(default_specseed_dir() / "skills" / "specseed")
 
 
 def _title(entity: Any) -> str:
@@ -130,10 +138,11 @@ def _specseed_dir(ctx: Any) -> str:
 def build_spec_change_prompt(route: str, request_id: Any, entity: Any, ctx: Any) -> str:
     """Prompt for the specseed spec-change worker (one route, one request)."""
     specseed_dir = _specseed_dir(ctx)
+    skill_dir = _engine_skill_dir()
     return (
         "You are the specseed spec-change worker. Read the skill documentation at "
-        f"{specseed_dir}/skills/specseed/SKILL.md and the matching route under "
-        f"{specseed_dir}/skills/specseed/routes/{route}.md, then run the '{route}' route "
+        f"{skill_dir}/SKILL.md and the matching route under "
+        f"{skill_dir}/routes/{route}.md, then run the '{route}' route "
         f"for spec-change request {request_id} (remote post titled {_title(entity)!r}).\n\n"
         "Read context from the LOCAL tracker only (resolve_local / tracking_local.db); "
         f"never poll the remote to plan. Edit the spec under {specseed_dir}/spec/ as the route "
