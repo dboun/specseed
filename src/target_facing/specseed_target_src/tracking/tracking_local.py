@@ -41,9 +41,10 @@ from specseed_target_src.tracking.pull_request import (
     TrackingPullRequestOpenState,
     TrackingPullRequestSummary,
 )
+from specseed_target_src.storage_paths import storage_db_path
 
 
-DEFAULT_DB_PATH = Path(__file__).with_name("tracking_local.db")
+DEFAULT_DB_PATH = storage_db_path("tracking_local.db")
 
 
 _STAMP_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
@@ -92,6 +93,7 @@ class TrackingLocal(TrackingBase):
 
     def __init__(self, db_path: str | Path = DEFAULT_DB_PATH, author: str = "local") -> None:
         self.db_path = Path(db_path)
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.author = author
         self._init_db()
 

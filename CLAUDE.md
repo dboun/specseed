@@ -97,6 +97,33 @@ tests/integration/python/            # opt-in integration tests (marker: integra
   no tests involving actual remotes in `tests/*/python`.)
 - Tests MUST NOT invoke an agent or consume tokens.
 
+## Versioning, storage & migrations
+
+- Version: `version.txt` (repo root) + `src/target_facing/skills/specseed/version.txt`. Same value,
+  bump BOTH. Format `X.Y.Z`. Installed copy lands at `<repo>/.specseed/skills/specseed/version.txt` =
+  the target's code version.
+- Only user bumps `X`. Bump `Y` for anything that breaks without a migration - the proverbial API:
+  storage layout, db schema, config keys, script CLI/function contracts. Bump `Z` for normal changes;
+  skip only for same-change follow-up.
+- **ALL generated runtime data lives flat in `<specseed_dir>/storage/`** (dbs, configuration.json,
+  remote.json, token, logs, version.txt marker). Never module-adjacent - installer wipes runtime dirs
+  on re-run, preserves only storage/. Default paths come from `specseed_target_src/storage_paths.py`;
+  new data files route through it.
+- `storage/version.txt` = what version last shaped storage. Code version vs marker diff drives
+  migrations. Pre-0.3.0 storage unsupported (missing marker = 0.3.0).
+- Y/X bump that touches storage shape -> author a hop `specseed_target_src/migrating/m_<from>__<to>.py`
+  (`FROM`/`TO` consts + `run(storage, specseed_dir)`), append to `MIGRATIONS` in `migrating/migrate.py`.
+  One hop spans consecutive migration-bearing versions only; hops chain, run one by one, never restate
+  older hops.
+- Migrations idempotent: safe twice, preserve user-custom values, never clobber an existing dest,
+  only rewrite old/default-shaped data. May delete old files when clearly superseded.
+- Entrypoints that migrate-before-read: `executing/run.py` (startup), `configuring/configure.py`
+  (main), installer `src/specseed.py` (rescues stray `*.db` pre-wipe, shells out to the installed
+  `migrating/migrate.py` post-copy).
+- Hop tests: old-shape fixture -> `run_migrations()` -> assert upgraded files + marker; run twice for
+  idempotency. Copy the pattern in `tests/unit/python/test_migrating.py`. Verify each entrypoint
+  triggers.
+
 ## Conventions
 
 - Every tracking op returns `TrackingResult(ok, error, data)` - check `ok`, fail loud. Never raise across

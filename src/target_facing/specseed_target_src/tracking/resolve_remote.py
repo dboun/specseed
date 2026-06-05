@@ -28,18 +28,12 @@ import json
 from pathlib import Path
 from typing import Optional
 
+from specseed_target_src.storage_paths import default_storage_dir, storage_db_path
 from specseed_target_src.tracking.tracking_base import TrackingBase
 from specseed_target_src.tracking.tracking_local import TrackingLocal
 from specseed_target_src.tracking.tracking_remote_github import TrackingRemoteGitHub
 from specseed_target_src.tracking.tracking_remote_gitlab import TrackingRemoteGitLab
 from specseed_target_src.tracking.tracking_remote_local import TrackingRemoteLocal
-
-
-# storage is `../storage` relative to specseed_target_src (i.e. <specseed_dir>/storage/),
-# matching configuring/configure.py:default_storage_dir().
-def default_storage_dir() -> Path:
-    # tracking/ -> specseed_target_src/ -> specseed dir + storage/
-    return Path(__file__).resolve().parents[2] / "storage"
 
 
 def _resolve_storage(storage: Optional[str | Path]) -> Path:
@@ -86,7 +80,7 @@ def resolve_remote(storage: Optional[str | Path] = None) -> TrackingBase:
     remote_state = load_remote_state(storage)
 
     if not remote_state.get("enabled"):
-        return TrackingRemoteLocal()
+        return TrackingRemoteLocal(db_path=storage_db_path("tracking_remote_local.db", storage))
 
     provider = remote_state.get("provider")
     repo = remote_state.get("repo")
@@ -104,8 +98,14 @@ def resolve_remote(storage: Optional[str | Path] = None) -> TrackingBase:
     raise ValueError(f"unsupported remote provider: {provider!r}")
 
 
-def resolve_local(db_path: Optional[str | Path] = None) -> TrackingLocal:
-    """Build the local read cache. Query this for planning data, not the remote."""
+def resolve_local(
+    db_path: Optional[str | Path] = None,
+    storage: Optional[str | Path] = None,
+) -> TrackingLocal:
+    """Build the local read cache. Query this for planning data, not the remote.
+
+    ``db_path`` wins; otherwise the db lives in ``storage`` (default storage dir).
+    """
     if db_path is not None:
         return TrackingLocal(db_path=db_path)
-    return TrackingLocal()
+    return TrackingLocal(db_path=storage_db_path("tracking_local.db", storage))

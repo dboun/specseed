@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import tempfile
@@ -196,6 +197,39 @@ class ConfigureRunnerChainsTest(unittest.TestCase):
         coerced = configure._coerce_runner(existing)
         self.assertIn("implementation", coerced)
         self.assertNotIn("bogus", coerced)
+
+    def test_default_config_has_no_version_key(self) -> None:
+        self.assertNotIn("version", configure.default_config())
+
+    def test_load_config_drops_legacy_version_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = Path(tmp) / "storage"
+            storage.mkdir(parents=True)
+            (storage / "configuration.json").write_text(
+                json.dumps({"version": 1, "dev_branch": "custom"}), "utf-8"
+            )
+            cfg = configure.load_config(storage)
+            self.assertNotIn("version", cfg)
+            self.assertEqual(cfg["dev_branch"], "custom")
+
+    def test_main_migrates_storage_before_show(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = Path(tmp) / "storage"
+            storage.mkdir(parents=True)
+            (storage / "configuration.json").write_text(
+                json.dumps({"version": 1, "dev_branch": "custom"}), "utf-8"
+            )
+
+            with mock.patch("sys.stdout", new=io.StringIO()):
+                rc = configure.main(["--storage", str(storage), "--show"])
+
+            self.assertEqual(rc, 0)
+            on_disk = json.loads((storage / "configuration.json").read_text("utf-8"))
+            self.assertNotIn("version", on_disk)
+            self.assertEqual(on_disk["dev_branch"], "custom")
+            # marker fast-forwarded to the running code's version
+            marker = (storage / "version.txt").read_text("utf-8").strip()
+            self.assertRegex(marker, r"^\d+\.\d+\.\d+$")
 
     def test_load_config_migrates_legacy_runner_on_disk(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

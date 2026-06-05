@@ -247,3 +247,7 @@ configuration.json
 .playground_mine/
 
 src/target_facing/storage/
+
+# Generated runtime data: everything lands flat in the storage dir.
+.specseed/
+storage/

@@ -101,7 +101,7 @@ class Scheduler:
         self._remote = remote
         self._local = local
         self._remote_factory = remote_factory or (lambda: resolve_remote(self.storage))
-        self._local_factory = local_factory or (lambda: resolve_local())
+        self._local_factory = local_factory or (lambda: resolve_local(storage=self.storage))
         self._control = control_channel
 
         self._state = PAUSED

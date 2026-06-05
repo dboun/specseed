@@ -16,10 +16,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from specseed_target_src.storage_paths import storage_db_path
 from specseed_target_src.tracking.tracking_local import TrackingLocal
 
 
-DEFAULT_DB_PATH = Path(__file__).with_name("tracking_remote_local.db")
+DEFAULT_DB_PATH = storage_db_path("tracking_remote_local.db")
 
 
 class TrackingRemoteLocal(TrackingLocal):

@@ -35,8 +35,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
+from specseed_target_src.storage_paths import storage_db_path
 
-DEFAULT_DB_PATH = Path(__file__).with_name("specseed.db")
+
+DEFAULT_DB_PATH = storage_db_path("specseed.db")
 
 STATUS_PENDING = "pending"
 STATUS_IN_PROGRESS = "in_progress"
@@ -67,6 +69,7 @@ class Database:
     # ------------------------------------------------------------------ #
     def __init__(self, db_path: str | Path = DEFAULT_DB_PATH) -> None:
         self.db_path = Path(db_path)
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
         # Serializes multi-statement operations (e.g. claim) within this process.
         self._lock = threading.RLock()
         self._init_db()

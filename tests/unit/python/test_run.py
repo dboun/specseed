@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from src.target_facing.specseed_target_src.db.database import Database
 from src.target_facing.specseed_target_src.executing import run
 from src.target_facing.specseed_target_src.tracking.populate_defaults import (
     FIRST_ADAPT_DRAFT_TITLE,
@@ -79,6 +80,31 @@ class EnsureRemoteSeededTest(unittest.TestCase):
             again = run.ensure_remote_seeded(self.storage, config)
         self.assertIsNotNone(again)
         self.assertEqual(resolve.call_count, 1)
+
+
+class BuildSchedulerMigratesStorageTest(unittest.TestCase):
+    def test_build_scheduler_migrates_storage_first(self) -> None:
+        """The launcher's storage migrates before config/db reads."""
+        with tempfile.TemporaryDirectory() as tmp:
+            specseed_dir = Path(tmp) / ".specseed"
+            version_file = specseed_dir / "skills" / "specseed" / "version.txt"
+            version_file.parent.mkdir(parents=True)
+            version_file.write_text("0.3.1\n", encoding="utf-8")
+            storage = specseed_dir / "storage"
+            stray = specseed_dir / "specseed_target_src" / "db" / "specseed.db"
+            stray.parent.mkdir(parents=True)
+            stray.write_bytes(b"queue-bytes")
+
+            scheduler = run.build_scheduler(
+                storage=storage,
+                db=Database(db_path=Path(tmp) / "queue.db"),
+                runner=mock.Mock(),
+            )
+
+            self.assertIsNotNone(scheduler)
+            self.assertEqual((storage / "specseed.db").read_bytes(), b"queue-bytes")
+            self.assertFalse(stray.exists())
+            self.assertEqual((storage / "version.txt").read_text(encoding="utf-8").strip(), "0.3.1")
 
 
 if __name__ == "__main__":

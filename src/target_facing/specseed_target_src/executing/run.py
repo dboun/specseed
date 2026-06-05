@@ -48,6 +48,8 @@ from specseed_target_src.executing.agent_runner import (
 )
 from specseed_target_src.executing import platform_log
 from specseed_target_src.executing.scheduler import Scheduler
+from specseed_target_src.migrating.migrate import run_migrations
+from specseed_target_src.storage_paths import storage_db_path
 from specseed_target_src.tracking.populate_defaults import populate_defaults
 from specseed_target_src.tracking.resolve_remote import (
     default_storage_dir,
@@ -67,6 +69,10 @@ def build_scheduler(
 ) -> Scheduler:
     storage_dir = Path(storage) if storage else default_storage_dir()
     platform_log.configure(storage_dir)
+    # Storage migrates BEFORE anything reads it (config, queue db, trackers).
+    applied = run_migrations(storage=storage_dir)
+    if applied:
+        platform_log.log_event("storage_migrated", storage=str(storage_dir), applied=applied)
     config = load_config(storage_dir)
     platform_log.log_event(
         "scheduler_build",
@@ -83,7 +89,7 @@ def build_scheduler(
     elif not isinstance(runner, RunnerChains):
         runner = RunnerChains.single(runner)
     return Scheduler(
-        db=db or Database.instance(),
+        db=db or Database.instance(storage_db_path("specseed.db", storage_dir)),
         runner=runner,
         config=config,
         storage=storage_dir,
@@ -174,6 +180,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         once=args.once,
     )
     try:
+        applied = run_migrations(storage=storage_dir)
+        if applied:
+            platform_log.log_event("storage_migrated", storage=str(storage_dir), applied=applied)
+            print(f"storage migrated (applied: {', '.join(applied)})")
         seeded = ensure_remote_seeded(storage_dir, load_remote_state(storage_dir))
         if seeded is not None:
             posts = seeded.get("default_posts", {})

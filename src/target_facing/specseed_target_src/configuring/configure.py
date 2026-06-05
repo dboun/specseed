@@ -13,6 +13,10 @@ storage dir below the configured specseed directory:
   token_remote.txt     The raw remote access token, on its own. Secret — the script
                        appends it to storage/.gitignore so it never gets committed.
 
+storage/ also carries the sqlite databases and version.txt (the storage version
+marker). This script runs pending migrations (migrating/migrate.py) before it
+reads or writes anything there.
+
 Remote is the source of truth in this build: the runner polls it on an interval
 (default 45s) and reacts to what changed. So the remote repo + access token live
 here, and every action the agent could take against git/remote is gated by an
@@ -38,7 +42,22 @@ import subprocess
 import sys
 from pathlib import Path
 
-CONFIG_VERSION = 1
+
+def _add_package_parent_to_path():
+    current = Path(__file__).resolve()
+    for parent in current.parents:
+        if (parent / "src" / "target_facing").exists():
+            sys.path.insert(0, str(parent / "src" / "target_facing"))
+            return
+        if (parent / "specseed_target_src").exists():
+            sys.path.insert(0, str(parent))
+            return
+
+
+_add_package_parent_to_path()
+
+from specseed_target_src.migrating.migrate import run_migrations
+
 DEFAULT_POLL_INTERVAL = 45
 DEFAULT_SPECSEED_DIR = ".specseed"
 DEFAULT_DEV_BRANCH = "main"
@@ -252,7 +271,6 @@ def default_agent_gates():
 
 def default_config():
     return {
-        "version": CONFIG_VERSION,
         "specseed_dir": DEFAULT_SPECSEED_DIR,
         # The integration branch work merges into. "dev branch" = where changes go;
         # default main (or master if that is the repo's branch).
@@ -356,8 +374,9 @@ def load_config(storage):
         return cfg
 
     for key, value in existing.items():
-        # legacy "backend" lived here before it moved to remote.json; drop it.
-        if key not in ("backend", "approvals", "permissions", "runner", "review"):
+        # legacy "backend" lived here before it moved to remote.json; legacy
+        # "version" before storage/version.txt became the marker. Drop both.
+        if key not in ("backend", "version", "approvals", "permissions", "runner", "review"):
             cfg[key] = value
 
     coerced = _coerce_runner(existing.get("runner"))
@@ -901,6 +920,8 @@ def main(argv=None):
     args = ap.parse_args(list(sys.argv[1:] if argv is None else argv))
 
     storage = Path(args.storage) if args.storage else default_storage_dir()
+    # Storage migrates BEFORE this script reads or rewrites it.
+    run_migrations(storage=storage)
     if args.show:
         return run_show(storage)
     return run_interactive(storage, explicit_storage=args.storage is not None)
