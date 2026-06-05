@@ -1,3 +1,0 @@
-"probably install somewhere in user dir (.local/share/specseed or something like that also in mac) and add symlink to ~/.local/bin or something like that. Sth that is in PATH. If no clear solution then add the .local/share/specseed or w/e to PATH.
-we only care about ubuntu, linux mint, debian, maybe fedora and arch. Not sure about how to do on mac but it should def work.
---uninstall should be supported."
