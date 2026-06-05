@@ -7,7 +7,8 @@ export function createMonitor({ repo, ctx, refreshTopbar }) {
   let data = null;
   let container = null;
   let timer = null;
-  let busy = false;
+  let busy = false; // a runner action is mid-flight (suspend polling)
+  let polling = false; // a poll fetch is in flight (no overlap)
 
   async function load() {
     data = await api.monitor(repo.id);
@@ -62,7 +63,7 @@ export function createMonitor({ repo, ctx, refreshTopbar }) {
     const tasks = data?.queue || [];
     if (!tasks.length) return `<div class="empty-state">Queue is empty.</div>`;
     return `
-      <table class="table">
+      <div class="table-wrap"><table class="table">
         <thead><tr><th>#</th><th>action</th><th>post</th><th>status</th><th>att.</th><th>last</th></tr></thead>
         <tbody>
           ${tasks
@@ -79,7 +80,7 @@ export function createMonitor({ repo, ctx, refreshTopbar }) {
             )
             .join("")}
         </tbody>
-      </table>`;
+      </table></div>`;
   }
 
   function errorsList() {
@@ -165,23 +166,35 @@ export function createMonitor({ repo, ctx, refreshTopbar }) {
 
   function paint() {
     const slot = container?.querySelector("[data-monitor-body]");
-    if (slot) slot.innerHTML = body();
+    if (!slot) return;
+    // preserve the log scroll position across a repaint
+    const scroll = slot.querySelector(".log")?.scrollTop ?? 0;
+    slot.innerHTML = body();
+    const log = slot.querySelector(".log");
+    if (log) log.scrollTop = scroll;
   }
 
-  async function refresh() {
+  // Single-flight: never let a slow poll stack behind another (no overlap,
+  // out-of-order paints, or unbounded fetch backlog).
+  async function refresh(silent = false) {
+    if (polling) return;
+    polling = true;
     try {
       await load();
       paint();
       refreshTopbar?.();
     } catch (err) {
-      ctx.onError(err);
+      if (!silent) ctx.onError(err); // background polls fail quietly (no toast spam)
+    } finally {
+      polling = false;
     }
   }
 
   function afterRender(node) {
     container = node;
+    // Poll only when this tab is foregrounded and no runner action is mid-flight.
     timer = setInterval(() => {
-      if (!busy) refresh();
+      if (!busy && !document.hidden) refresh(true);
     }, POLL_MS);
   }
 

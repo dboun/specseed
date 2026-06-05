@@ -415,5 +415,33 @@ export function createTracker({ repo, ctx }) {
     );
   }
 
-  return { load, html, handleClick, handleSubmit, dispose() {} };
+  // Auto-refresh the list ONLY when it is safe: no drawer open (would clobber a
+  // viewed/edited post), no modal open (new-post form), and the tab is visible.
+  // Single-flight, and it repaints just the list + quick toggles — never the
+  // filter bar — so search text, open dropdowns and scroll are untouched.
+  let timer = null;
+  let polling = false;
+  async function autoRefresh() {
+    if (state.external || polling || state.selectedId) return;
+    if (document.querySelector("[data-modal]") || document.hidden) return;
+    polling = true;
+    try {
+      await reloadPosts();
+      repaintList();
+    } catch {
+      /* transient; next tick retries */
+    } finally {
+      polling = false;
+    }
+  }
+
+  function afterRender() {
+    if (!state.external) timer = setInterval(autoRefresh, 5000);
+  }
+
+  function dispose() {
+    if (timer) clearInterval(timer);
+  }
+
+  return { load, html, afterRender, handleClick, handleSubmit, dispose };
 }

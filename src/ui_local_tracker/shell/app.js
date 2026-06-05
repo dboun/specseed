@@ -38,6 +38,7 @@ const ctx = {
       localStorage.setItem("ss.tab", tab);
     }
     await refreshRepos();
+    writeHash();
     render();
   },
 };
@@ -47,6 +48,21 @@ async function refreshRepos() {
   if (!currentRepo() && state.repos.length) {
     state.currentId = state.repos[state.repos.length - 1].id;
   }
+}
+
+function applyHash() {
+  // #<repoId>/<tab> — deep-linkable, shareable, back-button friendly.
+  const raw = decodeURIComponent(location.hash.replace(/^#\/?/, ""));
+  if (!raw) return;
+  const [repoId, tab] = raw.split("/");
+  if (repoId && state.repos.some((r) => r.id === repoId)) state.currentId = repoId;
+  if (TABS.some((t) => t.id === tab)) state.tab = tab;
+}
+
+function writeHash() {
+  if (!state.currentId) return;
+  const next = `#${state.currentId}/${state.tab}`;
+  if (location.hash !== next) history.replaceState(null, "", next);
 }
 
 async function boot() {
@@ -60,8 +76,10 @@ async function boot() {
     renderEmpty();
     return;
   }
+  applyHash();
   const repo = currentRepo();
   if (repo && !repo.configured) state.tab = "configuration";
+  writeHash();
   render();
 }
 
@@ -163,6 +181,7 @@ function mountFeature() {
 function switchTab(tabId) {
   state.tab = tabId;
   localStorage.setItem("ss.tab", tabId);
+  writeHash();
   // re-render tab bar active states without a full reload
   root.querySelectorAll("[data-tab]").forEach((b) => b.classList.toggle("active", b.dataset.tab === tabId));
   mountFeature();
@@ -174,6 +193,7 @@ async function pickRepo(id) {
   await refreshRepos();
   const repo = currentRepo();
   if (repo && !repo.configured) state.tab = "configuration";
+  writeHash();
   render();
 }
 
@@ -216,6 +236,15 @@ document.addEventListener("click", (event) => {
 
 document.addEventListener("submit", (event) => {
   state.feature?.handleSubmit?.(event);
+});
+
+// Back/forward + manual hash edits navigate. replaceState (writeHash) does NOT
+// fire hashchange, so this never loops with our own updates.
+window.addEventListener("hashchange", () => {
+  if (!state.repos.length) return;
+  const before = `${state.currentId}/${state.tab}`;
+  applyHash();
+  if (`${state.currentId}/${state.tab}` !== before) render();
 });
 
 // restore last repo selection before first boot
