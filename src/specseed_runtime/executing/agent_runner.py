@@ -305,12 +305,16 @@ class CodexAgentRunner(SubprocessAgentRunner):
         self.config_dir = config_dir
 
     def build_command(self, prompt: str, cwd: str | Path) -> list[str]:
+        # --skip-git-repo-check: a target need not be a git repo (TrackingRemoteLocal
+        # stand-in, fresh dirs). Without it codex exec refuses to start and exits 1
+        # instantly with "Not inside a trusted directory". claude has no such gate.
         return [
             self.binary, "exec",
             "--model", self.model,
             "-c", f'model_reasoning_effort="{self.effort}"',
             "--sandbox", self.sandbox,
             "-c", 'approval_policy="never"',
+            "--skip-git-repo-check",
             "-",
         ]
 
