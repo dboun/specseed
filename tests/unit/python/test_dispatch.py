@@ -223,6 +223,36 @@ class DispatchRoutingTest(DispatchTestBase):
         self.assertEqual(len(self.runner.calls), 1)
         self.assertIn("adapt", self.runner.calls[0]["prompt"])
 
+    def test_parked_request_wake_comment_reruns_worker(self) -> None:
+        # A request parked awaiting_approval is woken ONLY by a comment (the
+        # human's answer). That wake must reach the spec-change worker, not die
+        # in the generic approval block: the request's spec-change:status label
+        # also reads as entity status "awaiting_approval" via the :status: infix.
+        eid = self._seed_local_entry(
+            "Adapt request",
+            ["spec-change:adapt", "spec-change:status:awaiting_approval"],
+        )
+        self.local.add_entry_comment(eid, "Answer: keep it simple.")
+        out = dispatch(
+            self.ctx,
+            {"action": "handle_comment_added", "post_id": str(eid), "payload": {}},
+        )
+        self.assertTrue(out.success)
+        self.assertEqual(len(self.runner.calls), 1)
+        self.assertIn("run the 'adapt' route", self.runner.calls[0]["prompt"])
+
+    def test_parked_request_label_churn_does_not_rerun_worker(self) -> None:
+        eid = self._seed_local_entry(
+            "Adapt request",
+            ["spec-change:adapt", "spec-change:status:awaiting_approval"],
+        )
+        out = dispatch(
+            self.ctx,
+            {"action": "handle_label_added", "post_id": str(eid), "payload": {"label": "question"}},
+        )
+        self.assertTrue(out.success)
+        self.assertEqual(self.runner.calls, [])
+
     def test_spec_change_skipped_when_apply_already_queued(self) -> None:
         # A prior run already wrote+enqueued apply.py; a second trigger for the
         # same request must not re-run the (expensive) worker.

@@ -46,6 +46,12 @@ from specseed_runtime.tasks.handle_reaction_added import HandleReactionAdded
 from specseed_runtime.tasks.handle_reaction_removed import HandleReactionRemoved
 from specseed_runtime.tasks.task_base import resource_key
 
+# Tasks whose ``post_id`` is a COMMENT id (a reaction's parent in the change
+# stream is the comment). Comment ids share the integer space with entry ids,
+# so a teardown sweep over a comment-id key must only touch these actions or it
+# can sweep an unrelated entry's tasks that happen to share the number.
+_COMMENT_KEYED_ACTIONS = {HandleReactionAdded.ACTION, HandleReactionRemoved.ACTION}
+
 
 def sync_to_db(local: Any, remote: Any, db: Optional[Database] = None) -> dict[str, Any]:
     """Sync ``remote`` into ``local`` and apply the resulting changes to the queue.
@@ -212,8 +218,14 @@ def _teardown_post(
     in_progress: list[dict[str, Any]] = []
     task_rows: list[dict[str, Any]] = []
     seen_task_ids: set[int] = set()
-    for key in [post_id, *_comment_ids_for_post(local, post_id)]:
+    # The entry key sweeps everything; a comment-id key sweeps ONLY comment-keyed
+    # (reaction) actions - the id may collide with an unrelated entry's id.
+    keys: list[tuple[str, Any]] = [(post_id, None)]
+    keys += [(cid, _COMMENT_KEYED_ACTIONS) for cid in _comment_ids_for_post(local, post_id)]
+    for key, allowed_actions in keys:
         for row in db.tasks_for(key):
+            if allowed_actions is not None and row["action"] not in allowed_actions:
+                continue
             task_id = int(row["task_id"])
             if task_id in seen_task_ids:
                 continue

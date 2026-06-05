@@ -266,6 +266,35 @@ class SyncToDbTest(unittest.TestCase):
         self.assertEqual(cleanup["payload"]["interrupted_task_id"], claimed["task_id"])
         self.assertEqual(cleanup["payload"]["reason"], "entry_state")
 
+    def test_close_does_not_sweep_unrelated_entry_sharing_comment_id(self) -> None:
+        # Comment ids and entry ids are separate sqlite sequences in one integer
+        # space: entry A gets id 1, and entry B's first comment ALSO gets id 1.
+        # Closing B sweeps its comment-id keys; that sweep must only touch
+        # comment-keyed (reaction) tasks, never entry A's tasks.
+        entry_a = self.remote.add_entry("A", labels=["bug"]).data.id
+        entry_b = self.remote.add_entry("B").data.id
+        cid = self.remote.add_entry_comment(entry_b, "c").data.id
+        self.assertEqual(str(cid), str(entry_a))  # the collision this guards
+        self.remote.add_entry_comment_reaction(entry_b, cid, "thumbs_up")
+        self.sync()
+
+        a_tasks = [
+            t for t in self.live_tasks()
+            if t["post_id"] == str(entry_a) and not t["action"].startswith("handle_reaction")
+        ]
+        reaction_tasks = [t for t in self.live_tasks() if t["action"] == "handle_reaction_added"]
+        self.assertTrue(a_tasks)
+        self.assertTrue(reaction_tasks)
+
+        self.remote.set_entry_closed(entry_b)
+        self.sync()
+
+        # A's pending tasks survive; B's comment-reaction task is swept.
+        for task in a_tasks:
+            self.assertIsNotNone(self.db.get_task(task["task_id"]))
+        for task in reaction_tasks:
+            self.assertIsNone(self.db.get_task(task["task_id"]))
+
     def test_idempotent_resync_enqueues_nothing(self) -> None:
         self.remote.add_entry("E", labels=["bug"])
         first = self.sync()

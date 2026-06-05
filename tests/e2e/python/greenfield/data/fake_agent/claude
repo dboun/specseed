@@ -1,0 +1,420 @@
+#!/usr/bin/env python3
+"""Scripted `claude` CLI stand-in for the greenfield e2e test.
+
+The runtime shells out to an agent CLI (`claude -p ...`, prompt on stdin). The
+e2e test prepends this dir to PATH, so every agent run lands here: no tokens,
+no network, deterministic. CLI flags are ignored; only the prompt matters.
+
+Plays all three agent jobs by sniffing the prompt:
+
+* spec change - acts as the spec-change worker per the skill contract: question
+  rounds first (parked awaiting_approval, woken by the human's answer), then the
+  scripted breakdown. Writes spec docs + plan.json + apply.py into the request
+  dir and enqueues the run. Never runs apply.py itself.
+* implement   - no-op (the e2e writes no application code).
+* review      - emits the SPECSEED_REVIEW verdict line. One scripted issue
+  (script.json review.flaky_title) fails its first review to exercise the
+  changes -> reimplement loop.
+
+Scripted replies/breakdown live in script.json next to this file. Every
+invocation appends a JSON line to <storage>/fake_agent.log so the test can
+assert the fake (not a real CLI) ran.
+"""
+
+from __future__ import annotations
+
+import datetime
+import json
+import re
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+
+# The runtime exports the engine src on PYTHONPATH; the walk is a fallback for
+# running this by hand (the file lives inside the engine repo).
+for _parent in HERE.parents:
+    if (_parent / "src" / "specseed_runtime").is_dir():
+        sys.path.insert(0, str(_parent / "src"))
+        break
+
+from specseed_runtime.db.database import Database  # noqa: E402
+from specseed_runtime.executing.advance import REVIEW_MARKER  # noqa: E402
+from specseed_runtime.executing.approvals import (  # noqa: E402
+    APPROVAL_REQUEST_MARKER,
+    approval_request_comment,
+    next_apr_id,
+)
+from specseed_runtime.scheduling.spec_change import (  # noqa: E402
+    enqueue_spec_change_run,
+)
+from specseed_runtime.tracking.resolve_remote import resolve_local  # noqa: E402
+
+SCRIPT = json.loads((HERE / "script.json").read_text(encoding="utf-8"))
+
+BOT_AUTHORS = {"remote", "local"}
+COMMAND_PREFIXES = ("approve", "reject", "status", "start", "pause", "stop")
+
+
+def _log(storage: Path, **fields) -> None:
+    record = {
+        "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+        **fields,
+    }
+    with (storage / "fake_agent.log").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record, sort_keys=True) + "\n")
+
+
+def _storage_from(prompt: str) -> Path:
+    """Target storage dir. The spec prompt names <specseed_dir>; default .specseed.
+
+    The runtime runs agents with cwd = target repo root, so relative dirs resolve
+    against cwd.
+    """
+    match = re.search(r"(\S+)/storage/spec-change/", prompt)
+    base = Path(match.group(1)) if match else Path(".specseed")
+    if not base.is_absolute():
+        base = Path.cwd() / base
+    return (base / "storage").resolve()
+
+
+def _is_human_message(comment) -> bool:
+    author = str(getattr(comment, "author", "") or "")
+    body = str(getattr(comment, "body", "") or "").strip()
+    if not body or author.casefold() in BOT_AUTHORS:
+        return False
+    return not body.casefold().startswith(COMMAND_PREFIXES)
+
+
+# --------------------------------------------------------------------------- #
+# apply.py - one static reconcile script; all variability lives in plan.json.
+# plan.json extensions over the protocol shape: creates carry a symbolic "key",
+# "id_map" maps keys to known ids, and "@KEY@" in bodies/comments resolves to
+# "#<id>" after creation (second pass rewrites bodies so links wire up).
+# --------------------------------------------------------------------------- #
+APPLY_SOURCE = '''#!/usr/bin/env python3
+"""Reconcile remote posts for one spec-change request (e2e fake agent output)."""
+import json
+import pathlib
+import re
+import sys
+
+_HERE = pathlib.Path(__file__).resolve()
+for _root in _HERE.parents:
+    if (_root / "src" / "specseed_runtime").is_dir():
+        sys.path.insert(0, str(_root / "src"))
+        break
+
+from specseed_runtime.tracking.resolve_remote import resolve_remote
+
+_STORAGE = _HERE.parents[2]  # .../storage/spec-change/<id>/apply.py
+
+
+def _ok(result, what):
+    if not result.ok:
+        raise SystemExit("FAILED {0}: {1}".format(what, result.error))
+    return result.data
+
+
+def main():
+    plan = json.loads((_HERE.parent / "plan.json").read_text(encoding="utf-8"))
+    remote = resolve_remote(storage=_STORAGE)
+    ids = {str(k): v for k, v in (plan.get("id_map") or {}).items()}
+
+    def resolve(post):
+        return ids.get(str(post), post)
+
+    def subst(text):
+        return re.sub(
+            r"@([A-Za-z0-9_]+)@",
+            lambda m: "#{0}".format(ids[m.group(1)]),
+            text or "",
+        )
+
+    for spec in plan.get("creates", []):
+        data = _ok(
+            remote.add_entry(spec["title"], body=spec.get("body"), labels=spec.get("labels")),
+            "create {0!r}".format(spec["title"]),
+        )
+        ids[str(spec["key"])] = data.id
+    # Second pass: bodies may reference ids created above; rewrite them resolved.
+    for spec in plan.get("creates", []):
+        final = subst(spec.get("body"))
+        if final != (spec.get("body") or ""):
+            _ok(
+                remote.edit_entry(ids[str(spec["key"])], body=final),
+                "wire links on {0!r}".format(spec["title"]),
+            )
+    for edit in plan.get("edits", []):
+        _ok(
+            remote.edit_entry(resolve(edit["post"]), title=edit.get("title"), body=subst(edit.get("body"))),
+            "edit {0}".format(edit["post"]),
+        )
+    for change in plan.get("labels", []):
+        for label in change.get("remove", []):
+            _ok(remote.remove_entry_label(resolve(change["post"]), label),
+                "-label {0} on {1}".format(label, change["post"]))
+        for label in change.get("add", []):
+            _ok(remote.add_entry_label(resolve(change["post"]), label),
+                "+label {0} on {1}".format(label, change["post"]))
+    for comment in plan.get("comments", []):
+        _ok(remote.add_entry_comment(resolve(comment["post"]), subst(comment["body"])),
+            "comment {0}".format(comment["post"]))
+    for post_id in plan.get("closes", []):
+        _ok(remote.set_entry_closed(resolve(post_id)), "close {0}".format(post_id))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+'''
+
+
+def _emit(storage: Path, request_id: str, route: str, plan: dict) -> None:
+    """Write plan.json + apply.py into the request dir and enqueue the run."""
+    request_dir = storage / "spec-change" / str(request_id)
+    request_dir.mkdir(parents=True, exist_ok=True)
+    plan["request_id"] = str(request_id)
+    plan["route"] = route
+    (request_dir / "plan.json").write_text(
+        json.dumps(plan, indent=2) + "\n", encoding="utf-8"
+    )
+    apply_path = request_dir / "apply.py"
+    apply_path.write_text(APPLY_SOURCE, encoding="utf-8")
+    enqueue_spec_change_run(
+        apply_path,
+        request_id=str(request_id),
+        route=route,
+        db=Database(storage / "specseed.db"),
+        storage=storage,
+    )
+
+
+def _park_labels(request_id: str) -> list[dict]:
+    return [
+        {
+            "post": request_id,
+            "remove": ["spec-change:status:open"],
+            "add": ["spec-change:status:awaiting_approval"],
+        }
+    ]
+
+
+def _issue_marker_comment(apr_id: str) -> str:
+    return (
+        "Approval gate `{0}` covers this issue. Approve with `approve {0}` or a "
+        "thumbs up reaction on this post.\n\n<!-- {1} {0} -->".format(
+            apr_id, APPROVAL_REQUEST_MARKER
+        )
+    )
+
+
+def _work_creates(sprint: int) -> tuple[list[dict], list[str]]:
+    """plan.json creates for the breakdown. Sprint 1 also creates epics+tickets;
+    sprint 2 only its issues. Returns (creates, issue_keys)."""
+    creates: list[dict] = []
+    if sprint == 1:
+        for epic in SCRIPT["epics"]:
+            creates.append(
+                {
+                    "key": epic["key"],
+                    "title": epic["title"],
+                    "body": epic["body"],
+                    "labels": ["epic", "epic:status:todo"],
+                }
+            )
+        for ticket in SCRIPT["tickets"]:
+            creates.append(
+                {
+                    "key": ticket["key"],
+                    "title": ticket["title"],
+                    "body": ticket["body"],
+                    "labels": ["ticket", "ticket:status:todo"],
+                }
+            )
+    issue_keys: list[str] = []
+    for issue in SCRIPT["issues"]:
+        if issue["sprint"] != sprint:
+            continue
+        issue_keys.append(issue["key"])
+        creates.append(
+            {
+                "key": issue["key"],
+                "title": issue["title"],
+                "body": issue["body"],
+                # Born awaiting_approval, never todo: the APR gate.
+                "labels": ["issue", "issue:status:awaiting_approval"]
+                + list(issue.get("labels_extra") or []),
+            }
+        )
+    return creates, issue_keys
+
+
+def _title_ids(local, titles: list[str]) -> dict[str, object]:
+    listed = local.list_entries(is_open=None)
+    if not listed.ok:
+        raise SystemExit(f"fake agent: list_entries failed: {listed.error}")
+    by_title = {entry.title: entry.id for entry in listed.data or []}
+    missing = [title for title in titles if title not in by_title]
+    if missing:
+        raise SystemExit(f"fake agent: posts not found in local cache: {missing}")
+    return {title: by_title[title] for title in titles}
+
+
+def run_spec_change(prompt: str) -> int:
+    route = re.search(r"run the '([\w-]+)' route", prompt).group(1)
+    request_id = re.search(r"spec-change request (\S+) ", prompt).group(1)
+    storage = _storage_from(prompt)
+
+    request_dir = storage / "spec-change" / str(request_id)
+    plan_path = request_dir / "plan.json"
+    plan = {}
+    if plan_path.is_file():
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+
+    local = resolve_local(storage=storage)
+    details = local.get_entry(request_id).data
+    answers = [c for c in (getattr(details, "comments", None) or []) if _is_human_message(c)]
+
+    decision = "noop"
+    if plan.get("breakdown_done"):
+        decision = "noop_breakdown_done"
+    elif route == "adapt":
+        questions = plan.get("questions") or {}
+        if len(questions) == 0:
+            decision = "ask_round_1"
+        elif len(questions) == 1 and len(answers) >= 1:
+            decision = "ask_round_2"
+        elif len(questions) >= 2 and len(answers) >= 2:
+            decision = "breakdown_sprint_1"
+        else:
+            decision = "noop_waiting_for_answer"
+    elif route == "plan-next-sprint":
+        decision = "breakdown_sprint_2"
+
+    _log(storage, kind="spec", route=route, request_id=request_id,
+         answers=len(answers), decision=decision)
+
+    if decision.startswith("noop"):
+        print(f"fake agent: {decision} for request {request_id}")
+        return 0
+
+    if decision.startswith("ask_round_"):
+        round_no = int(decision.rsplit("_", 1)[1])
+        question = SCRIPT["adapt"]["questions"][round_no - 1]
+        plan.setdefault("questions", {})[f"round{round_no}"] = question
+        plan.update(
+            creates=[],
+            edits=[],
+            id_map={},
+            labels=_park_labels(request_id),
+            comments=[{"post": request_id, "body": question}],
+            settle_docs=[],
+        )
+        _emit(storage, request_id, route, plan)
+        print(f"fake agent: asked round {round_no} on request {request_id}")
+        return 0
+
+    sprint = 1 if decision == "breakdown_sprint_1" else 2
+    cfg = SCRIPT["adapt"] if sprint == 1 else SCRIPT["plan-next-sprint"]
+    creates, issue_keys = _work_creates(sprint)
+    apr_id = next_apr_id(storage)
+    edits: list[dict] = []
+    id_map: dict[str, object] = {}
+
+    if sprint == 1:
+        # Spec docs are local files; the breakdown is remote posts.
+        spec_root = storage.parent / "spec"
+        spec_root.mkdir(parents=True, exist_ok=True)
+        for rel, content in SCRIPT["adapt"]["spec_docs"].items():
+            (spec_root / rel).write_text(content, encoding="utf-8")
+        id_map["SCHEDULE_POST"] = _title_ids(local, ["SCHEDULE"])["SCHEDULE"]
+    else:
+        # Sprint-2 tickets already exist; wire their new issues into their bodies.
+        ticket_titles = [ticket["title"] for ticket in SCRIPT["tickets"]]
+        title_to_id = _title_ids(local, ticket_titles + ["SCHEDULE"])
+        for ticket in SCRIPT["tickets"]:
+            id_map[ticket["key"]] = title_to_id[ticket["title"]]
+        id_map["SCHEDULE_POST"] = title_to_id["SCHEDULE"]
+        issues_by_ticket: dict[str, list[str]] = {}
+        for issue in SCRIPT["issues"]:
+            if issue["sprint"] == 2:
+                issues_by_ticket.setdefault(issue["ticket"], []).append(issue["key"])
+        for ticket_key, keys in sorted(issues_by_ticket.items()):
+            current = local.get_entry(id_map[ticket_key]).data
+            body = (getattr(current, "body", None) or "").rstrip("\n")
+            line = "Issues: " + ", ".join(f"@{key}@" for key in keys)
+            edits.append({"post": ticket_key, "body": body + "\n" + line})
+
+    edits.append({"post": "SCHEDULE_POST", "body": cfg["schedule_body"]})
+    comments = [
+        {"post": request_id, "body": approval_request_comment(apr_id, cfg["apr_summary"])}
+    ]
+    comments += [
+        {"post": key, "body": _issue_marker_comment(apr_id)} for key in issue_keys
+    ]
+
+    plan.update(
+        creates=creates,
+        edits=edits,
+        id_map=id_map,
+        labels=_park_labels(request_id),
+        comments=comments,
+        apr={"id": apr_id, "summary": cfg["apr_summary"]},
+        settle_docs=list(SCRIPT["adapt"]["settle_docs"]) if sprint == 1 else [],
+        breakdown_done=True,
+    )
+    _emit(storage, request_id, route, plan)
+    print(f"fake agent: emitted sprint-{sprint} breakdown for request {request_id} ({apr_id})")
+    return 0
+
+
+def run_implement(prompt: str) -> int:
+    match = re.search(r"remote post (\S+) titled '([^']*)'", prompt)
+    post_id, title = match.groups()
+    storage = _storage_from(prompt)
+    _log(storage, kind="implement", post_id=post_id, title=title)
+    print(f"Implemented issue #{post_id} ({title}). No code changes were needed "
+          "for this e2e scenario; the tree builds and tests pass.")
+    return 0
+
+
+def run_review(prompt: str) -> int:
+    match = re.search(r"work issue (\S+) titled '([^']*)'", prompt)
+    post_id, title = match.groups()
+    storage = _storage_from(prompt)
+    local = resolve_local(storage=storage)
+    details = local.get_entry(post_id).data
+    attempts = sum(
+        1
+        for comment in (getattr(details, "comments", None) or [])
+        if REVIEW_MARKER in str(getattr(comment, "body", "") or "")
+    )
+    review_cfg = SCRIPT["review"]
+    flaky_first = title == review_cfg["flaky_title"] and attempts == 0
+    _log(storage, kind="review", post_id=post_id, title=title,
+         prior_attempts=attempts, verdict="changes" if flaky_first else "approve")
+    if flaky_first:
+        print(review_cfg["changes_summary"])
+        print("SPECSEED_REVIEW verdict=changes confidence=0.40")
+    else:
+        print(review_cfg["approve_summary"])
+        print("SPECSEED_REVIEW verdict=approve confidence=0.92")
+    return 0
+
+
+def main() -> int:
+    prompt = sys.stdin.read()
+    if "specseed spec-change worker" in prompt:
+        return run_spec_change(prompt)
+    if "implementing a specseed work issue" in prompt:
+        return run_implement(prompt)
+    if "reviewing completed work" in prompt:
+        return run_review(prompt)
+    sys.stderr.write("fake agent: unrecognized prompt\n")
+    sys.stderr.write(prompt[:500] + "\n")
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

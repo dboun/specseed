@@ -426,7 +426,11 @@ def _run_work(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
 
     # Approval gates are resolved in code, with no agent run: an approver's
     # `approve <id>` comment moves an awaiting_approval entity forward.
-    if getattr(entity, "status", None) == "awaiting_approval":
+    # Spec-change REQUESTS are excluded: their `spec-change:status:awaiting_approval`
+    # label also reads as status "awaiting_approval" (the `:status:` infix), but their
+    # approvals are resolved above, and a non-approval wake comment must fall through
+    # to decide_intent so the worker re-runs with the human's answer.
+    if _spec_change_route(entity) is None and getattr(entity, "status", None) == "awaiting_approval":
         resolved = advance.resolve_approval(ctx, entity, state_result, conversation)
         platform_log.log_event(
             "approval_resolved",
