@@ -17,6 +17,7 @@ const state = {
   tab: localStorage.getItem("ss.tab") || "monitor",
   feature: null,
   dev: false,
+  env: {},
 };
 
 function brandHtml() {
@@ -35,6 +36,9 @@ const ctx = {
   switchTab,
   openSetup: (repo) => openSetup(repo, ctx),
   refreshRepos,
+  get env() {
+    return state.env;
+  },
   async selectRepo(id, tab) {
     state.currentId = id;
     localStorage.setItem("ss.repo", id);
@@ -72,7 +76,8 @@ function writeHash() {
 
 async function boot() {
   try {
-    state.dev = (await api.env()).dev;
+    state.env = await api.env();
+    state.dev = !!state.env.dev;
     document.title = state.dev ? "specseed DEV" : "specseed";
   } catch {
     // old server without /api/env - assume installed

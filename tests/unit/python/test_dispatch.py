@@ -309,6 +309,24 @@ class DispatchRoutingTest(DispatchTestBase):
         self.assertFalse(out.requeue)
         self.assertIsNotNone(out.error)
 
+    def test_agent_hard_failure_error_includes_stdout_tail(self) -> None:
+        self.ctx.runner = FakeAgentRunner(
+            result=AgentResult(
+                ok=False,
+                returncode=1,
+                error="agent exited with code 1",
+                stdout="Not logged in - Please run /login\n",
+            )
+        )
+        eid = self._seed_local_entry("Boom", ["tier:issue", "status:todo"])
+        out = dispatch(
+            self.ctx,
+            {"action": "handle_entry_created", "post_id": str(eid), "payload": {}},
+        )
+        self.assertFalse(out.success)
+        self.assertIn("agent exited with code 1", out.error)
+        self.assertIn("Not logged in", out.error)
+
 
 class RunAgentRoutingTest(DispatchTestBase):
     """``_run_agent`` picks the chain for the intent's function, and works with

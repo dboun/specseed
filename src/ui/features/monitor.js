@@ -50,13 +50,46 @@ export function createMonitor({ repo, ctx, refreshTopbar }) {
 
   function metaRow() {
     const r = data?.runner || {};
+    const env = ctx.env || {};
+    const alive = !!r.alive;
     const items = [
-      ["pid", r.pid || "—"],
       ["poll", r.poll_interval_seconds != null ? `${r.poll_interval_seconds}s` : "—"],
-      ["last poll", r.last_poll_at ? relativeTime(r.last_poll_at) : "—"],
+      // last poll is only meaningful while the runner is live; a stopped runner's
+      // value is frozen and would otherwise just keep aging from its last sync.
+      ["last poll", alive && r.last_poll_at ? relativeTime(r.last_poll_at) : "—"],
       ["current task", r.current_task_id != null ? `#${r.current_task_id}` : "idle"],
+      ["pid (repo)", r.pid || "—"],
+      ["pid (specseed)", env.pid || "—"],
     ];
-    return items.map(([k, v]) => `<span class="meta-chip"><b>${escapeHtml(k)}</b> ${escapeHtml(v)}</span>`).join("");
+    let chips = items
+      .map(([k, v]) => `<span class="meta-chip"><b>${escapeHtml(k)}</b> ${escapeHtml(v)}</span>`)
+      .join("");
+    const addr = env.lan_ip && env.port ? `${env.lan_ip}:${env.port}` : null;
+    if (addr) {
+      chips += `<button type="button" class="meta-chip copy" data-copy="${escapeHtml(addr)}" title="copy the LAN address">
+        <b>addr</b> ${escapeHtml(addr)} <span class="copy-hint">click to copy</span></button>`;
+    }
+    return chips;
+  }
+
+  async function copyText(text) {
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.append(ta);
+        ta.select();
+        document.execCommand("copy");
+        ta.remove();
+      }
+      toast(`copied ${text}`, "ok");
+    } catch {
+      toast("copy failed", "error");
+    }
   }
 
   function queueTable() {
@@ -213,6 +246,8 @@ export function createMonitor({ repo, ctx, refreshTopbar }) {
       }
       return;
     }
+    const copy = event.target.closest("[data-copy]");
+    if (copy) return copyText(copy.dataset.copy);
     if (event.target.closest("[data-monitor-refresh]")) refresh();
   }
 

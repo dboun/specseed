@@ -45,6 +45,18 @@ RUNNER_FUNCTIONS = ("spec", "implementation", "review", "merge_conflicts")
 PROVIDER_CONFIG_ENV = {"claude": "CLAUDE_CONFIG_DIR", "codex": "CODEX_HOME"}
 PROVIDER_DEFAULT_HOME = {"claude": "~/.claude", "codex": "~/.codex"}
 
+# Tail of agent stdout kept on failure (log + task error). Tail, not head: CLIs
+# print the error last.
+STDOUT_TAIL_CHARS = 2000
+
+
+def stdout_tail(text: str, limit: int = STDOUT_TAIL_CHARS) -> str:
+    """Last ``limit`` chars of ``text``, stripped; marks truncation."""
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    return "...[truncated]" + text[-limit:]
+
 
 @dataclass
 class AgentResult:
@@ -217,6 +229,7 @@ class SubprocessAgentRunner(AgentRunner):
             duration_s=duration,
             error=error,
             stdout_chars=len(stdout),
+            stdout_tail=stdout_tail(stdout) if error else None,
         )
         return AgentResult(
             ok=ok,

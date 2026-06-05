@@ -199,6 +199,9 @@ a { color: var(--accent-2); }
   border: 1px solid var(--line); border-radius: 8px; padding: 4px 9px;
 }
 .meta-chip b { color: var(--ink); margin-right: 4px; font-weight: 600; }
+.meta-chip.copy { cursor: pointer; font-family: var(--mono); background: transparent; }
+.meta-chip.copy:hover { border-color: var(--accent); color: var(--ink); }
+.copy-hint { color: var(--muted); margin-left: 6px; font-size: 10px; }
 .auto-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 8px var(--ok); animation: pulse 1.6s infinite; }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
 

@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from specseed_runtime.executing import advance
+from specseed_runtime.executing.agent_runner import stdout_tail
 from specseed_runtime.executing import context as context_mod
 from specseed_runtime.executing import platform_log
 from specseed_runtime.executing.context import ExecutionContext
@@ -542,9 +543,15 @@ def _run_work(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
             error=getattr(result, "error", None) or "agent interrupted",
             detail="intent {0} interrupted".format(intent),
         )
+    # Keep the agent's last output in the recorded error: "exited with code 1"
+    # alone is undiagnosable.
+    error = getattr(result, "error", None) or "agent run failed"
+    tail = stdout_tail(getattr(result, "stdout", "") or "")
+    if tail:
+        error = "{0}\n{1}".format(error, tail)
     return HandlerOutcome(
         success=False,
-        error=getattr(result, "error", None) or "agent run failed",
+        error=error,
         detail="intent {0} failed".format(intent),
     )
 

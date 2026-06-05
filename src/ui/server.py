@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+import socket
 import sqlite3
 import sys
 import threading
@@ -59,9 +60,38 @@ DEFAULT_POST_TITLES = {
 }
 
 
+# Set by serve(); lets env_payload report the real bind address for the copy chip.
+_SERVE: dict = {}
+
+
+def _lan_ip() -> str:
+    """Best-effort LAN IP of this machine (the address a phone on the same
+    network would use). No packets are sent - a UDP connect just picks the route."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+        finally:
+            s.close()
+    except OSError:
+        return "127.0.0.1"
+
+
 def env_payload() -> dict:
-    """Global server facts for the UI shell (/api/env)."""
-    return {"dev": registry.is_dev(), "home": str(registry.specseed_home())}
+    """Global server facts for the UI shell (/api/env).
+
+    Runs inside the serving process (ThreadingHTTPServer = one process), so
+    ``os.getpid()`` is the specseed web-server pid.
+    """
+    return {
+        "dev": registry.is_dev(),
+        "home": str(registry.specseed_home()),
+        "pid": os.getpid(),
+        "host": _SERVE.get("host"),
+        "port": _SERVE.get("port"),
+        "lan_ip": _lan_ip(),
+    }
 
 
 def _human_labels() -> list[str]:
@@ -611,10 +641,15 @@ class Handler(BaseHTTPRequestHandler):
 def serve(*, port: int | None = None, host: str = "127.0.0.1", open_browser: bool = True) -> None:
     if port is None:
         port = 5051 if registry.is_dev() else 5050
+    _SERVE.update(host=host, port=port)
     httpd = ThreadingHTTPServer((host, port), Handler)
     url = f"http://{host}:{port}"
     print(f"specseed UI{' (DEV)' if registry.is_dev() else ''}: {url}")
     print(f"registry: {registry.registry_file()}")
+    if host in ("0.0.0.0", "::"):
+        print(f"LAN (e.g. phone): http://{_lan_ip()}:{port}")
+    else:
+        print(f"LAN access: re-run with --host 0.0.0.0 (then http://{_lan_ip()}:{port})")
     if open_browser:
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()
     try:

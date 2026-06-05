@@ -1,15 +1,20 @@
 """test_agent_runner.py - per-function runner chains + provider_data_dir env wiring.
 
-No subprocess, no tokens: FakeAgentRunner drives the chain logic; the CLI runners
-are only inspected for the env they would set.
+No agent, no tokens: FakeAgentRunner drives the chain logic; the CLI runners are
+only inspected for the env they would set. The failure-tail tests run a plain
+``python -c`` child, never a real agent.
 """
 
 from __future__ import annotations
 
+import json
 import os
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 
+from specseed_runtime.executing import platform_log
 from specseed_runtime.executing.agent_runner import (
     AgentResult,
     ClaudeAgentRunner,
@@ -17,11 +22,14 @@ from specseed_runtime.executing.agent_runner import (
     FakeAgentRunner,
     RUNNER_FUNCTIONS,
     RunnerChains,
+    STDOUT_TAIL_CHARS,
+    SubprocessAgentRunner,
     _config_dir_env,
     build_runner,
     build_runner_chains,
     default_runner_chains,
     runner_from_spec,
+    stdout_tail,
 )
 
 
@@ -181,6 +189,61 @@ class RunnerChainsRunTest(unittest.TestCase):
         chains = RunnerChains.single(fake)
         for fn in RUNNER_FUNCTIONS:
             self.assertEqual(chains.chain_for(fn), [fake])
+
+
+class StdoutTailTest(unittest.TestCase):
+    def test_short_output_passes_through_stripped(self) -> None:
+        self.assertEqual(stdout_tail("  boom \n"), "boom")
+
+    def test_empty_and_none_are_empty(self) -> None:
+        self.assertEqual(stdout_tail(""), "")
+        self.assertEqual(stdout_tail(None), "")
+
+    def test_long_output_keeps_tail_and_marks_truncation(self) -> None:
+        text = "x" * (STDOUT_TAIL_CHARS * 2) + "the actual error"
+        tail = stdout_tail(text)
+        self.assertTrue(tail.startswith("...[truncated]"))
+        self.assertTrue(tail.endswith("the actual error"))
+        self.assertEqual(len(tail), len("...[truncated]") + STDOUT_TAIL_CHARS)
+
+
+class _EchoRunner(SubprocessAgentRunner):
+    """Plain ``python -c`` child: echo a line, exit with ``code``. NOT an agent."""
+
+    def __init__(self, code: int) -> None:
+        super().__init__(poll_interval=0.05)
+        self.code = code
+
+    def build_command(self, prompt: str, cwd) -> list[str]:
+        return [
+            sys.executable, "-c",
+            "import sys; sys.stdin.read(); print('boom output'); sys.exit({0})".format(self.code),
+        ]
+
+
+class SubprocessFailureTailTest(unittest.TestCase):
+    """Failed runs log a stdout tail in agent_subprocess_complete; ok runs don't."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        platform_log.configure(self._tmp.name)
+
+    def _complete_event(self) -> dict:
+        log = Path(self._tmp.name) / "platform.log"
+        events = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        return [e for e in events if e["event"] == "agent_subprocess_complete"][-1]
+
+    def test_failure_logs_stdout_tail(self) -> None:
+        result = _EchoRunner(1).run("p", cwd=self._tmp.name, timeout_s=30)
+        self.assertFalse(result.ok)
+        self.assertIn("boom output", result.stdout)
+        self.assertIn("boom output", self._complete_event()["stdout_tail"])
+
+    def test_success_logs_no_tail(self) -> None:
+        result = _EchoRunner(0).run("p", cwd=self._tmp.name, timeout_s=30)
+        self.assertTrue(result.ok)
+        self.assertIsNone(self._complete_event()["stdout_tail"])
 
 
 if __name__ == "__main__":
