@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+import sqlite3
 import sys
 from dataclasses import asdict, is_dataclass
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -38,6 +40,14 @@ def _db_path() -> Path:
 
 def _tracker() -> TrackingRemoteLocal:
     return TrackingRemoteLocal(db_path=_db_path(), author=os.environ.get("TRACKER_AUTHOR", AUTHOR))
+
+
+def _author() -> str:
+    return os.environ.get("TRACKER_AUTHOR", AUTHOR)
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
 def _plain(value: object) -> object:
@@ -74,6 +84,69 @@ def _csv(value: object) -> list[str]:
     return [part.strip() for part in str(value).split(",") if part.strip()]
 
 
+def _connect() -> sqlite3.Connection:
+    conn = sqlite3.connect(_db_path())
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+
+def _delete_one_reaction(
+    table: str,
+    parent_field: str,
+    parent_id: int | str,
+    reaction: str,
+    author: str,
+) -> bool:
+    with _connect() as conn:
+        row = conn.execute(
+            f"""
+            SELECT id FROM {table}
+            WHERE {parent_field} = ? AND kind = ? AND user = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (parent_id, reaction, author),
+        ).fetchone()
+        if row is None:
+            return False
+        conn.execute(f"DELETE FROM {table} WHERE id = ?", (row["id"],))
+    return True
+
+
+def _touch_entry(entry_id: int | str) -> None:
+    with _connect() as conn:
+        conn.execute("UPDATE entries SET updated_at = ? WHERE id = ?", (_now(), entry_id))
+
+
+def _toggle_entry_reaction(entry_id: int | str, reaction: str) -> dict[str, object]:
+    author = _author()
+    if _delete_one_reaction("entry_reactions", "entry_id", entry_id, reaction, author):
+        _touch_entry(entry_id)
+        return {"entry_id": entry_id, "reaction": reaction, "active": False}
+    result = _tracker().add_entry_reaction(entry_id, reaction)
+    data = _ok(result)
+    if isinstance(data, dict):
+        data["active"] = True
+    return data
+
+
+def _toggle_comment_reaction(
+    entry_id: int | str,
+    comment_id: int | str,
+    reaction: str,
+) -> dict[str, object]:
+    author = _author()
+    if _delete_one_reaction("comment_reactions", "comment_id", comment_id, reaction, author):
+        _touch_entry(entry_id)
+        return {"entry_id": entry_id, "comment_id": comment_id, "reaction": reaction, "active": False}
+    result = _tracker().add_entry_comment_reaction(entry_id, comment_id, reaction)
+    data = _ok(result)
+    if isinstance(data, dict):
+        data["active"] = True
+    return data
+
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         self._route()
@@ -103,11 +176,15 @@ class Handler(BaseHTTPRequestHandler):
     def _api(self, path: str, query: dict[str, list[str]]) -> None:
         parts = [part for part in path.split("/") if part]
         if parts == ["api", "meta"] and self.command == "GET":
+            tracker = _tracker()
+            labels = _ok(tracker.list_labels())
             self._json(
                 {
                     "ok": True,
                     "data": {
                         "dbPath": str(_db_path()),
+                        "author": _author(),
+                        "labels": labels.get("labels", []) if isinstance(labels, dict) else [],
                         "reactions": sorted(SUPPORTED_REACTIONS),
                     },
                 }
@@ -185,16 +262,26 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if parts[3:] == ["reactions"] and self.command == "POST":
                 body = self._body()
+                reaction = str(body.get("reaction") or "")
+                if body.get("toggle"):
+                    self._json({"ok": True, "data": _toggle_entry_reaction(post_id, reaction)})
+                    return
                 self._json(
                     {
                         "ok": True,
-                        "data": _ok(_tracker().add_entry_reaction(post_id, str(body.get("reaction") or ""))),
+                        "data": _ok(_tracker().add_entry_reaction(post_id, reaction)),
                     },
                     status=201,
                 )
                 return
             if len(parts) == 6 and parts[3] == "comments" and parts[5] == "reactions" and self.command == "POST":
                 body = self._body()
+                reaction = str(body.get("reaction") or "")
+                if body.get("toggle"):
+                    self._json(
+                        {"ok": True, "data": _toggle_comment_reaction(post_id, parts[4], reaction)}
+                    )
+                    return
                 self._json(
                     {
                         "ok": True,
@@ -202,7 +289,7 @@ class Handler(BaseHTTPRequestHandler):
                             _tracker().add_entry_comment_reaction(
                                 post_id,
                                 parts[4],
-                                str(body.get("reaction") or ""),
+                                reaction,
                             )
                         ),
                     },

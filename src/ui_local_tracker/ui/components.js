@@ -15,6 +15,17 @@ export function selectOptions(name, options) {
   `;
 }
 
+export function labelOptions(name, labels, exclude = []) {
+  const excluded = new Set(exclude);
+  const options = (labels || []).filter((label) => !excluded.has(label.name));
+  return `
+    <select name="${escapeHtml(name)}">
+      <option value="">choose label</option>
+      ${options.map((label) => `<option value="${escapeHtml(label.name)}">${escapeHtml(label.name)}</option>`).join("")}
+    </select>
+  `;
+}
+
 export function toast(message) {
   document.querySelector("[data-toast]")?.remove();
   const node = document.createElement("div");

@@ -1,8 +1,13 @@
 import { api } from "./api.js";
-import { demoStats } from "../fixtures/post-fixtures.js";
-import { escapeHtml, modal, selectOptions, toast } from "../ui/components.js";
+import { escapeHtml, labelOptions, modal, toast } from "../ui/components.js";
 
 const filters = ["open", "closed", "all"];
+const reactionIcons = {
+  eyes: "&#128064;",
+  heart: "&#10084;",
+  thumbs_down: "&#128078;",
+  thumbs_up: "&#128077;",
+};
 
 export function createPostsFeature({ onError }) {
   const state = {
@@ -10,7 +15,12 @@ export function createPostsFeature({ onError }) {
     posts: [],
     selectedId: null,
     selected: null,
-    meta: { dbPath: "", reactions: ["eyes", "heart", "thumbs_down", "thumbs_up"] },
+    meta: {
+      author: "remote",
+      dbPath: "",
+      labels: [],
+      reactions: ["eyes", "heart", "thumbs_down", "thumbs_up"],
+    },
     busy: false,
   };
 
@@ -88,18 +98,16 @@ export function createPostsFeature({ onError }) {
   }
 
   function renderStats() {
-    const open = state.posts.filter((post) => post.is_open).length;
-    const closed = state.posts.filter((post) => !post.is_open).length;
     const total = state.posts.length;
     return [
-      ["visible", total],
-      ["open", state.filter === "closed" ? demoStats.openFallback : open],
-      ["closed", state.filter === "open" ? demoStats.closedFallback : closed],
+      ["shown", total],
+      ["filter", state.filter],
+      ["selected", state.selectedId ? `#${state.selectedId}` : "none"],
     ]
       .map(([label, value]) => `
         <article class="stat-card">
-          <div class="stat-label">${label}</div>
-          <div class="stat-value">${value}</div>
+          <div class="stat-label">${escapeHtml(label)}</div>
+          <div class="stat-value">${escapeHtml(value)}</div>
         </article>
       `)
       .join("");
@@ -127,7 +135,7 @@ export function createPostsFeature({ onError }) {
           </div>
           <span class="state ${post.is_open ? "open" : "closed"}">${post.is_open ? "open" : "closed"}</span>
         </div>
-        <div class="pill-row">${labels.map((label) => `<span class="pill">${escapeHtml(label.name)}</span>`).join("")}</div>
+        <div class="pill-row">${labels.map((label) => labelChip(label.name)).join("")}</div>
       </article>
     `;
   }
@@ -139,14 +147,18 @@ export function createPostsFeature({ onError }) {
     }
     const labels = post.labels || [];
     const reactions = post.reactions || [];
+    const labelNames = labels.map((label) => label.name);
     return `
       <aside data-drawer class="drawer">
-        <span class="state ${post.is_open ? "open" : "closed"}">${post.is_open ? "open" : "closed"}</span>
+        <div class="drawer-top">
+          <span class="state ${post.is_open ? "open" : "closed"}">${post.is_open ? "open" : "closed"}</span>
+          <button type="button" class="icon-button mobile-close" data-close-drawer aria-label="Close details">X</button>
+        </div>
         <h1>#${escapeHtml(post.id)} ${escapeHtml(post.title)}</h1>
         <div class="post-meta">by ${escapeHtml(post.author || "unknown")} · updated ${escapeHtml(post.updated_at || "unknown")}</div>
         <div class="drawer-grid">
           <div><div class="stat-label">assignees</div><div>${escapeHtml((post.assignees || []).join(", ") || "none")}</div></div>
-          <div><div class="stat-label">reactions</div><div>${renderReactions(reactions) || "none"}</div></div>
+          <div><div class="stat-label">reactions</div><div class="reaction-strip">${renderReactionButtons(reactions, "post")}</div></div>
         </div>
         <form data-save-post>
           <div class="field"><label>title</label><input name="title" value="${escapeHtml(post.title)}" /></div>
@@ -158,16 +170,11 @@ export function createPostsFeature({ onError }) {
           </div>
         </form>
         <div class="section-title">labels</div>
-        <div class="pill-row">${labels.map((label) => `<span class="pill">${escapeHtml(label.name)}</span>`).join("") || `<span class="muted">none</span>`}</div>
+        <div class="pill-row label-strip">${labels.map((label) => labelChip(label.name, true)).join("") || `<span class="muted">none</span>`}</div>
         <form data-label-form class="button-row">
-          <input name="label" placeholder="label" />
-          <select name="action"><option value="add">add</option><option value="remove">remove</option></select>
-          <button>Apply</button>
-        </form>
-        <div class="section-title">react to post</div>
-        <form data-post-reaction class="button-row">
-          ${selectOptions("reaction", state.meta.reactions)}
-          <button>React</button>
+          ${labelOptions("label", state.meta.labels, labelNames)}
+          <input name="customLabel" placeholder="custom label" />
+          <button>Add label</button>
         </form>
         <div class="section-title">comments</div>
         ${(post.comments || []).map(renderComment).join("") || `<div class="muted">No comments.</div>`}
@@ -184,20 +191,51 @@ export function createPostsFeature({ onError }) {
       <article class="comment">
         <div class="comment-meta">#${escapeHtml(comment.id)} ${escapeHtml(comment.author || "unknown")} · ${escapeHtml(comment.updated_at || comment.created_at || "")}</div>
         <div class="comment-body">${escapeHtml(comment.body || "")}</div>
-        <div class="button-row">
-          <span class="muted">${renderReactions(comment.reactions || "") || "no reactions"}</span>
-          <button data-comment-reaction="${escapeHtml(comment.id)}" data-reaction="thumbs_up">thumbs_up</button>
-          <button data-comment-reaction="${escapeHtml(comment.id)}" data-reaction="heart">heart</button>
-        </div>
+        <div class="reaction-strip">${renderReactionButtons(comment.reactions || [], "comment", comment.id)}</div>
       </article>
     `;
   }
 
-  function renderReactions(reactions) {
-    return (reactions || [])
-      .filter((reaction) => reaction.count)
-      .map((reaction) => `${escapeHtml(reaction.kind)}:${escapeHtml(reaction.count)}`)
-      .join(" ");
+  function labelChip(name, removable = false) {
+    if (!removable) {
+      return `<span class="pill label-chip"><span>#</span>${escapeHtml(name)}</span>`;
+    }
+    return `
+      <button
+        class="pill label-chip removable"
+        type="button"
+        data-remove-label="${escapeHtml(name)}"
+      >
+        <span>#</span>${escapeHtml(name)}<span class="chip-x">x</span>
+      </button>
+    `;
+  }
+
+  function renderReactionButtons(reactions, scope, commentId = "") {
+    return state.meta.reactions
+      .map((kind) => {
+        const reaction = (reactions || []).find((item) => item.kind === kind);
+        const count = reaction?.count || 0;
+        const active = (reaction?.users || []).includes(state.meta.author);
+        const attr =
+          scope === "comment"
+            ? `data-comment-reaction="${escapeHtml(commentId)}"`
+            : `data-post-reaction="${escapeHtml(kind)}"`;
+        return `
+          <button
+            type="button"
+            class="reaction-chip ${active ? "active" : ""}"
+            ${attr}
+            data-reaction="${escapeHtml(kind)}"
+            title="${active ? "Remove" : "Add"} ${escapeHtml(kind)}"
+          >
+            <span class="reaction-icon">${reactionIcons[kind] || "?"}</span>
+            <span>${escapeHtml(kind.replace("_", " "))}</span>
+            <strong>${count}</strong>
+          </button>
+        `;
+      })
+      .join("");
   }
 
   async function onClick(event) {
@@ -211,6 +249,11 @@ export function createPostsFeature({ onError }) {
       return refresh(false);
     }
     if (target.dataset.openPost) return loadPost(target.dataset.openPost);
+    if (target.dataset.closeDrawer !== undefined) {
+      state.selectedId = null;
+      state.selected = null;
+      return render();
+    }
     if (target.dataset.togglePost !== undefined) return mutate(() => api.togglePost(state.selectedId));
     if (target.dataset.deletePost !== undefined) {
       if (confirm(`Delete post #${state.selectedId}?`)) {
@@ -221,8 +264,14 @@ export function createPostsFeature({ onError }) {
       }
       return;
     }
+    if (target.dataset.removeLabel) {
+      return mutate(() => api.updateLabel(state.selectedId, "remove", target.dataset.removeLabel));
+    }
+    if (target.dataset.postReaction) {
+      return mutate(() => api.reactToPost(state.selectedId, target.dataset.reaction, true));
+    }
     if (target.dataset.commentReaction) {
-      return mutate(() => api.reactToComment(state.selectedId, target.dataset.commentReaction, target.dataset.reaction));
+      return mutate(() => api.reactToComment(state.selectedId, target.dataset.commentReaction, target.dataset.reaction, true));
     }
     if (target.dataset.closeModal !== undefined) {
       document.querySelector("[data-modal]")?.remove();
@@ -234,10 +283,20 @@ export function createPostsFeature({ onError }) {
     const form = event.target;
     const data = Object.fromEntries(new FormData(form).entries());
     if (form.dataset.savePost !== undefined) return mutate(() => api.savePost(state.selectedId, data));
-    if (form.dataset.labelForm !== undefined) return mutate(() => api.updateLabel(state.selectedId, data.action, data.label));
+    if (form.dataset.labelForm !== undefined) {
+      const label = String(data.customLabel || data.label || "").trim();
+      if (!label) return;
+      return mutate(() => api.updateLabel(state.selectedId, "add", label));
+    }
     if (form.dataset.commentForm !== undefined) return mutate(() => api.addComment(state.selectedId, data.body));
-    if (form.dataset.postReaction !== undefined) return mutate(() => api.reactToPost(state.selectedId, data.reaction));
     if (form.dataset.newPostForm !== undefined) {
+      data.labels = [
+        ...new FormData(form).getAll("labelChoices"),
+        ...String(data.customLabels || "")
+          .split(",")
+          .map((part) => part.trim())
+          .filter(Boolean),
+      ];
       const created = await api.createPost(data);
       document.querySelector("[data-modal]")?.remove();
       state.selectedId = created.id;
@@ -262,7 +321,18 @@ export function createPostsFeature({ onError }) {
         <h2>New post</h2>
         <div class="field"><label>title</label><input name="title" required autofocus /></div>
         <div class="field"><label>body</label><textarea name="body"></textarea></div>
-        <div class="field"><label>labels</label><input name="labels" placeholder="type:feature, status:open" /></div>
+        <div class="field">
+          <label>labels</label>
+          <div class="choice-grid">
+            ${state.meta.labels.map((label) => `
+              <label class="choice-chip">
+                <input type="checkbox" name="labelChoices" value="${escapeHtml(label.name)}" />
+                <span># ${escapeHtml(label.name)}</span>
+              </label>
+            `).join("") || `<span class="muted">No saved labels yet.</span>`}
+          </div>
+          <input name="customLabels" placeholder="extra labels, comma separated" />
+        </div>
         <div class="field"><label>assignees</label><input name="assignees" placeholder="comma separated" /></div>
         <div class="button-row">
           <button class="primary">Create</button>

@@ -59,19 +59,19 @@ export const api = {
     })).data;
   },
 
-  async reactToPost(id, reaction) {
+  async reactToPost(id, reaction, toggle = false) {
     return (await request(`/api/posts/${encodeURIComponent(id)}/reactions`, {
       method: "POST",
-      body: JSON.stringify({ reaction }),
+      body: JSON.stringify({ reaction, toggle }),
     })).data;
   },
 
-  async reactToComment(id, commentId, reaction) {
+  async reactToComment(id, commentId, reaction, toggle = false) {
     return (await request(
       `/api/posts/${encodeURIComponent(id)}/comments/${encodeURIComponent(commentId)}/reactions`,
       {
         method: "POST",
-        body: JSON.stringify({ reaction }),
+        body: JSON.stringify({ reaction, toggle }),
       },
     )).data;
   },
