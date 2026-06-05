@@ -61,6 +61,14 @@ class RunnerFromSpecTest(unittest.TestCase):
         self.assertEqual(runner.effort, "high")
         self.assertEqual(runner.env_overrides, {"CODEX_HOME": "/d"})
 
+    def test_codex_command_skips_git_repo_check(self) -> None:
+        # A target need not be a git repo; without --skip-git-repo-check codex
+        # exec refuses to start and exits 1 instantly. Pin the flag so it stays.
+        argv = CodexAgentRunner().build_command("prompt", "/cwd")
+        self.assertIn("--skip-git-repo-check", argv)
+        self.assertEqual(argv[:2], ["codex", "exec"])
+        self.assertEqual(argv[-1], "-")
+
     def test_no_data_dir_means_no_env_override(self) -> None:
         runner = runner_from_spec({"provider": "claude", "model": "opus"})
         self.assertEqual(runner.env_overrides, {})
