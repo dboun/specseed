@@ -687,15 +687,15 @@ class PullRequestDialog(FormDialog):
         return True
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Open the specseed local tracking Tk UI.")
     parser.add_argument("--db", default=None, help="Path to the sqlite tracking database.")
     parser.add_argument("--author", default="local", help="Author name for new writes.")
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-def main() -> None:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
     app = TrackingLocalUI(db_path=args.db, author=args.author)
     app.mainloop()
 

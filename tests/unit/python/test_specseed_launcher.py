@@ -1,4 +1,4 @@
-"""src/specseed.py launcher behavior - runs the engine against a target, never copies code."""
+"""specseed command router behavior - targets storage, never copies code."""
 
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ from unittest import mock
 
 
 def _load_launcher():
-    """Load src/specseed.py as a module (it sits beside the package, not in it)."""
-    path = Path(__file__).resolve().parents[3] / "src" / "specseed.py"
+    """Load the runtime command module by path."""
+    path = Path(__file__).resolve().parents[3] / "src" / "specseed_runtime" / "specseed.py"
     spec = importlib.util.spec_from_file_location("specseed_launcher", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -39,16 +39,17 @@ class ResolvePathsTest(unittest.TestCase):
 
 
 class ParseArgsTest(unittest.TestCase):
-    def test_defaults(self) -> None:
-        args = specseed.parse_args(["/some/repo"])
-        self.assertEqual(args.target_repo, "/some/repo")
+    def test_setup_defaults(self) -> None:
+        args = specseed.parse_args(["setup"])
+        self.assertEqual(args.command, "setup")
+        self.assertIsNone(args.target)
         self.assertEqual(args.specseed_dir, ".specseed")
-        self.assertFalse(args.once)
-        self.assertIsNone(args.interval)
 
-    def test_positional_dir_and_flags(self) -> None:
-        args = specseed.parse_args(["/some/repo", "seedmeta", "--once", "--interval", "30"])
-        self.assertEqual(args.specseed_dir, "seedmeta")
+    def test_run_flags(self) -> None:
+        args = specseed.parse_args(["run", "--target", "/some/repo", "--once", "--interval", "30"])
+        self.assertEqual(args.command, "run")
+        self.assertEqual(args.target, "/some/repo")
+        self.assertEqual(args.specseed_dir, ".specseed")
         self.assertTrue(args.once)
         self.assertEqual(args.interval, 30.0)
 
@@ -57,14 +58,16 @@ class MainTest(unittest.TestCase):
     def test_missing_target_returns_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             missing = Path(tmp) / "nope"
-            rc = specseed.main([str(missing)])
+            rc = specseed.main(["run", "--target", str(missing)])
             self.assertEqual(rc, 1)
 
     def test_delegates_to_run_with_storage_and_repo_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp).resolve()
             with mock.patch.object(specseed.run_mod, "main", return_value=0) as run_main:
-                rc = specseed.main([str(target), ".specseed", "--once", "--interval", "15"])
+                rc = specseed.main(
+                    ["run", "--target", str(target), "--once", "--interval", "15"]
+                )
 
             self.assertEqual(rc, 0)
             argv = run_main.call_args.args[0]
@@ -79,6 +82,54 @@ class MainTest(unittest.TestCase):
             self.assertTrue((target / ".specseed" / "storage").is_dir())
             self.assertFalse((target / ".specseed" / "specseed_runtime").exists())
             self.assertFalse((target / ".specseed" / "skills").exists())
+
+    def test_setup_writes_default_config_and_remote_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp).resolve()
+            rc = specseed.main(["setup", "--target", str(target)])
+
+            self.assertEqual(rc, 0)
+            storage = target / ".specseed" / "storage"
+            self.assertTrue((storage / "configuration.json").is_file())
+            self.assertTrue((storage / "remote.json").is_file())
+            self.assertFalse((target / ".specseed" / "specseed_runtime").exists())
+
+    def test_setup_allows_absolute_specseed_dir_outside_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            target.mkdir()
+            specseed_dir = Path(tmp) / "state"
+            rc = specseed.main(
+                ["setup", "--target", str(target), "--specseed-dir", str(specseed_dir)]
+            )
+
+            self.assertEqual(rc, 0)
+            self.assertTrue((specseed_dir / "storage" / "configuration.json").is_file())
+            self.assertFalse((target / ".gitignore").exists())
+
+    def test_remote_local_requires_setup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp).resolve()
+            with mock.patch.object(specseed, "_run_remote_local_ui") as ui_main:
+                rc = specseed.main(["remote_local", "--target", str(target), "--ui"])
+
+            self.assertEqual(rc, 1)
+            ui_main.assert_not_called()
+
+    def test_remote_local_ui_uses_target_storage_db(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp).resolve()
+            self.assertEqual(specseed.main(["setup", "--target", str(target)]), 0)
+
+            with mock.patch.object(specseed, "_run_remote_local_ui") as ui_main:
+                rc = specseed.main(["remote_local", "--target", str(target), "--ui"])
+
+            self.assertEqual(rc, 0)
+            argv = ui_main.call_args.args[0]
+            self.assertEqual(
+                argv[argv.index("--db") + 1],
+                str(target / ".specseed" / "storage" / "tracking_remote_local.db"),
+            )
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@
 # install.sh - install/uninstall the specseed engine and/or skill.
 #
 # The engine is NEVER copied into a target repo. It installs once, system-wide,
-# under ~/.specseed and runs against targets: `specseed.py <target_repo>`.
+# under ~/.specseed and runs against targets: `specseed run --target <repo>`.
 #
 #   platform install (default): copy engine -> ~/.specseed, add src to PATH.
 #   skill install:              copy skills/specseed -> claude + codex skills dirs.
@@ -169,9 +169,9 @@ install_platform() {
     rm -rf "${INSTALL_DIR:?}/$item"
     cp -R "$SCRIPT_DIR/$item" "$INSTALL_DIR/$item"
   done
-  chmod +x "$PLATFORM_SRC/specseed.py" 2>/dev/null || true
+  chmod +x "$PLATFORM_SRC/specseed" 2>/dev/null || true
   add_path_line
-  echo "done. open a new shell, then: specseed.py <target_repo>"
+  echo "done. open a new shell, then: specseed setup --target <repo>"
 }
 
 install_skill() {

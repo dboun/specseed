@@ -49,8 +49,8 @@ class TrackingRemoteLocalUI(TrackingLocalUI):
     window_title = "Specseed Remote-Local Tracking"
 
 
-def main() -> None:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
     app = TrackingRemoteLocalUI(db_path=args.db, author=args.author)
     app.mainloop()
 
