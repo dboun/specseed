@@ -6,9 +6,10 @@ const TOKEN_HELP = {
     title: "GitHub access token",
     lines: [
       "Create a fine-grained personal access token scoped to this repo with:",
-      "• Issues — read & write",
-      "• Contents — read & write (if the agent should push branches)",
-      "• Metadata — read",
+      "• Metadata      — read",
+      "• Issues        — read & write",
+      "• Contents      — read & write (if the agent pushes branches)",
+      "• Pull requests — read & write (not yet supported)",
     ],
   },
   gitlab: {
@@ -29,7 +30,7 @@ function providerFields(provider) {
   return `
     <div class="field">
       <label>Repository <span class="req">(owner/name)</span></label>
-      <input name="repo" placeholder="acme/widget" autocomplete="off" required />
+      <input name="repo" placeholder="username/repo (full link also ok)" autocomplete="off" required />
     </div>
     <div class="token-help">
       <div class="token-help-title">${escapeHtml(help.title)}</div>

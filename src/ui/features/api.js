@@ -18,6 +18,9 @@ const enc = encodeURIComponent;
 const base = (id) => `/api/repos/${enc(id)}`;
 
 export const api = {
+  // server facts (dev mode etc.)
+  env: () => request("/api/env"),
+
   // registry
   repos: () => request("/api/repos"),
   addRepo: (data) => post("/api/repos", data),

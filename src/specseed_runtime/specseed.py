@@ -43,6 +43,11 @@ from specseed_runtime.executing import runner_control  # noqa: E402
 
 DEFAULT_SPECSEED_DIR = ".specseed"
 DEFAULT_PORT = 5050
+DEV_PORT = 5051  # dev checkout serves here so it never collides with an installed specseed
+
+
+def default_port() -> int:
+    return DEV_PORT if registry.is_dev() else DEFAULT_PORT
 
 
 @contextmanager
@@ -307,7 +312,7 @@ def _remove(args: argparse.Namespace) -> int:
 # web service
 # --------------------------------------------------------------------------- #
 def _load_web_server():
-    path = Path(__file__).resolve().parents[1] / "ui_local_tracker" / "server.py"
+    path = Path(__file__).resolve().parents[1] / "ui" / "server.py"
     spec = importlib.util.spec_from_file_location("specseed_web_server", path)
     module = importlib.util.module_from_spec(spec)
     assert spec and spec.loader
@@ -317,7 +322,7 @@ def _load_web_server():
 
 def _serve(args: argparse.Namespace) -> int:
     server = _load_web_server()
-    port = args.port if args.port is not None else int(os.environ.get("PORT", DEFAULT_PORT))
+    port = args.port if args.port is not None else int(os.environ.get("PORT", default_port()))
     server.serve(port=port, host=args.host, open_browser=not args.no_browser)
     return 0
 
@@ -359,7 +364,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     run_parser.set_defaults(func=_run)
 
     serve_parser = sub.add_parser("serve", help="launch the web UI (manages all repos)")
-    serve_parser.add_argument("--port", type=int, default=None, help=f"port (default: $PORT or {DEFAULT_PORT})")
+    serve_parser.add_argument(
+        "--port", type=int, default=None,
+        help=f"port (default: $PORT or {DEFAULT_PORT}; dev checkout: {DEV_PORT})",
+    )
     serve_parser.add_argument("--host", default="127.0.0.1", help="bind host (default: 127.0.0.1)")
     serve_parser.add_argument("--no-browser", action="store_true", help="do not auto-open a browser")
     serve_parser.set_defaults(func=_serve)

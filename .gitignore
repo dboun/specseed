@@ -250,3 +250,6 @@ configuration.json
 # Dev storage is <repo>/storage/; a target's is <target>/<specseed_dir>/storage/.
 .specseed/
 storage/
+
+
+data-dev/

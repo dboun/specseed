@@ -59,6 +59,11 @@ DEFAULT_POST_TITLES = {
 }
 
 
+def env_payload() -> dict:
+    """Global server facts for the UI shell (/api/env)."""
+    return {"dev": registry.is_dev(), "home": str(registry.specseed_home())}
+
+
 def _human_labels() -> list[str]:
     base = [f"spec-change:{r}" for r in ("adopt", "adapt", "tweak", "inject", "plan-next-sprint")]
     base += sorted(WORK_TYPE_LABELS) + sorted(DIFFICULTY_LABELS) + ["question"]
@@ -319,6 +324,10 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- API ---------------------------------------------------------------- #
     def _api(self, parts: list[str], query: dict) -> None:
+        # /api/env - global server facts (dev mode, registry home)
+        if parts == ["api", "env"] and self.command == "GET":
+            self._json({"ok": True, "data": env_payload()})
+            return
         # /api/repos ...
         if parts[:2] == ["api", "repos"]:
             self._api_repos(parts[2:], query)
@@ -582,10 +591,12 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(encoded)
 
 
-def serve(*, port: int = 5050, host: str = "127.0.0.1", open_browser: bool = True) -> None:
+def serve(*, port: int | None = None, host: str = "127.0.0.1", open_browser: bool = True) -> None:
+    if port is None:
+        port = 5051 if registry.is_dev() else 5050
     httpd = ThreadingHTTPServer((host, port), Handler)
     url = f"http://{host}:{port}"
-    print(f"specseed UI: {url}")
+    print(f"specseed UI{' (DEV)' if registry.is_dev() else ''}: {url}")
     print(f"registry: {registry.registry_file()}")
     if open_browser:
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()
@@ -598,7 +609,8 @@ def serve(*, port: int = 5050, host: str = "127.0.0.1", open_browser: bool = Tru
 
 
 def main() -> None:
-    serve(port=int(os.environ.get("PORT", "5050")))
+    env_port = os.environ.get("PORT")
+    serve(port=int(env_port) if env_port else None)
 
 
 if __name__ == "__main__":

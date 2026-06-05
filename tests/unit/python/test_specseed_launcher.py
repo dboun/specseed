@@ -23,6 +23,26 @@ def _load_launcher():
 specseed = _load_launcher()
 
 
+class DevPortTest(unittest.TestCase):
+    """Dev checkout serves on 5051; installed on 5050."""
+
+    def test_dev_checkout_uses_dev_port(self) -> None:
+        self.assertTrue(specseed.registry.is_dev())  # this repo IS a dev checkout
+        self.assertEqual(specseed.default_port(), specseed.DEV_PORT)
+        self.assertEqual(specseed.DEV_PORT, 5051)
+
+    def test_installed_uses_default_port(self) -> None:
+        with mock.patch.object(specseed.registry, "is_dev", return_value=False):
+            self.assertEqual(specseed.default_port(), specseed.DEFAULT_PORT)
+        self.assertEqual(specseed.DEFAULT_PORT, 5050)
+
+    def test_web_server_env_payload_reports_dev(self) -> None:
+        server = specseed._load_web_server()
+        payload = server.env_payload()
+        self.assertTrue(payload["dev"])
+        self.assertIn("home", payload)
+
+
 class ResolvePathsTest(unittest.TestCase):
     def test_relative_specseed_dir_joins_under_target(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

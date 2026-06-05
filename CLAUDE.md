@@ -23,10 +23,12 @@ land at the repo root (gitignored). Configure a target via `src/specseed_runtime
 (Root `install.py` = just a design-notes stub for a future system-wide install, not code.)
 
 **One engine, many repos.** `src/specseed serve` (or bare `specseed`) launches ONE web UI
-(`src/ui_local_tracker/`, vanilla JS, no deps; default port 5050 / `$PORT`) that manages every
+(`src/ui/`, vanilla JS, no deps; default port 5050 / `$PORT`) that manages every
 registered repo. Runners stay SEPARATE - each repo's `run` is its own process; only the webpage is
 shared. The shared index is a global registry at `$SPECSEED_HOME` (default `~/.specseed`),
-`registry.py`. CLI parity for headless boxes: `add`/`list`/`start`/`pause`/`resume`/`stop`/`status`.
+`registry.py`. **Dev checkout** (`registry.is_dev()`: code under `src/specseed_runtime/`) flips
+defaults: home `<repo>/data-dev/`, port 5051, UI shows "specseed DEV" (`/api/env`). `$SPECSEED_HOME`
+/ `$PORT` / `--port` still override. CLI parity for headless boxes: `add`/`list`/`start`/`pause`/`resume`/`stop`/`status`.
 Lifecycle is out-of-band: CLI/UI write `<storage>/control.json` (desired state); the running
 scheduler reconciles it each tick and stamps `<storage>/runner.json` (heartbeat: pid+state+queue),
 liveness = pid alive AND heartbeat fresh (`executing/runner_control.py`). Provider (local/github/
@@ -75,7 +77,7 @@ src/
     state_machines/                  #   legal status transitions + approvals (👍/👎 reactions, approve/reject cmds)
     configuring/                     #   configure.py interactive setup -> config
     migrating/                       #   storage migrations (hops); 0.3.1->0.4.0 deletes copied code; 0.4.0->0.5.0 drops the seed marker so new labels re-seed
-  ui_local_tracker/                  # the SHARED web UI (vanilla JS modules, no deps): server.py (multi-repo API) + shell/ + features/{repos,monitor,tracker,configuration} + theme.css
+  ui/                  # the SHARED web UI (vanilla JS modules, no deps): server.py (multi-repo API) + shell/ + features/{repos,monitor,tracker,configuration} + theme.css
 skills/specseed/                     # the spec-change worker skill (markdown + helper scripts), at repo root
   SKILL.md                           #   START HERE. router: routes, contract, hard rules
   routes/                            #   adopt/adapt/tweak/inject/plan-next-sprint

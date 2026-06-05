@@ -60,5 +60,29 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(registry.list_repos(), [])
 
 
+class DevModeTest(unittest.TestCase):
+    """Dev checkout (src/specseed_runtime/) uses <repo>/data-dev, installed uses ~/.specseed."""
+
+    def test_is_dev_true_in_this_checkout(self) -> None:
+        # registry.py lives at <repo>/src/specseed_runtime/ here.
+        self.assertTrue(registry.is_dev())
+
+    def test_dev_home_is_repo_data_dev(self) -> None:
+        with mock.patch.dict(os.environ):
+            os.environ.pop("SPECSEED_HOME", None)
+            self.assertEqual(registry.specseed_home(), registry.dev_root() / "data-dev")
+
+    def test_installed_home_is_dot_specseed(self) -> None:
+        with mock.patch.dict(os.environ):
+            os.environ.pop("SPECSEED_HOME", None)
+            with mock.patch.object(registry, "is_dev", return_value=False):
+                self.assertEqual(registry.specseed_home(), (Path.home() / ".specseed").resolve())
+
+    def test_env_override_wins_over_dev(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(os.environ, {"SPECSEED_HOME": tmp}):
+                self.assertEqual(registry.specseed_home(), Path(tmp).resolve())
+
+
 if __name__ == "__main__":
     unittest.main()

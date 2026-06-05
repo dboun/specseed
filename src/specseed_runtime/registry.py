@@ -6,7 +6,8 @@ the runners stay separate. What is shared is this small global index of *which*
 repos exist, where their storage is, and which tracker provider each uses. Both
 the CLI and the web service are thin control planes over it.
 
-Lives flat in ``$SPECSEED_HOME`` (default ``~/.specseed``):
+Lives flat in ``$SPECSEED_HOME`` (default ``~/.specseed``; a dev checkout -
+this file under ``src/specseed_runtime/`` - uses ``<repo>/data-dev`` instead):
 
     registry.json   list of registered repos
 
@@ -37,11 +38,26 @@ def _now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def is_dev() -> bool:
+    """True when running from a dev checkout: this file at ``<repo>/src/specseed_runtime/``."""
+    here = Path(__file__).resolve()
+    return here.parent.name == "specseed_runtime" and here.parent.parent.name == "src"
+
+
+def dev_root() -> Path:
+    """Repo root of the dev checkout (only meaningful when ``is_dev()``)."""
+    return Path(__file__).resolve().parents[2]
+
+
 def specseed_home() -> Path:
-    """The global specseed dir: ``$SPECSEED_HOME`` or ``~/.specseed``."""
+    """The global specseed dir: ``$SPECSEED_HOME``, else ``<repo>/data-dev`` in a
+    dev checkout, else ``~/.specseed``."""
     override = os.environ.get("SPECSEED_HOME")
-    base = Path(override).expanduser() if override else Path.home() / ".specseed"
-    return base.resolve()
+    if override:
+        return Path(override).expanduser().resolve()
+    if is_dev():
+        return (dev_root() / "data-dev").resolve()
+    return (Path.home() / ".specseed").resolve()
 
 
 def registry_file() -> Path:

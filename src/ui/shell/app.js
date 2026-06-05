@@ -16,7 +16,12 @@ const state = {
   currentId: null,
   tab: localStorage.getItem("ss.tab") || "monitor",
   feature: null,
+  dev: false,
 };
+
+function brandHtml() {
+  return `<span class="brand-mark">specseed${state.dev ? ' <span class="dev-tag">DEV</span>' : ""}</span>`;
+}
 
 const root = document.querySelector("#app");
 
@@ -67,6 +72,12 @@ function writeHash() {
 
 async function boot() {
   try {
+    state.dev = (await api.env()).dev;
+    document.title = state.dev ? "specseed DEV" : "specseed";
+  } catch {
+    // old server without /api/env - assume installed
+  }
+  try {
     await refreshRepos();
   } catch (err) {
     ctx.onError(err);
@@ -90,7 +101,7 @@ function renderEmpty() {
     <div class="landing">
       <div class="landing-glow"></div>
       <div class="landing-card">
-        <div class="brand-mark">specseed</div>
+        <div class="brand-mark">specseed${state.dev ? ' <span class="dev-tag">DEV</span>' : ""}</div>
         <p class="landing-lead">A headless spec &amp; work engine. Register a repo to begin.</p>
         <button class="btn btn-primary" data-add-repo>+ Add repository</button>
       </div>
@@ -103,7 +114,7 @@ function render() {
     <div class="app">
       <header class="topbar">
         <div class="topbar-left">
-          <span class="brand-mark">specseed</span>
+          ${brandHtml()}
           ${switcherHtml()}
         </div>
         <div class="topbar-right">

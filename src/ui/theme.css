@@ -90,6 +90,11 @@ a { color: var(--accent-2); }
   font-size: 22px; color: var(--ink);
 }
 .brand-mark::before { content: "▍"; color: var(--accent); margin-right: 4px; }
+.dev-tag {
+  font-size: 0.55em; vertical-align: middle; letter-spacing: 1px;
+  color: var(--warn); border: 1px solid var(--warn); border-radius: 4px;
+  padding: 1px 5px; margin-left: 2px;
+}
 
 /* ---------- shell ---------- */
 .app { min-height: 100vh; }
