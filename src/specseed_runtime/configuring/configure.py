@@ -262,6 +262,18 @@ def _write_json(path, data):
     return p
 
 
+def _load_json_object(path, label):
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ValueError(f"cannot read {label}: {path}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{label} is not valid JSON: {path}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"{label} must be a JSON object: {path}")
+    return data
+
+
 # --------------------------------------------------------------------------- #
 # defaults — everything that can act is OFF until the human turns it on
 # --------------------------------------------------------------------------- #
@@ -366,9 +378,8 @@ def _coerce_runner(existing):
     return out or None
 
 
-def load_config(storage):
-    """Load configuration.json with defaults backfilled for missing keys."""
-    existing = _load_json(config_file(storage))
+def coerce_config(existing):
+    """Return a config object with defaults backfilled."""
     cfg = default_config()
     if not isinstance(existing, dict):
         return cfg
@@ -395,9 +406,13 @@ def load_config(storage):
     return cfg
 
 
-def load_remote_state(storage):
-    """Load remote.json with defaults backfilled and legacy token stripped."""
-    existing = _load_json(remote_file(storage))
+def load_config(storage):
+    """Load configuration.json with defaults backfilled for missing keys."""
+    return coerce_config(_load_json(config_file(storage)))
+
+
+def coerce_remote_state(existing):
+    """Return a remote state object with defaults backfilled."""
     remote = default_remote_state()
     if isinstance(existing, dict):
         for key, value in existing.items():
@@ -407,6 +422,11 @@ def load_remote_state(storage):
             remote["state"].update(existing["state"])
     remote.pop("token", None)
     return remote
+
+
+def load_remote_state(storage):
+    """Load remote.json with defaults backfilled and legacy token stripped."""
+    return coerce_remote_state(_load_json(remote_file(storage)))
 
 
 def write_config_files(
@@ -434,6 +454,55 @@ def write_config_files(
         written["token"] = write_token(storage, token)
         written["storage_gitignore"] = ensure_gitignored(storage)
     return written
+
+
+def _specseed_config_value(storage, repo_root):
+    specseed_root = specseed_dir_from_storage(storage)
+    try:
+        rel = Path(specseed_root).resolve().relative_to(Path(repo_root).resolve())
+        return rel.as_posix(), rel
+    except ValueError:
+        return Path(specseed_root).resolve().as_posix(), None
+
+
+def run_defaults(
+    storage,
+    *,
+    config_path=None,
+    remote_path=None,
+    ignore_specseed=True,
+    overwrite_defaults=False,
+):
+    """Write config files without prompting."""
+    repo_root = repo_root_from_cwd()
+    cfg = (
+        coerce_config(_load_json_object(config_path, "configuration file"))
+        if config_path
+        else default_config() if overwrite_defaults else load_config(storage)
+    )
+    remote = (
+        coerce_remote_state(_load_json_object(remote_path, "remote file"))
+        if remote_path
+        else default_remote_state() if overwrite_defaults else load_remote_state(storage)
+    )
+    specseed_value, specseed_rel = _specseed_config_value(storage, repo_root)
+    cfg["specseed_dir"] = specseed_value
+    if not cfg.get("dev_branch") or cfg.get("dev_branch") == DEFAULT_DEV_BRANCH:
+        cfg["dev_branch"] = detect_default_branch(repo_root)
+
+    written = write_config_files(
+        storage,
+        cfg,
+        remote,
+        repo_root=repo_root,
+        specseed_rel=specseed_rel,
+        ignore_specseed=ignore_specseed and specseed_rel is not None,
+    )
+    print(f"Configured {repo_root}")
+    for name in ("config", "remote", "repo_gitignore"):
+        if name in written:
+            print(f"  {name}: {written[name]}")
+    return 0
 
 
 # --------------------------------------------------------------------------- #
@@ -917,6 +986,16 @@ def main(argv=None):
                     help="override the storage dir (default: ../../storage relative to this file)")
     ap.add_argument("--show", action="store_true",
                     help="print the resolved config (token redacted) and exit")
+    ap.add_argument("--defaults", action="store_true",
+                    help="write default config files without prompting")
+    ap.add_argument("--defaults-overwrite", action="store_true",
+                    help="overwrite existing config with defaults without prompting")
+    ap.add_argument("--use-config-file", default=None,
+                    help="read configuration.json values from this file")
+    ap.add_argument("--use-remote-file", default=None,
+                    help="read remote.json values from this file")
+    ap.add_argument("--no-gitignore", action="store_true",
+                    help="do not add the specseed dir to the repo .gitignore")
     args = ap.parse_args(list(sys.argv[1:] if argv is None else argv))
 
     storage = Path(args.storage) if args.storage else default_storage_dir()
@@ -924,6 +1003,18 @@ def main(argv=None):
     run_migrations(storage=storage)
     if args.show:
         return run_show(storage)
+    if args.defaults or args.defaults_overwrite or args.use_config_file or args.use_remote_file:
+        try:
+            return run_defaults(
+                storage,
+                config_path=args.use_config_file,
+                remote_path=args.use_remote_file,
+                ignore_specseed=not args.no_gitignore,
+                overwrite_defaults=args.defaults_overwrite,
+            )
+        except ValueError as exc:
+            print(f"configure.py: {exc}", file=sys.stderr)
+            return 1
     return run_interactive(storage, explicit_storage=args.storage is not None)
 
 

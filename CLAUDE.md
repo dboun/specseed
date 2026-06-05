@@ -15,7 +15,7 @@ the skill *emits* (vision/SAD/SDD/entity bodies/ADR) ALSO gets the humanizer pas
    when a post is labeled `spec-change:<route>`. Markdown instructions.
 
 **The engine is never copied into the target.** It runs from this repo against a target repo:
-`src/specseed setup --target <target_repo>` then `src/specseed run --target <target_repo>`
+`src/specseed configure --target <target_repo>` then `src/specseed run --target <target_repo>`
 (`specseed_dir` default `.specseed`). The
 target gets ONLY data - `<specseed_dir>/storage/` (dbs, config, logs, version marker) and the
 generated `<specseed_dir>/spec/`. In THIS dev repo the target is this repo itself, so storage/spec
@@ -52,7 +52,7 @@ remote posts, enqueues it. Never runs it itself, never touches git/code.
 src/
   specseed                           # bash shim: picks python3/python and runs runtime CLI
   specseed_runtime/                  # the RUNTIME (stdlib-only python)
-    specseed.py                      # command router: setup/configure/run/remote_local
+    specseed.py                      # command router: configure/run/remote_local
     tracking/                        #   provider-neutral tracker layer. README inside. entry=neutral resource
     scheduling/                      #   remote diff -> DB queue (sync_to_db) + spec_change enqueue. README inside
     db/database.py                   #   durable sqlite work queue (tasks + task_errors). thread-safe singleton

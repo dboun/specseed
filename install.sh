@@ -171,7 +171,7 @@ install_platform() {
   done
   chmod +x "$PLATFORM_SRC/specseed" 2>/dev/null || true
   add_path_line
-  echo "done. open a new shell, then: specseed setup --target <repo>"
+  echo "done. open a new shell, then: specseed configure --target <repo>"
 }
 
 install_skill() {

@@ -88,40 +88,6 @@ def _ensure_target(target: Path) -> bool:
     return False
 
 
-def _specseed_dir_for_config(specseed_root: Path, target: Path) -> tuple[str, Path | None]:
-    try:
-        rel = specseed_root.resolve().relative_to(target.resolve())
-        return rel.as_posix(), rel
-    except ValueError:
-        return specseed_root.resolve().as_posix(), None
-
-
-def _setup(args: argparse.Namespace) -> int:
-    target, storage = resolve_paths(args.target, args.specseed_dir)
-    if not _ensure_target(target):
-        return 1
-
-    storage.mkdir(parents=True, exist_ok=True)
-    cfg = configure.load_config(storage)
-    remote = configure.load_remote_state(storage)
-    specseed_value, specseed_rel = _specseed_dir_for_config(storage.parent, target)
-    cfg["specseed_dir"] = specseed_value
-    written = configure.write_config_files(
-        storage,
-        cfg,
-        remote,
-        repo_root=target,
-        specseed_rel=specseed_rel,
-        ignore_specseed=specseed_rel is not None and not args.no_gitignore,
-    )
-
-    print(f"setup: {target}")
-    for name in ("config", "remote", "repo_gitignore"):
-        if name in written:
-            print(f"  {name}: {written[name]}")
-    return 0
-
-
 def _configure(args: argparse.Namespace) -> int:
     target, storage = resolve_paths(args.target, args.specseed_dir)
     if not _ensure_target(target):
@@ -130,8 +96,24 @@ def _configure(args: argparse.Namespace) -> int:
     argv = ["--storage", str(storage)]
     if args.show:
         argv.append("--show")
+    if args.defaults:
+        argv.append("--defaults")
+    if args.defaults_overwrite:
+        argv.append("--defaults-overwrite")
+    if args.use_config_file:
+        argv += ["--use-config-file", args.use_config_file]
+    if args.use_remote_file:
+        argv += ["--use-remote-file", args.use_remote_file]
+    if args.no_gitignore:
+        argv.append("--no-gitignore")
     with _in_dir(target):
         if args.ui:
+            if args.defaults or args.defaults_overwrite or args.use_config_file or args.use_remote_file:
+                print(
+                    "specseed: configure --ui cannot be combined with defaults/config files.",
+                    file=sys.stderr,
+                )
+                return 2
             return _run_configure_ui(["--storage", str(storage)])
         return configure.main(argv)
 
@@ -155,8 +137,7 @@ def _remote_local(args: argparse.Namespace) -> int:
         return 1
     if not repo_is_setup(storage):
         print(
-            "specseed: repo is not set up yet. Run `specseed setup` or "
-            "`specseed configure` first.",
+            "specseed: repo is not configured yet. Run `specseed configure` first.",
             file=sys.stderr,
         )
         return 1
@@ -194,15 +175,19 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="specseed runtime command.")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    setup = sub.add_parser("setup", help="set up specseed storage for a repo")
-    _add_target_args(setup)
-    setup.add_argument("--no-gitignore", action="store_true", help="do not add specseed dir to .gitignore")
-    setup.set_defaults(func=_setup)
-
     configure_parser = sub.add_parser("configure", help="configure a specseed repo")
     _add_target_args(configure_parser)
     configure_parser.add_argument("--ui", action="store_true", help="open the configure UI")
     configure_parser.add_argument("--show", action="store_true", help="show resolved config")
+    configure_parser.add_argument("--defaults", action="store_true", help="write defaults without prompts")
+    configure_parser.add_argument(
+        "--defaults-overwrite",
+        action="store_true",
+        help="overwrite existing config with defaults without prompts",
+    )
+    configure_parser.add_argument("--use-config-file", default=None, help="use this configuration.json file")
+    configure_parser.add_argument("--use-remote-file", default=None, help="use this remote.json file")
+    configure_parser.add_argument("--no-gitignore", action="store_true", help="do not add specseed dir to .gitignore")
     configure_parser.set_defaults(func=_configure)
 
     run_parser = sub.add_parser("run", help="run the scheduler")
