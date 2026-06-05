@@ -83,6 +83,23 @@ class PopulateDefaultsTest(unittest.TestCase):
             },
         )
 
+    def test_seeds_type_and_difficulty_labels(self) -> None:
+        populate_defaults("remote_local", tracker=self.remote)
+        names = self.label_names()
+        for kind in ("feature", "bug", "chore", "spike", "qa"):
+            self.assertIn(f"type:{kind}", names)
+        for level in ("easy", "hard"):
+            self.assertIn(f"difficulty:{level}", names)
+
+    def test_seeded_labels_align_with_supported_vocab(self) -> None:
+        # populate_defaults and supported_values must not drift apart.
+        from specseed_runtime.tracking.supported_values import (
+            DIFFICULTY_LABELS,
+            WORK_TYPE_LABELS,
+        )
+
+        self.assertTrue((WORK_TYPE_LABELS | DIFFICULTY_LABELS).issubset(DESIRED_LABELS))
+
     def test_second_run_is_idempotent(self) -> None:
         first = populate_defaults("remote_local", tracker=self.remote)
         second = populate_defaults("remote_local", tracker=self.remote)

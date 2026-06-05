@@ -26,8 +26,9 @@ follow `routes/adapt.md` for this request. Note the bump in `plan.json`.
    it". That stays a tweak: one `creates` (ticket at `:status:todo`,
    `satisfies_reqs` the new req) or one label/comment change in `plan.json`. A
    pure status flip on an existing post is a label swap. If the one created post
-   is an **issue** (claimable), it is born `:status:awaiting_approval` and the run
-   ends with an `APR-NNNN` request, like every other route (protocol approval gate).
+   is an **issue** (claimable), it is born `:status:awaiting_approval` (with its
+   `type:` label) and the run ends with an `APR-NNNN` request, like every other route
+   (protocol approval gate).
 4. **Finish.** `plan.json` -> `apply.py` -> `enqueue_spec_change_run(...)` ->
    stop. If the tweak ended up touching nothing on the remote (e.g. a doc-only
    typo fix), still write a `plan.json` that just moves the request post to

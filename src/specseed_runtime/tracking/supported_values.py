@@ -39,6 +39,14 @@ SPEC_CHANGE_LABELS = frozenset(
 
 MANAGEMENT_LABELS = frozenset({"draft", "current_sprint", "management", "question"})
 WORK_TIER_LABELS = frozenset({"epic", "ticket", "issue"})
+# Work-item kind. Issues always carry one; tickets may (never ``qa``). ``qa`` marks a
+# ticket's terminal QA pass. Drives the entity body template + lets the runtime filter.
+WORK_TYPE_LABELS = frozenset(
+    {f"type:{kind}" for kind in ("feature", "bug", "chore", "spike", "qa")}
+)
+# Issue difficulty (optional). Modifies the code-review gate: ``hard`` never
+# auto-approves, always landing in ``awaiting_approval`` for a human.
+DIFFICULTY_LABELS = frozenset({f"difficulty:{level}" for level in ("easy", "hard")})
 WORK_STATUS_LABELS = frozenset(
     {
         f"{tier}:status:{status}"
@@ -60,5 +68,7 @@ SUPPORTED_LABELS = frozenset(
     set(SPEC_CHANGE_LABELS)
     | set(MANAGEMENT_LABELS)
     | set(WORK_TIER_LABELS)
+    | set(WORK_TYPE_LABELS)
+    | set(DIFFICULTY_LABELS)
     | set(WORK_STATUS_LABELS)
 )

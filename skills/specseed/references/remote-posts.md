@@ -18,7 +18,9 @@ body** (identical on both providers and in the local stand-in).
 | ticket | user-visible slice that satisfies requirements (PM) | `ticket` |
 | issue | the executable unit an impl agent claims (technical) | `issue` |
 
-Each post carries exactly one tier label and one status label.
+Each post carries exactly one tier label and one status label. (adopt may create a
+single `EPIC-0000 Phase 0 — Already built` epic at `:status:done` whose body lists
+shipped capabilities as plain titles, with no child posts — see `routes/adopt.md`.)
 
 ## Status labels
 
@@ -33,6 +35,30 @@ then `add_entry_label(id, "<tier>:status:<new>")`. The spec-change worker create
 epics/tickets at `:status:todo`, creates **issues at `:status:awaiting_approval`**
 (the approval gate, see below), and *deprecates* retired ones; live status
 transitions belong to the impl agents, not this skill.
+
+## Type + difficulty labels
+
+Beyond tier + status, a work post may carry:
+
+- **`type:<kind>`** — `feature` / `bug` / `chore` / `spike` / `qa`. Issues always get
+  one; tickets may (never `qa`). Drives body shape (`templates/entity_templates/`) and
+  lets the runtime filter (e.g. a `type:qa` issue is a ticket's terminal QA pass).
+- **`difficulty:<level>`** — `easy` / `hard` (issues, optional). Modifies the code-review
+  gate: `hard` issues never auto-approve, always landing in `awaiting_approval` for a
+  human even at high review confidence. Set at formation (`work-breakdown.md`).
+
+Both are seeded in `supported_values.py` / `populate_defaults.py`, so the tracker knows
+them like any tier/status label.
+
+## Settled spec docs (lifecycle)
+
+The work posts live on the remote; the spec docs are local files with frontmatter. A
+spec doc carries `settled: true` + `settled_at` once a human has approved the change
+that produced it. The **producer** is the approval gate: when an `APR-NNNN` batch is
+approved, the runtime stamps every path the worker listed in `plan.json.settle_docs`.
+The skill never writes `settled` itself. `adapt` is the only route that may reopen an
+already-settled doc (and it re-settles on the next approval); `plan-next-sprint` and
+`tweak` never touch settled content.
 
 ## Relationships (body links, not labels)
 

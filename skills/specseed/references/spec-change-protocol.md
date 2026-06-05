@@ -52,16 +52,28 @@ is yours to fit the route, but keep it explicit. Suggested:
   "route": "adapt",
   "creates": [
     {"tier": "ticket", "title": "...", "body": "...",
-     "labels": ["ticket", "ticket:status:todo"]}
+     "labels": ["ticket", "ticket:status:todo"]},
+    {"tier": "issue", "title": "...", "body": "...",
+     "labels": ["issue", "issue:status:awaiting_approval", "type:feature", "difficulty:hard"]}
   ],
   "edits":   [{"post_id": 12, "body": "..."}],
   "labels":  [{"post_id": 12, "add": ["ticket:status:done"],
                "remove": ["ticket:status:todo"]}],
   "comments":[{"post_id": 12, "body": "..."}],
   "closes":  [34],
-  "deletes": []
+  "deletes": [],
+  "apr":     {"id": "APR-0001", "summary": "..."},
+  "settle_docs": ["spec/api-srs.md", "spec/sad.md"],
+  "questions": {},
+  "risk": {}
 }
 ```
+
+`settle_docs` lists the spec docs this run created or reopened; on approval the runtime
+stamps `settled: true` + `settled_at` on each (the producer for `settled` — see the
+approval gate). `questions` records any clarification round already asked (so a
+re-trigger never re-asks; format in `references/question-protocol.md`). `risk` holds the
+risk-detection & gating pass output (`references/work-breakdown.md`).
 
 `apply.py` reads `plan.json` and applies it. Keeping the data and the executor
 separate means a human can eyeball the delta and the script stays generic.
@@ -193,6 +205,13 @@ Steps, every route that creates issues:
    with no agent run: 👍/approve flips the issue `awaiting_approval -> todo`,
    👎/reject parks it `blocked`. See `remote-posts.md`.
 
+**Settling on approval.** Approving the batch is also what **settles the spec**: on
+approval the runtime stamps `settled: true` + `settled_at` on every path in
+`plan.json.settle_docs` and moves the request to `done`. So a run that only changed
+the spec (no new issues) still parks `awaiting_approval` with an `APR-NNNN` if it wrote
+or reopened any settled-track doc — the approval is the settle. The skill never writes
+`settled` itself; `adapt` is the only route that may reopen an already-settled doc.
+
 When no approver list is configured, any non-bot human may approve (the default).
 
 ## Enqueue + stop
@@ -223,7 +242,10 @@ second pass needs them). When unsure, comment rather than duplicate.
 
 ## Async clarification
 
-Cannot proceed safely? Do not guess. Put a single clarifying **comment** on the
-spec-change post into `plan.json.comments`, add label
-`spec-change:status:awaiting_approval`, enqueue, stop. The human replies on the
-remote; the next poll re-triggers this route with their answer in the comments.
+Cannot proceed safely? Do not guess. Post a **clarification round** — possibly several
+questions in the confidence/suggestion format of `references/question-protocol.md`,
+delivered as comment(s) on the spec-change post into `plan.json.comments` — add label
+`spec-change:status:awaiting_approval`, record the round in `plan.json.questions`,
+enqueue, stop. The human replies on the remote (a one-word `OK` accepts all your
+suggestions); the next poll re-triggers this route with their answers in the comments.
+A round may carry multiple questions; the rule is one round then park, not one question.

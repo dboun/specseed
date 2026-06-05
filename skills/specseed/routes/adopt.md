@@ -2,10 +2,11 @@
 
 Existing code, no spec. Recover the spec **from the codebase** into
 `<specseed_dir>/spec/`, then map what already exists (and the gaps) into the work
-breakdown as remote posts.
+breakdown as remote posts. One-time onboarding; later changes route to adapt /
+plan-next-sprint / tweak.
 
-Read `references/spec-change-protocol.md`, `references/remote-posts.md`, and
-`references/work-breakdown.md` first.
+Read `references/spec-change-protocol.md`, `references/remote-posts.md`,
+`references/work-breakdown.md`, and `references/component-questions.md` first.
 
 ## Fires when
 
@@ -16,57 +17,139 @@ Read `references/spec-change-protocol.md`, `references/remote-posts.md`, and
 
 1. **Never edit code.** Recon is read-only. You reconcile the *spec* to match the
    code, never the reverse.
-2. **Never edit the user's existing docs in place.** Existing `spec/`, `docs/`,
-   RFCs are reference; you translate their content INTO `<specseed_dir>/spec/`, you do
-   not move or rewrite the originals.
-3. Code is ground truth. Where code and the request post disagree, code wins;
-   note the discrepancy in a comment (async) if it is material.
+2. **Never edit the user's existing docs in place.** Existing `spec/`, `docs/`, RFCs
+   are reference; you translate their content INTO `<specseed_dir>/spec/`, you do not
+   move or rewrite the originals. (Propagate-back is opt-in and one-time, below.)
+3. Code is ground truth. Where code and a doc/request disagree, code wins for
+   current state; surface material conflicts (below).
 
-## Recon (read-only)
+## 1. Recon (read-only)
 
 Build the picture from disk, no writes:
 
-- **Stack/build:** dependency manifests, lockfiles, CI, Dockerfiles, Makefiles
-  -> languages, frameworks, test/build commands.
+- **Stack/build:** dependency manifests, lockfiles, CI, Dockerfiles, Makefiles ->
+  languages, frameworks, test/build commands.
 - **Structure:** top-level tree, entry points, test layout.
 - **Components:** group the tree into candidate components (services, packages,
   front/back split). This is the component split, inferred from disk.
-- **Existing docs + agent rules:** README, `docs/`, ADRs, `AGENTS.md`,
-  `CLAUDE.md`. Import their content into the spec; leave the files alone.
+- **Existing docs:** README, `docs/`, ADRs, RFCs, design notes, CHANGELOG.
+- **Agent rules:** `AGENTS.md`, root + nested `CLAUDE.md`, `.cursorrules`,
+  `.github/copilot-instructions.md`, `CONTRIBUTING.md`.
 
 Size-gate: small repo, read broadly; large repo, infer components from structure
 first, then read one component at a time. Do not load the whole tree.
 
-## Produce the spec (`<specseed_dir>/spec/`)
+If recon is thin (tiny/opaque repo), fall back to treating the request post as a
+brief and ask the cold-start questions (what is this, who uses it, hard constraints).
 
-Same artifacts and order as `adapt.md` cold start, but sourced from code +
-imported docs instead of a brief:
+## 2. Existing-doc inventory -> import decision
+
+- **Specs/docs exist** -> **import** (default): translate their content into
+  `<specseed_dir>/spec/` (vision <- README/overview; SRS <- feature lists/RFCs; SAD <-
+  architecture docs; SDD <- design docs; ADRs <- existing decision records).
+  Reconcile against code in step 5. Originals untouched.
+- **No specs, large project** -> ask (async) for any specs / design context before
+  inferring cold; reverse-engineering a big system from code alone is expensive.
+- **No specs, small project** -> infer from code; ask only to fill material gaps.
+
+## 3. Agent-rules reconciliation
+
+If recon found agent-rules files:
+1. Extract the project's conventions (build/test commands, branching, review rules,
+   style, how agents are told to behave).
+2. **Import them** into the spec/runtime: build/test/branching conventions feed the
+   target's operating policy; durable repo-specific instructions are preserved.
+3. **State the diffs from the specseed way** so nothing surprises the human: the
+   settled-doc soft-freeze, the issue-claim workflow, the per-tier status model, the
+   approval gate. Where their rules conflict with the specseed runtime contract,
+   surface it (async comment) and let them choose. Record reconciliations in `plan.json`.
+
+If no agent-rules found, skip; the runtime supplies defaults.
+
+## 4. Produce the spec (`<specseed_dir>/spec/`)
+
+Same artifacts and order as `adapt.md` cold start, sourced from code + imported docs:
 
 - `vision.md` from README / the request post / inferred purpose.
-- `*-srs.md` reqs reverse-engineered from actual behavior (what the code does
-  becomes the requirement). Mark anything uncertain for async confirmation.
-- `sad.md` / `*-sdd.md` describing the architecture as built.
-- `adr.csv` for decisions evident in the code (a chosen datastore, a retry
-  strategy) with short justifications.
-- `reqs.json` consistent with the SRS tables.
+- `*-srs.md` reqs reverse-engineered from actual behavior (what the code does becomes
+  the requirement). **Keep built vs gap distinguishable** (below). Mark anything
+  uncertain for async confirmation.
+- `sad.md` / `*-sdd.md` describing the architecture and implementation **as built**
+  (real components, interfaces, schemas, lib versions read from manifests).
+- `adr.csv` for decisions evident in the code (chosen datastore, retry strategy) with
+  short justifications. Log notable code-vs-doc reconciliations here too.
+- `reqs.json` consistent with the SRS tables (via `scripts/requirements_generate_json.py`).
 
-## Plan the work breakdown (remote posts)
+**Built vs gap reqs.** Recovered reqs describe current behavior (built). Reqs stated
+in imported docs or the request post but **not implemented** are **gap reqs** — the
+real forward work. Keep them separable (group them or mark gaps) — step 6 needs to
+know which reqs already shipped and which become tickets.
 
-- **Already-built work** -> tickets/issues created at `:status:done` (they
-  shipped; record them so the roadmap reflects reality).
-- **Gaps / remaining work** (from the request post, TODOs, obvious holes) ->
-  tickets at `:status:todo`, **issues at `:status:awaiting_approval`** (claimable,
-  so gated per the protocol's approval gate).
-- Epics group both. Critical path + first sprint over the *remaining* work.
-- SCHEDULE reflects the sprint plan (you write it). ROADMAP and Current sprint are
-  rendered by the runtime from the work posts — do not hand-edit them.
+**Humanizer pass on prose you DRAFT** (recovered vision/SAD/SDD). Prose **imported**
+verbatim from the user's docs is already human-written: reformat into structure, leave
+its voice alone. Don't humanize what a human already wrote.
 
-All into `plan.json` (`creates`, SCHEDULE `edits`).
+## 5. Reconcile conflicts (code wins, with judgement)
+
+Code is ground truth for current state. When an imported doc disagrees with the code:
+- **Auto-reconcile to the code** for the bulk (the doc is stale; the spec describes
+  what runs). List these reconciliations in `plan.json`; log notable ones to `adr.csv`.
+- **Ask (async) only the material ones**: security posture, data handling, a behavior
+  that looks like a bug vs a feature, ambiguous intent. Don't ask on obvious staleness.
+- Doc-stated intent the code never implemented -> that's a **gap req** (step 4), not a
+  current-state req.
+
+## 6. Plan the work breakdown (remote posts)
+
+Most of the system is already built. Do **NOT** fabricate done-tickets/issues for
+shipped code by default — done work blocks nothing and would pollute the dependency
+DAG.
+
+### Built work -> a Phase 0 epic, NO per-ticket done posts (default)
+
+Create one epic post titled **`EPIC-0000 Phase 0 — Already built`** at
+`:status:done`, listing the shipped capabilities as **plain ticket titles in its
+body** (each marked `✓ shipped`), with no child ticket/issue posts. Built reqs live in
+the SRS; their done-ness lives in this epic's body. They do not enter the ticket DAG.
+ROADMAP (runtime-rendered) will show this epic as a done outcome without per-ticket
+folders.
+
+### Optional: done-tickets for verification coverage (opt-in, per area)
+
+If the human wants automated `req -> ticket -> test` traceability over the existing
+code, offer to generate real done-tickets for chosen areas: `ticket:status:done`,
+`satisfies_reqs` set, test paths linked to the existing tests. PM-tier only — no issue
+decomposition (nobody claims done work). Off by default; ask which areas, if any.
+
+### Forward gaps -> full breakdown
+
+The gap reqs are the real work. Break them down per `work-breakdown.md`: tickets at
+`:status:todo`, **issues at `:status:awaiting_approval`** (the approval gate). Forward
+tickets' `satisfies_reqs` reference gap reqs; their `depends_on` DAG covers only
+forward work. Run the risk-detection & gating pass (adopt repos often touch real infra
+— expect gates). Compute the critical path + first sprint over the *remaining* work.
+Write SCHEDULE (you write it); ROADMAP and Current sprint are runtime-rendered.
+
+### No forward gaps
+
+If recon + imports find no forward gaps, say so plainly (async comment): the recovered
+spec maps what exists, but there is no claimable work yet. Skip forward breakdown,
+sprint planning, and the risk pass (unless the human opts into verification
+done-tickets). The runner idles until work is added (via `inject`, `adapt`, or
+`plan-next-sprint`). Do not invent work.
+
+## 7. Propagate-back (opt-in, one-time)
+
+If you imported + reconciled docs from the user's `spec/`/`docs/`, offer ONCE (async
+comment, default **no**): mirror the recovered/changed docs back into their original
+locations this one time? Default leaves the originals frozen; `<specseed_dir>/spec/`
+is the source of truth from now on. Never set up ongoing sync.
 
 ## Finish
 
-Per the protocol: `plan.json` -> `apply.py` -> `enqueue_spec_change_run(...)` ->
-stop. If you created any remaining-work issue, post one `APR-NNNN` request comment
-and park the request `spec-change:status:awaiting_approval` (the approval gate),
-not `done`. (Already-built `:status:done` issues need no approval.) Use async
-clarification for any material behavior you could not determine from the code.
+Per the protocol: `plan.json` -> `apply.py` -> `enqueue_spec_change_run(...)` -> stop.
+If you created any remaining-work issue, post one `APR-NNNN` request comment
+summarizing the breakdown (with the risk picture) and park the request
+`spec-change:status:awaiting_approval` (the approval gate), not `done`. Already-built
+`:status:done` posts need no approval. Use async clarification for any material
+behavior you could not determine from the code.

@@ -5,10 +5,13 @@ FakeAgentRunner only; TrackingRemoteLocal/TrackingLocal mirrors. No GitHub/GitLa
 
 from __future__ import annotations
 
+import json
 import tempfile
 import threading
 import unittest
 from pathlib import Path
+
+from specseed_runtime.scheduling.spec_change import spec_change_dir
 
 from specseed_runtime.db.database import Database
 from specseed_runtime.executing.agent_runner import (
@@ -350,6 +353,121 @@ class RollUpTest(_Base):
         self.assertIn("ticket:status:todo", self._remote_labels(2))
         self.assertTrue(self._remote_details(2).is_open)
         self.assertIn("epic:status:todo", self._remote_labels(1))
+
+
+class _SR2:
+    """State-result stub carrying both approval verdicts (for spec-change requests)."""
+
+    def __init__(self, approved_by=(), rejected_by=()):
+        self.approved_by = list(approved_by)
+        self.rejected_by = list(rejected_by)
+
+
+class SettleDocTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+
+    def test_prepends_frontmatter_when_absent(self) -> None:
+        doc = self.dir / "srs.md"
+        doc.write_text("# SRS\nbody\n", encoding="utf-8")
+        self.assertTrue(advance._settle_doc(doc, "2026-06-05"))
+        text = doc.read_text(encoding="utf-8")
+        self.assertTrue(text.startswith("---\nsettled: true\nsettled_at: 2026-06-05\n---\n"))
+        self.assertIn("# SRS", text)
+
+    def test_updates_existing_frontmatter_without_duplicating(self) -> None:
+        doc = self.dir / "srs.md"
+        doc.write_text("---\ncomponent: api\nsettled: false\n---\n\n# SRS\n", encoding="utf-8")
+        advance._settle_doc(doc, "2026-06-05")
+        text = doc.read_text(encoding="utf-8")
+        self.assertEqual(text.count("settled:"), 1)
+        self.assertIn("settled: true", text)
+        self.assertIn("settled_at: 2026-06-05", text)
+        self.assertIn("component: api", text)
+
+
+class SpecChangeRequestSettleTest(_Base):
+    REQ_LABELS = ["spec-change:adapt", "spec-change:status:awaiting_approval"]
+
+    def _request_entity(self):
+        for label in self.REQ_LABELS + ["spec-change:status:done", "spec-change:status:rejected"]:
+            self.remote.create_label(label)
+        rid = self.remote.add_entry("adapt request", labels=self.REQ_LABELS).data.id
+        entity = Entity.for_labels(post_id=rid, labels=list(self.REQ_LABELS))
+        entity.reactions = []
+        return rid, entity
+
+    def _write_plan(self, ctx, rid, settle_docs):
+        d = spec_change_dir(rid, ctx.storage)
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "plan.json").write_text(json.dumps({"settle_docs": settle_docs}), encoding="utf-8")
+
+    def _write_doc(self, name, text="---\ncomponent: api\n---\n\n# SRS\n"):
+        (self.root / "spec").mkdir(parents=True, exist_ok=True)
+        (self.root / "spec" / name).write_text(text, encoding="utf-8")
+
+    def test_approval_settles_docs_and_finalizes(self) -> None:
+        ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
+        rid, entity = self._request_entity()
+        self._write_doc("api-srs.md")
+        self._write_plan(ctx, rid, ["spec/api-srs.md"])
+        detail = advance.resolve_spec_change_request(ctx, entity, _SR2(approved_by=["alice"]))
+        self.assertIn("settled", detail)
+        self.assertIn("spec-change:status:done", self._remote_labels(rid))
+        self.assertNotIn("spec-change:status:awaiting_approval", self._remote_labels(rid))
+        self.assertIn("settled: true", (self.root / "spec" / "api-srs.md").read_text(encoding="utf-8"))
+
+    def test_rejection_marks_rejected_and_does_not_settle(self) -> None:
+        ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
+        rid, entity = self._request_entity()
+        self._write_doc("api-srs.md")
+        self._write_plan(ctx, rid, ["spec/api-srs.md"])
+        detail = advance.resolve_spec_change_request(ctx, entity, _SR2(rejected_by=["alice"]))
+        self.assertIn("rejected", detail)
+        self.assertIn("spec-change:status:rejected", self._remote_labels(rid))
+        self.assertNotIn("settled: true", (self.root / "spec" / "api-srs.md").read_text(encoding="utf-8"))
+
+    def test_no_verdict_returns_none(self) -> None:
+        ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
+        rid, entity = self._request_entity()
+        self.assertIsNone(advance.resolve_spec_change_request(ctx, entity, _SR2()))
+
+    def test_missing_plan_settles_nothing_but_finalizes(self) -> None:
+        ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
+        rid, entity = self._request_entity()
+        detail = advance.resolve_spec_change_request(ctx, entity, _SR2(approved_by=["alice"]))
+        self.assertIn("0 docs", detail)
+        self.assertIn("spec-change:status:done", self._remote_labels(rid))
+
+    def test_dispatch_resolves_request_without_agent(self) -> None:
+        # An approve comment on the request must settle + finalize deterministically,
+        # never invoking the agent.
+        class _BoomRunner:
+            def run(self, *a, **k):
+                raise AssertionError("agent must not run for a deterministic approval")
+
+        from specseed_runtime.executing.approvals import approval_request_comment
+
+        for label in self.REQ_LABELS + ["spec-change:status:done"]:
+            self.local.create_label(label)
+            self.remote.create_label(label)
+        marker = approval_request_comment("APR-0001", "the batch")
+        rid = self.local.add_entry("adapt request", labels=self.REQ_LABELS).data.id
+        self.local.add_entry_comment(rid, marker)
+        self.local.add_entry_comment(rid, "approve APR-0001")
+        # mirror into remote so the swap can mutate it (same first id)
+        self.remote.add_entry("adapt request", labels=self.REQ_LABELS)
+        self._write_doc("api-srs.md")
+        ctx = self._ctx(self._config(), _BoomRunner())
+        self._write_plan(ctx, rid, ["spec/api-srs.md"])
+        # the approve comment is authored by "agent" (the local author); make it an approver
+        ctx.config["approvals"]["approver_usernames"] = ["agent", "alice"]
+        out = dispatch(ctx, {"action": "handle_comment_added", "post_id": str(rid), "payload": {}})
+        self.assertTrue(out.success)
+        self.assertIn("settled", out.detail)
+        self.assertIn("spec-change:status:done", self._remote_labels(rid))
 
 
 if __name__ == "__main__":

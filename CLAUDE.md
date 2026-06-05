@@ -59,12 +59,13 @@ src/
     entities/                        #   epic/ticket/issue = meaning over neutral entries (tier/status/links). EntityRef
     state_machines/                  #   legal status transitions + approvals (👍/👎 reactions, approve/reject cmds)
     configuring/                     #   configure.py interactive setup -> config
-    migrating/                       #   storage migrations (hops); 0.3.1->0.4.0 deletes old copied code in targets
-skills/specseed/                     # the spec-change worker skill (markdown), at repo root
+    migrating/                       #   storage migrations (hops); 0.3.1->0.4.0 deletes copied code; 0.4.0->0.5.0 drops the seed marker so new labels re-seed
+skills/specseed/                     # the spec-change worker skill (markdown + helper scripts), at repo root
   SKILL.md                           #   START HERE. router: routes, contract, hard rules
   routes/                            #   adopt/adapt/tweak/inject/plan-next-sprint
-  references/                        #   spec-change-protocol, work-breakdown, remote-posts, component-questions
+  references/                        #   spec-change-protocol, work-breakdown, remote-posts, component-questions, question-protocol, chat-mode
   references_ext/                    #   caveman.md (density) + humanizer.md (naturalness)
+  scripts/                           #   stdlib helpers over local spec/ + plan.json ONLY: requirements_generate_json, requirements_analyze, critical_path, sprint_pack
   templates/entity_templates/        #   epic/ticket/issue/bug/feature emitted into target
 storage/                             # dev runtime data (gitignored); a target's lives at <specseed_dir>/storage/
 tests/unit/python/                   # default test suite (units)
@@ -85,6 +86,14 @@ tests/integration/python/            # opt-in integration tests (marker: integra
   runs `apply.py`) vs work handlers (read entity, judge state+perms in code, build prompt, run agent).
 - **db/database.py** - NOT a mirror; a queue of work derived from sync diffs. WAL + `BEGIN IMMEDIATE`
   claim so two workers never grab one task. Pure accessors, no policy.
+- **labels** (`tracking/supported_values.py` + `populate_defaults.py`) - tier + status, plus
+  `type:<feature|bug|chore|spike|qa>` and `difficulty:<easy|hard>` on work posts. Seeded on startup;
+  existing targets re-seed via the 0.5.0 migration (drops the seed marker).
+- **settle-on-approval** (`executing/advance.resolve_spec_change_request`, wired in `dispatch._run_work`) -
+  the spec-change REQUEST parks `spec-change:status:awaiting_approval`; when an approver 👍s / `approve`s it,
+  the runtime stamps `settled: true` + `settled_at` on the docs the worker listed in `plan.json.settle_docs`
+  and moves the request to `done`. Deterministic, no agent. The skill never writes `settled`; adapt is the
+  only route that reopens a settled doc.
 
 ## Testing (enforced)
 

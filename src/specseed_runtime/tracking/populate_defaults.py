@@ -98,6 +98,28 @@ LABEL_SPECS = [
             "deprecated": "555555",
         }.items()
     ],
+    *[
+        LabelSpec(
+            f"type:{kind}",
+            color,
+            f"Work item of kind {kind}.",
+        )
+        for kind, color in {
+            "feature": "0e8a16",
+            "bug": "b60205",
+            "chore": "c2e0c6",
+            "spike": "fbca04",
+            "qa": "5319e7",
+        }.items()
+    ],
+    *[
+        LabelSpec(
+            f"difficulty:{level}",
+            color,
+            f"Issue difficulty {level} (modifies the code-review gate).",
+        )
+        for level, color in {"easy": "c2e0c6", "hard": "b60205"}.items()
+    ],
     LabelSpec(
         "management",
         "6f42c1",

@@ -48,8 +48,12 @@ When the request asks for help, or when there is no un-specced roadmap tail left
   New ids continue the per-component numbering. Do not edit existing rows.
 - **SDD/SAD:** write/extend the SDD for the slice; deepen only the SAD skeleton
   blocks this slice touches. Leave settled blocks alone.
-- Regenerate `reqs.json` over the now-larger SRS set.
+- Regenerate `reqs.json` via `scripts/requirements_generate_json.py`; re-run
+  `scripts/requirements_analyze.py` and resolve any cycles (`work-breakdown.md`).
 - `adr.csv`: append rows for new decisions only.
+- Record the spec docs/sections this slice newly wrote in `plan.json.settle_docs`
+  (the new SDD/SRS for the slice), so the runtime settles them on approval. You never
+  reopen an already-settled block; you only settle the new slice's own docs.
 
 If extending the slice reveals that a settled decision is wrong, **stop and route
 to adapt** for that change (note it in `plan.json`), then resume.
@@ -58,9 +62,12 @@ to adapt** for that change (note it in `plan.json`), then resume.
 
 - Create tickets/issues for the slice's roadmap titles (`creates`, body links,
   `satisfies_reqs` -> the reqs just added). Tickets at `:status:todo`; **issues at
-  `:status:awaiting_approval`** (gated, per the protocol's approval gate).
-- Recompute ticket-tier critical path across **all** tickets (prior + new); each
-  slice sharpens it.
+  `:status:awaiting_approval`** (gated, per the protocol's approval gate). Label each
+  issue with its `type:` (and `difficulty:`) and run the risk-detection & gating pass
+  over the new issues (`work-breakdown.md`).
+- Recompute ticket-tier critical path across **all** tickets (prior + new) with
+  `scripts/critical_path.py`; each slice sharpens it. Pack with
+  `scripts/sprint_pack.py`.
 - Pack the new tickets into the next sprint. Refresh the SCHEDULE body
   (`edit_entry`). ROADMAP and Current sprint re-render from the runtime — do not
   hand-edit them.

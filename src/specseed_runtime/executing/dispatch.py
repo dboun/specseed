@@ -409,6 +409,21 @@ def _run_work(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
         next_states=list(getattr(state_result, "next_states", []) or []),
     )
 
+    # A spec-change REQUEST parked awaiting_approval is finalized deterministically:
+    # an approval settles its spec docs (plan.json.settle_docs) and moves it to done; a
+    # rejection moves it to rejected. No agent run. Only when it is NOT an approval (a
+    # wake comment that is a clarification answer) do we fall through and re-run the worker.
+    if _spec_change_route(entity) is not None and _spec_change_status(entity) == "awaiting_approval":
+        settled = advance.resolve_spec_change_request(ctx, entity, state_result)
+        if settled is not None:
+            platform_log.log_event(
+                "spec_change_request_resolved",
+                task_id=task.get("task_id"),
+                post_id=post_id,
+                detail=settled,
+            )
+            return HandlerOutcome(success=True, detail=settled)
+
     # Approval gates are resolved in code, with no agent run: an approver's
     # `approve <id>` comment moves an awaiting_approval entity forward.
     if getattr(entity, "status", None) == "awaiting_approval":

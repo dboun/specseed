@@ -54,10 +54,30 @@ The old interactive specseed did far more. This worker deliberately drops it:
   spec-change post (title + body + comments), read from the **local** tracker.
   When you genuinely cannot proceed, you ask **asynchronously** (see "Async
   clarification") and stop, you do not block.
-- **No configure / migrate / change-request / approve / bootstrap routes.** Those are gone.
-- **No local `project_management/` tree, no assemble/validate/claim scripts.**
-  The work breakdown lives as **remote posts**, not local folders or JSON.
+- **No configure / migrate / change-request / approve / bootstrap routes.** Those are
+  gone (bootstrap is folded into `adapt` cold-start). Configure/migrate/approval are
+  runtime concerns now, not skill routes.
+- **No local `project_management/` tree, no assemble/validate/claim scripts.** The work
+  breakdown lives as **remote posts**, not local folders or JSON. (The skill DOES carry
+  deterministic helper scripts — `skills/specseed/scripts/` — but they only compute over
+  the local `spec/` files + `plan.json`: reqs generation, cycle detection, critical
+  path, sprint packing. See "Skill scripts".)
 - **No branch, merge, PR, or git work.** Not this skill's job.
+
+## Skill scripts
+
+`skills/specseed/scripts/` holds stdlib-only python the route runs while planning. They
+operate ONLY on local `spec/` files and the request's `plan.json` — never on the remote
+or the local tracker DB. Use them instead of hand-computing what they own:
+
+- `requirements_generate_json.py` — SRS requirement tables -> `reqs.json`.
+- `requirements_analyze.py` — cycle / orphan / dangling-ref detection over `reqs.json`.
+- `critical_path.py` — longest dependency chain over the ticket delta in `plan.json`.
+- `sprint_pack.py` — cohesion-aware, dependency-respecting sprint packing of that delta.
+
+They are helpers, not the contract: the two outputs are still the spec edits +
+`apply.py`. Work-item type and difficulty are carried as `type:<kind>` and
+`difficulty:<level>` **labels** on the posts (`references/remote-posts.md`).
 
 ## Invocation
 
@@ -132,19 +152,23 @@ epic-gating. Full contract + helpers in `references/spec-change-protocol.md`
 
 ## Async clarification (the question path in runner mode)
 
-In runner mode this worker cannot interview a human live (chat mode asks live via
-the questions protocol — `references/chat-mode.md`). When a request is too
-ambiguous to proceed safely:
+In runner mode this worker cannot interview a human live, but it is not limited to
+one question. When a request is too ambiguous to proceed safely, post a **clarification
+round** (the confidence/suggestion format in `references/question-protocol.md` — a
+round may carry several questions), then park and wait. The headless rule is "one
+round, then stop," not "one question."
 
 1. Make the spec edits you ARE confident about (if any), or none.
-2. In `apply.py`, the remote action is a **comment** on the spec-change post
-   stating exactly what you need, plus adding the label
-   `spec-change:status:awaiting_approval`.
-3. Enqueue as normal and stop. The human answers on the remote; the next poll
-   re-triggers this route with their reply in the post comments.
+2. In `apply.py`, the remote action is the question round posted as a **comment (or
+   comments)** on the spec-change post, plus adding the label
+   `spec-change:status:awaiting_approval`. Record the round in `plan.json` (the
+   `questions` key) so a re-trigger does not re-ask.
+3. Enqueue as normal and stop. The human answers on the remote (a one-word `OK` takes
+   all your suggestions); the next poll re-triggers this route with their reply in the
+   post comments.
 
-Do not guess past a material ambiguity. A focused async question beats a wrong
-spec.
+Do not guess past a material ambiguity. A focused, well-suggested round beats a wrong
+spec. Chat mode asks the same round live (`references/chat-mode.md`).
 
 ## Hard rules
 

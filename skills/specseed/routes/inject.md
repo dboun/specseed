@@ -54,7 +54,8 @@ All manual work created by this route becomes the **current sprint**.
   already contains actionable work. Otherwise create the epic only and ask for
   the first ticket or acceptance condition.
 - Use the templates in `templates/entity_templates/` for bodies. Mark bodies
-  with "Manual: yes" and preserve the request-post link.
+  with "Manual: yes" and preserve the request-post link. Label each issue with its
+  `type:` (`feature`/`bug`/`chore`/`spike`) and an optional `difficulty:`.
 - Body-link relationships both ways as much as possible (`Epic: #12`,
   `Ticket: #41`, `Issues: ...`, `Depends on: ...`). For posts created in the
   same plan, use stable temporary refs in `plan.json` and have `apply.py`

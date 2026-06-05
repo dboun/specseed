@@ -29,7 +29,10 @@ Only Python stdlib is used.
 
 from __future__ import annotations
 
+import datetime
+import json
 import re
+from pathlib import Path
 from typing import Any, Optional
 
 from specseed_runtime.entities.entity_base import (
@@ -38,6 +41,7 @@ from specseed_runtime.entities.entity_base import (
 )
 from specseed_runtime.executing import platform_log
 from specseed_runtime.executing import relationships
+from specseed_runtime.scheduling.spec_change import spec_change_dir
 
 
 # Hidden marker stamped on every review comment so attempts can be counted from
@@ -329,6 +333,112 @@ def resolve_approval(ctx: Any, entity: Any, state_result: Any, conversation: Any
         "explicitly.".format(rejecter),
     )
     return "approval gate -> blocked (rejected)"
+
+
+# --------------------------------------------------------------------------- #
+# spec-change request approval (settle the spec, finalize the request)
+# --------------------------------------------------------------------------- #
+_SPEC_CHANGE_STATUS_PREFIX = "spec-change:status:"
+
+
+def _spec_change_status_label(labels: Any) -> Optional[str]:
+    for label in labels or []:
+        name = str(label)
+        if name.startswith(_SPEC_CHANGE_STATUS_PREFIX):
+            return name
+    return None
+
+
+def _set_spec_change_status(ctx: Any, entity: Any, new_status: str) -> None:
+    """Swap the request's ``spec-change:status:*`` label (tier-less, so not _set_status)."""
+    current = _spec_change_status_label(getattr(entity, "labels", []) or [])
+    if current is not None:
+        ctx.remote.remove_entry_label(entity.post_id, current)
+    ctx.remote.add_entry_label(entity.post_id, _SPEC_CHANGE_STATUS_PREFIX + new_status)
+
+
+def _settle_doc(path: Path, when: str) -> bool:
+    """Stamp ``settled: true`` + ``settled_at`` into a spec doc's frontmatter.
+
+    Updates the keys in an existing ``---`` frontmatter block, or prepends one.
+    Returns True if the file was written.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    lines = text.splitlines()
+    if lines and lines[0].strip() == "---":
+        end = None
+        for i in range(1, len(lines)):
+            if lines[i].strip() == "---":
+                end = i
+                break
+        if end is not None:
+            block = lines[1:end]
+            block = [ln for ln in block if not re.match(r"\s*settled(_at)?\s*:", ln)]
+            block.append("settled: true")
+            block.append(f"settled_at: {when}")
+            new = ["---", *block, "---", *lines[end + 1:]]
+            path.write_text("\n".join(new) + "\n", encoding="utf-8")
+            return True
+    header = ["---", "settled: true", f"settled_at: {when}", "---", ""]
+    path.write_text("\n".join(header) + "\n" + text, encoding="utf-8")
+    return True
+
+
+def _settle_docs_for_request(ctx: Any, request_id: Any) -> list[str]:
+    """Read ``plan.json.settle_docs`` for the request and stamp each doc. Returns paths done."""
+    plan_path = spec_change_dir(request_id, ctx.storage) / "plan.json"
+    try:
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    specseed_dir = Path(ctx.storage).parent
+    when = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+    done: list[str] = []
+    for rel in plan.get("settle_docs", []) or []:
+        candidate = specseed_dir / rel
+        if not candidate.exists():
+            candidate = specseed_dir / "spec" / rel
+        if candidate.exists() and _settle_doc(candidate, when):
+            done.append(rel)
+    return done
+
+
+def resolve_spec_change_request(ctx: Any, entity: Any, state_result: Any) -> Optional[str]:
+    """Finalize an ``awaiting_approval`` spec-change REQUEST once an approver acts.
+
+    Deterministic, no agent: an approval settles the spec docs the worker listed in
+    ``plan.json.settle_docs`` and moves the request to ``done``; a rejection moves it to
+    ``rejected``. Returns a detail string if a transition was applied, else None (still
+    waiting - the caller then lets a wake comment re-run the worker, e.g. a clarification
+    answer that is not an approval).
+    """
+    approved = getattr(state_result, "approved_by", None)
+    rejected = getattr(state_result, "rejected_by", None)
+    if not approved and not rejected:
+        return None
+    if not _can_write(ctx):
+        return None
+    if approved:
+        approver = approved[0]
+        settled = _settle_docs_for_request(ctx, entity.post_id)
+        _set_spec_change_status(ctx, entity, "done")
+        note = (
+            "Approved by {0}. Spec settled ({1} doc(s)): {2}. Request done.".format(
+                approver, len(settled), ", ".join(settled) or "none"
+            )
+        )
+        _comment(ctx, entity.post_id, note)
+        platform_log.log_event(
+            "spec_change_settled", post_id=entity.post_id, approver=approver, docs=settled
+        )
+        return "spec-change approved -> settled ({0} docs) + done".format(len(settled))
+    rejecter = rejected[0]
+    _set_spec_change_status(ctx, entity, "rejected")
+    _comment(ctx, entity.post_id, "Rejected by {0}; request rejected.".format(rejecter))
+    return "spec-change rejected"
 
 
 def _review_summary(stdout: str, limit: int = 1500) -> str:

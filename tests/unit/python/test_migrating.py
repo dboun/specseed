@@ -15,6 +15,7 @@ from unittest import mock
 
 from specseed_runtime.migrating import m_0_3_0__0_3_1
 from specseed_runtime.migrating import m_0_3_1__0_4_0
+from specseed_runtime.migrating import m_0_4_0__0_5_0
 from specseed_runtime.migrating import migrate
 from specseed_runtime import storage_paths
 
@@ -66,7 +67,9 @@ class RunMigrationsTest(unittest.TestCase):
             applied = migrate.run_migrations(storage=storage, specseed_dir=specseed_dir)
 
             # The whole chain up to the running engine, in order.
-            self.assertEqual(applied, ["m_0_3_0__0_3_1", "m_0_3_1__0_4_0"])
+            self.assertEqual(
+                applied, ["m_0_3_0__0_3_1", "m_0_3_1__0_4_0", "m_0_4_0__0_5_0"]
+            )
             self.assertEqual(migrate.storage_version(storage), migrate.code_version())
 
     def test_current_storage_is_noop(self) -> None:
@@ -222,6 +225,39 @@ class Hop_0_3_1__0_4_0_Test(unittest.TestCase):
 
             # nothing left to delete the second time
             self.assertEqual(m_0_3_1__0_4_0.run(_storage, specseed_dir), [])
+
+
+class Hop_0_4_0__0_5_0_Test(unittest.TestCase):
+    def _old_shape(self, root: Path) -> tuple[Path, Path]:
+        specseed_dir, storage = _fixture_tree(root, version="0.5.0")
+        storage.mkdir(parents=True)
+        migrate.write_storage_version("0.4.0", storage)
+        (storage / "seed_state.json").write_text('{"kind": "remote_github"}', encoding="utf-8")
+        (storage / "configuration.json").write_text('{"keep": true}\n', encoding="utf-8")
+        return specseed_dir, storage
+
+    def test_deletes_seed_marker_forcing_reseed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            specseed_dir, storage = self._old_shape(Path(tmp))
+
+            applied = migrate.run_migrations(storage=storage, specseed_dir=specseed_dir)
+
+            self.assertIn("m_0_4_0__0_5_0", applied)
+            self.assertFalse((storage / "seed_state.json").exists())
+            # unrelated storage data survives
+            self.assertEqual(
+                (storage / "configuration.json").read_text(encoding="utf-8"), '{"keep": true}\n'
+            )
+            self.assertEqual(migrate.storage_version(storage), migrate.code_version())
+
+    def test_run_returns_marker_and_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            _specseed_dir, storage = self._old_shape(Path(tmp))
+
+            deleted = [p.name for p in m_0_4_0__0_5_0.run(storage, _specseed_dir)]
+            self.assertEqual(deleted, ["seed_state.json"])
+
+            self.assertEqual(m_0_4_0__0_5_0.run(storage, _specseed_dir), [])
 
 
 if __name__ == "__main__":
