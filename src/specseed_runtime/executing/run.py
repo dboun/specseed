@@ -47,6 +47,7 @@ from specseed_runtime.executing.agent_runner import (
     build_runner_chains,
 )
 from specseed_runtime.executing import platform_log
+from specseed_runtime.executing import runner_control
 from specseed_runtime.executing.scheduler import Scheduler
 from specseed_runtime.migrating.migrate import run_migrations
 from specseed_runtime.storage_paths import storage_db_path
@@ -95,6 +96,8 @@ def build_scheduler(
         storage=storage_dir,
         repo_root=Path(repo_root) if repo_root else Path.cwd(),
         poll_interval=interval,
+        control_file=runner_control.control_file(storage_dir),
+        status_file=runner_control.status_file(storage_dir),
     )
 
 
@@ -216,6 +219,9 @@ def main(argv: Optional[list[str]] = None) -> int:
             except (ValueError, OSError):  # not the main thread / unsupported
                 pass
 
+        # A fresh foreground run overrides any stale pause/stop flag a prior
+        # runner left behind, so the operator's intent (running) is honored.
+        runner_control.resume_runner(storage_dir)
         scheduler.start()
         print(f"specseed scheduler started (interval={scheduler.poll_interval}s). Ctrl-C to stop.")
         try:

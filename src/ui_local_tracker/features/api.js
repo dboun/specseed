@@ -1,78 +1,51 @@
 async function request(path, options = {}) {
   const response = await fetch(path, {
     ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers || {}),
-    },
+    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
   });
-  const payload = await response.json();
-  if (!payload.ok) {
-    throw new Error(payload.error || "tracking op failed");
+  let payload;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new Error(`bad response (${response.status})`);
   }
-  return payload;
+  if (!payload.ok) throw new Error(payload.error || "request failed");
+  return payload.data;
 }
 
+const post = (path, body) => request(path, { method: "POST", body: JSON.stringify(body || {}) });
+const enc = encodeURIComponent;
+const base = (id) => `/api/repos/${enc(id)}`;
+
 export const api = {
-  async meta() {
-    return (await request("/api/meta")).data;
-  },
+  // registry
+  repos: () => request("/api/repos"),
+  addRepo: (data) => post("/api/repos", data),
+  repo: (id) => request(base(id)),
+  removeRepo: (id) => request(base(id), { method: "DELETE" }),
+  setup: (id, data) => post(`${base(id)}/setup`, data),
+  meta: (id) => request(`${base(id)}/meta`),
 
-  async listPosts(state) {
-    return request(`/api/posts?state=${encodeURIComponent(state)}`);
-  },
+  // monitor + runner
+  monitor: (id) => request(`${base(id)}/monitor`),
+  runner: (id, action) => post(`${base(id)}/runner`, { action }),
 
-  async getPost(id) {
-    return (await request(`/api/posts/${encodeURIComponent(id)}`)).data;
-  },
+  // configuration
+  getConfig: (id) => request(`${base(id)}/config`),
+  putConfig: (id, config) => request(`${base(id)}/config`, { method: "PUT", body: JSON.stringify({ config }) }),
 
-  async createPost(data) {
-    return (await request("/api/posts", { method: "POST", body: JSON.stringify(data) })).data;
-  },
-
-  async savePost(id, data) {
-    return (await request(`/api/posts/${encodeURIComponent(id)}`, {
-      method: "PATCH",
-      body: JSON.stringify(data),
-    })).data;
-  },
-
-  async deletePost(id) {
-    return (await request(`/api/posts/${encodeURIComponent(id)}`, { method: "DELETE" })).data;
-  },
-
-  async togglePost(id) {
-    return (await request(`/api/posts/${encodeURIComponent(id)}/toggle`, { method: "POST" })).data;
-  },
-
-  async updateLabel(id, action, label) {
-    return (await request(`/api/posts/${encodeURIComponent(id)}/labels`, {
-      method: "POST",
-      body: JSON.stringify({ action, label }),
-    })).data;
-  },
-
-  async addComment(id, body) {
-    return (await request(`/api/posts/${encodeURIComponent(id)}/comments`, {
-      method: "POST",
-      body: JSON.stringify({ body }),
-    })).data;
-  },
-
-  async reactToPost(id, reaction, toggle = false) {
-    return (await request(`/api/posts/${encodeURIComponent(id)}/reactions`, {
-      method: "POST",
-      body: JSON.stringify({ reaction, toggle }),
-    })).data;
-  },
-
-  async reactToComment(id, commentId, reaction, toggle = false) {
-    return (await request(
-      `/api/posts/${encodeURIComponent(id)}/comments/${encodeURIComponent(commentId)}/reactions`,
-      {
-        method: "POST",
-        body: JSON.stringify({ reaction, toggle }),
-      },
-    )).data;
-  },
+  // tracker (local provider only)
+  listPosts: (id, state) => request(`${base(id)}/posts?state=${enc(state)}`),
+  getPost: (id, postId) => request(`${base(id)}/posts/${enc(postId)}`),
+  createPost: (id, data) => post(`${base(id)}/posts`, data),
+  savePost: (id, postId, data) =>
+    request(`${base(id)}/posts/${enc(postId)}`, { method: "PATCH", body: JSON.stringify(data) }),
+  deletePost: (id, postId) => request(`${base(id)}/posts/${enc(postId)}`, { method: "DELETE" }),
+  togglePost: (id, postId) => post(`${base(id)}/posts/${enc(postId)}/toggle`),
+  updateLabel: (id, postId, action, label) => post(`${base(id)}/posts/${enc(postId)}/labels`, { action, label }),
+  addComment: (id, postId, body) => post(`${base(id)}/posts/${enc(postId)}/comments`, { body }),
+  reactPost: (id, postId, reaction, toggle = true) =>
+    post(`${base(id)}/posts/${enc(postId)}/reactions`, { reaction, toggle }),
+  reactComment: (id, postId, commentId, reaction, toggle = true) =>
+    post(`${base(id)}/posts/${enc(postId)}/comments/${enc(commentId)}/reactions`, { reaction, toggle }),
 };

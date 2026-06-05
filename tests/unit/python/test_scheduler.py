@@ -16,6 +16,7 @@ No GitHub/GitLab.
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import threading
 import time
@@ -234,6 +235,42 @@ class SchedulerTest(unittest.TestCase):
         # The interrupted task was requeued, not marked failed.
         self.assertEqual(self.db.get_task(task["task_id"])["status"], "pending")
         self.assertGreaterEqual(len(runner.calls), 1)
+
+    # -- out-of-band control file (CLI / web service) -------------------- #
+    def test_control_file_drives_state_and_heartbeat(self) -> None:
+        from specseed_runtime.executing import runner_control
+
+        storage = self.root / "storage"
+        storage.mkdir(parents=True, exist_ok=True)
+        sched = Scheduler(
+            db=self.db,
+            runner=self.runner,
+            config=_config(),
+            storage=storage,
+            repo_root=self.root,
+            remote=self.remote,
+            local=self.local,
+            poll_interval=0.0,
+            tick=0.05,
+            control_file=runner_control.control_file(storage),
+            status_file=runner_control.status_file(storage),
+            heartbeat_interval=0.0,
+        )
+        sched.resume()
+        self.assertEqual(sched.state, RUNNING)
+
+        runner_control.write_command(storage, runner_control.PAUSED)
+        sched._reconcile_control_file()
+        self.assertEqual(sched.state, PAUSED)
+
+        runner_control.write_command(storage, runner_control.STOPPED)
+        sched._reconcile_control_file()
+        self.assertEqual(sched.state, STOPPED)
+
+        sched._heartbeat(force=True)
+        status = runner_control.read_runner_status(storage)
+        self.assertEqual(status.get("pid"), os.getpid())
+        self.assertTrue(status.get("alive"))
 
 
 if __name__ == "__main__":

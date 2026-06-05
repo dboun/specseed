@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -188,29 +189,78 @@ class MainTest(unittest.TestCase):
             self.assertEqual(remote["repo"], "local/example")
             self.assertFalse((target / ".gitignore").exists())
 
-    def test_remote_local_requires_setup(self) -> None:
+class ManagementTest(unittest.TestCase):
+    """add / list / start / pause over the global registry (isolated home)."""
+
+    def _env(self, home: Path):
+        return mock.patch.dict(os.environ, {"SPECSEED_HOME": str(home)})
+
+    def test_add_local_registers_and_configures(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            target = Path(tmp).resolve()
-            with mock.patch.object(specseed, "_run_remote_local_ui") as ui_main:
-                rc = specseed.main(["remote_local", "--target", str(target), "--ui"])
+            home = Path(tmp) / "home"
+            target = Path(tmp) / "repo"
+            target.mkdir()
+            with self._env(home):
+                rc = specseed.main(["add", "--target", str(target), "--provider", "local"])
+                self.assertEqual(rc, 0)
+                record = specseed.registry.get_repo(str(target))
+                self.assertIsNotNone(record)
+                self.assertEqual(record["provider"], "local")
+            storage = target / ".specseed" / "storage"
+            self.assertTrue((storage / "configuration.json").is_file())
+            remote = json.loads((storage / "remote.json").read_text(encoding="utf-8"))
+            self.assertFalse(remote["enabled"])
 
-            self.assertEqual(rc, 1)
-            ui_main.assert_not_called()
-
-    def test_remote_local_ui_uses_target_storage_db(self) -> None:
+    def test_add_github_requires_repo_and_token(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            target = Path(tmp).resolve()
-            self.assertEqual(specseed.main(["configure", "--target", str(target), "--defaults"]), 0)
+            home = Path(tmp) / "home"
+            target = Path(tmp) / "repo"
+            target.mkdir()
+            with self._env(home):
+                rc = specseed.main(["add", "--target", str(target), "--provider", "github"])
+            self.assertEqual(rc, 2)
 
-            with mock.patch.object(specseed, "_run_remote_local_ui") as ui_main:
-                rc = specseed.main(["remote_local", "--target", str(target), "--ui"])
-
+    def test_start_spawns_runner_for_configured_repo(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            target = Path(tmp) / "repo"
+            target.mkdir()
+            with self._env(home):
+                self.assertEqual(
+                    specseed.main(["add", "--target", str(target), "--provider", "local"]), 0
+                )
+                with mock.patch.object(
+                    specseed.runner_control, "start_runner", return_value={"alive": True, "pid": 4242}
+                ) as spawn:
+                    rc = specseed.main(["start", "--target", str(target)])
             self.assertEqual(rc, 0)
-            argv = ui_main.call_args.args[0]
-            self.assertEqual(
-                argv[argv.index("--db") + 1],
-                str(target / ".specseed" / "storage" / "tracking_remote_local.db"),
-            )
+            self.assertEqual(spawn.call_args.args[0]["provider"], "local")
+
+    def test_pause_writes_control_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            target = Path(tmp) / "repo"
+            target.mkdir()
+            with self._env(home):
+                self.assertEqual(
+                    specseed.main(["add", "--target", str(target), "--provider", "local"]), 0
+                )
+                self.assertEqual(specseed.main(["pause", "--target", str(target)]), 0)
+                storage = target / ".specseed" / "storage"
+                self.assertEqual(
+                    specseed.runner_control.read_desired(storage), specseed.runner_control.PAUSED
+                )
+
+    def test_list_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            target = Path(tmp) / "repo"
+            target.mkdir()
+            with self._env(home):
+                self.assertEqual(
+                    specseed.main(["add", "--target", str(target), "--provider", "local"]), 0
+                )
+                self.assertEqual(specseed.main(["list"]), 0)
 
 
 if __name__ == "__main__":

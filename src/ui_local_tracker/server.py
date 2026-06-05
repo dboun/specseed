@@ -1,3 +1,14 @@
+"""specseed web service - one server, all repos.
+
+A single shared web UI over the global registry. Each repo's runner stays a
+separate process; this server only reads their storage (queue db, logs, runner
+heartbeat) and writes the small control file to command them. The tracker
+endpoints are scoped per repo and only meaningful for the local provider;
+github/gitlab repos are managed on their own platform.
+
+Only Python stdlib is used.
+"""
+
 from __future__ import annotations
 
 import json
@@ -5,6 +16,8 @@ import mimetypes
 import os
 import sqlite3
 import sys
+import threading
+import webbrowser
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -25,25 +38,31 @@ def _add_repo_root_to_path() -> None:
 
 _add_repo_root_to_path()
 
-from specseed_runtime.tracking.supported_values import SUPPORTED_REACTIONS
-from specseed_runtime.tracking.tracking_remote_local import DEFAULT_DB_PATH, TrackingRemoteLocal
-
+from specseed_runtime import registry
+from specseed_runtime.configuring import configure
+from specseed_runtime.executing import runner_control
+from specseed_runtime.tracking import populate_defaults
+from specseed_runtime.tracking.resolve_remote import resolve_remote
+from specseed_runtime.tracking.supported_values import (
+    DIFFICULTY_LABELS,
+    SUPPORTED_REACTIONS,
+    WORK_TYPE_LABELS,
+)
 
 ROOT = Path(__file__).resolve().parent
-PORT = int(os.environ.get("PORT", "5000"))
-AUTHOR = os.environ.get("TRACKER_AUTHOR", "remote")
+
+# Permanent dashboard posts the tracker manages itself (SCHEDULE/ROADMAP/CONTROL/
+# Current sprint) - surfaced as quick toggles, never in the normal list. The adapt
+# DRAFT post is NOT one of these: it is a user-editable request template.
+DEFAULT_POST_TITLES = {
+    title for title, _body, labels, _pin in populate_defaults.DEFAULT_POSTS if "management" in labels
+}
 
 
-def _db_path() -> Path:
-    return Path(os.environ.get("TRACKER_DB_PATH") or DEFAULT_DB_PATH)
-
-
-def _tracker() -> TrackingRemoteLocal:
-    return TrackingRemoteLocal(db_path=_db_path(), author=os.environ.get("TRACKER_AUTHOR", AUTHOR))
-
-
-def _author() -> str:
-    return os.environ.get("TRACKER_AUTHOR", AUTHOR)
+def _human_labels() -> list[str]:
+    base = [f"spec-change:{r}" for r in ("adopt", "adapt", "tweak", "inject", "plan-next-sprint")]
+    base += sorted(WORK_TYPE_LABELS) + sorted(DIFFICULTY_LABELS) + ["question"]
+    return base
 
 
 def _now() -> str:
@@ -53,9 +72,7 @@ def _now() -> str:
 def _plain(value: object) -> object:
     if is_dataclass(value):
         return asdict(value)
-    if isinstance(value, list):
-        return [_plain(item) for item in value]
-    if isinstance(value, tuple):
+    if isinstance(value, (list, tuple)):
         return [_plain(item) for item in value]
     if isinstance(value, dict):
         return {str(key): _plain(item) for key, item in value.items()}
@@ -69,11 +86,7 @@ def _ok(result: object) -> object:
 
 
 def _state(value: str | None) -> bool | None:
-    if value == "open":
-        return True
-    if value == "closed":
-        return False
-    return None
+    return {"open": True, "closed": False}.get(value or "", None)
 
 
 def _csv(value: object) -> list[str]:
@@ -84,28 +97,151 @@ def _csv(value: object) -> list[str]:
     return [part.strip() for part in str(value).split(",") if part.strip()]
 
 
-def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(_db_path())
+# --------------------------------------------------------------------------- #
+# per-repo context
+# --------------------------------------------------------------------------- #
+class RepoNotFound(Exception):
+    pass
+
+
+class ExternallyManaged(Exception):
+    pass
+
+
+def _repo(repo_id: str) -> dict:
+    record = registry.get_repo(repo_id)
+    if record is None:
+        raise RepoNotFound(repo_id)
+    return record
+
+
+def _tracker_db(storage: str | Path) -> Path:
+    return Path(storage) / "tracking_remote_local.db"
+
+
+def _queue_db(storage: str | Path) -> Path:
+    return Path(storage) / "specseed.db"
+
+
+def _tracker_for(record: dict):
+    if record.get("provider") != "local":
+        raise ExternallyManaged(record.get("provider"))
+    return resolve_remote(record["storage"])
+
+
+def _external_link(record: dict) -> str | None:
+    remote = configure.load_remote_state(record["storage"])
+    provider, repo = remote.get("provider"), remote.get("repo")
+    if not repo:
+        return None
+    if provider == "github":
+        return f"https://github.com/{repo}/issues"
+    if provider == "gitlab":
+        return f"https://gitlab.com/{repo}/-/issues"
+    return None
+
+
+# --------------------------------------------------------------------------- #
+# monitor data (read-only over storage)
+# --------------------------------------------------------------------------- #
+def _read_tasks(storage: str | Path, limit: int = 100) -> dict:
+    db = _queue_db(storage)
+    out = {"tasks": [], "errors": [], "counts": {"pending": 0, "in_progress": 0, "success": 0, "failed": 0}}
+    if not db.exists():
+        return out
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5.0)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT task_id, action, post_id, status, attempts, created_at, last_attempted_at "
+            "FROM tasks ORDER BY task_id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        out["tasks"] = [dict(r) for r in rows]
+        for r in conn.execute("SELECT status, COUNT(*) n FROM tasks GROUP BY status").fetchall():
+            out["counts"][r["status"]] = r["n"]
+        errs = conn.execute(
+            "SELECT error_id, task_id, message, executed_at FROM task_errors "
+            "ORDER BY error_id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        out["errors"] = [dict(r) for r in errs]
+        conn.close()
+    except sqlite3.Error as exc:
+        out["db_error"] = str(exc)
+    return out
+
+
+def _tail(path: Path, lines: int = 120) -> list[dict]:
+    if not path.exists():
+        return []
+    try:
+        raw = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    out = []
+    for line in raw[-lines:]:
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            out.append({"raw": line})
+    return out
+
+
+def _config_gate(status: dict) -> dict:
+    """Whether the configuration may be edited, given the runner state."""
+    state = status.get("state", "stopped")
+    alive = bool(status.get("alive"))
+    in_progress = int(status.get("in_progress") or 0)
+    if not alive or state == "stopped":
+        return {"editable": True, "reason": ""}
+    if state == "running":
+        return {"editable": False, "reason": "Pause or stop the runner before changing configuration."}
+    if state == "paused" and in_progress > 0:
+        return {
+            "editable": False,
+            "reason": "Paused, but the last job is still finishing. Check back in a few minutes.",
+        }
+    return {"editable": True, "reason": ""}
+
+
+def _repo_summary(record: dict) -> dict:
+    storage = record["storage"]
+    status = runner_control.read_runner_status(storage)
+    configured = (Path(storage) / "configuration.json").is_file() and (
+        Path(storage) / "remote.json"
+    ).is_file()
+    return {
+        "id": record["id"],
+        "name": record["name"],
+        "provider": record["provider"],
+        "target": record["target"],
+        "configured": configured,
+        "external_link": _external_link(record),
+        "runner": {
+            "state": status.get("state", "stopped"),
+            "alive": bool(status.get("alive")),
+            "pending": status.get("pending"),
+            "in_progress": status.get("in_progress"),
+            "pid": status.get("pid"),
+        },
+    }
+
+
+# --------------------------------------------------------------------------- #
+# tracker reaction toggles (direct sqlite, mirrors the tracker schema)
+# --------------------------------------------------------------------------- #
+def _connect(db: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(db)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
 
-def _delete_one_reaction(
-    table: str,
-    parent_field: str,
-    parent_id: int | str,
-    reaction: str,
-    author: str,
-) -> bool:
-    with _connect() as conn:
+def _delete_one_reaction(db: Path, table: str, field: str, parent_id, reaction: str, author: str) -> bool:
+    with _connect(db) as conn:
         row = conn.execute(
-            f"""
-            SELECT id FROM {table}
-            WHERE {parent_field} = ? AND kind = ? AND user = ?
-            ORDER BY id DESC
-            LIMIT 1
-            """,
+            f"SELECT id FROM {table} WHERE {field} = ? AND kind = ? AND user = ? ORDER BY id DESC LIMIT 1",
             (parent_id, reaction, author),
         ).fetchone()
         if row is None:
@@ -114,40 +250,41 @@ def _delete_one_reaction(
     return True
 
 
-def _touch_entry(entry_id: int | str) -> None:
-    with _connect() as conn:
+def _touch_entry(db: Path, entry_id) -> None:
+    with _connect(db) as conn:
         conn.execute("UPDATE entries SET updated_at = ? WHERE id = ?", (_now(), entry_id))
 
 
-def _toggle_entry_reaction(entry_id: int | str, reaction: str) -> dict[str, object]:
-    author = _author()
-    if _delete_one_reaction("entry_reactions", "entry_id", entry_id, reaction, author):
-        _touch_entry(entry_id)
+def _toggle_entry_reaction(record: dict, entry_id, reaction: str) -> dict:
+    tracker = _tracker_for(record)
+    db = _tracker_db(record["storage"])
+    if _delete_one_reaction(db, "entry_reactions", "entry_id", entry_id, reaction, tracker.author):
+        _touch_entry(db, entry_id)
         return {"entry_id": entry_id, "reaction": reaction, "active": False}
-    result = _tracker().add_entry_reaction(entry_id, reaction)
-    data = _ok(result)
+    data = _ok(tracker.add_entry_reaction(entry_id, reaction))
     if isinstance(data, dict):
         data["active"] = True
     return data
 
 
-def _toggle_comment_reaction(
-    entry_id: int | str,
-    comment_id: int | str,
-    reaction: str,
-) -> dict[str, object]:
-    author = _author()
-    if _delete_one_reaction("comment_reactions", "comment_id", comment_id, reaction, author):
-        _touch_entry(entry_id)
+def _toggle_comment_reaction(record: dict, entry_id, comment_id, reaction: str) -> dict:
+    tracker = _tracker_for(record)
+    db = _tracker_db(record["storage"])
+    if _delete_one_reaction(db, "comment_reactions", "comment_id", comment_id, reaction, tracker.author):
+        _touch_entry(db, entry_id)
         return {"entry_id": entry_id, "comment_id": comment_id, "reaction": reaction, "active": False}
-    result = _tracker().add_entry_comment_reaction(entry_id, comment_id, reaction)
-    data = _ok(result)
+    data = _ok(tracker.add_entry_comment_reaction(entry_id, comment_id, reaction))
     if isinstance(data, dict):
         data["active"] = True
     return data
 
 
+# --------------------------------------------------------------------------- #
+# HTTP handler
+# --------------------------------------------------------------------------- #
 class Handler(BaseHTTPRequestHandler):
+    server_version = "specseed/1.0"
+
     def do_GET(self) -> None:
         self._route()
 
@@ -160,6 +297,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_DELETE(self) -> None:
         self._route()
 
+    def do_PUT(self) -> None:
+        self._route()
+
     def log_message(self, fmt: str, *args: object) -> None:
         sys.stderr.write(f"{self.address_string()} {fmt % args}\n")
 
@@ -167,138 +307,254 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         try:
             if parsed.path.startswith("/api/"):
-                self._api(parsed.path, parse_qs(parsed.query))
+                self._api([p for p in parsed.path.split("/") if p], parse_qs(parsed.query))
                 return
             self._static(parsed.path)
-        except Exception as exc:
+        except RepoNotFound as exc:
+            self._json({"ok": False, "error": f"unknown repo: {exc}"}, status=404)
+        except ExternallyManaged as exc:
+            self._json({"ok": False, "error": f"externally managed ({exc})"}, status=409)
+        except Exception as exc:  # noqa: BLE001
             self._json({"ok": False, "error": str(exc)}, status=500)
 
-    def _api(self, path: str, query: dict[str, list[str]]) -> None:
-        parts = [part for part in path.split("/") if part]
-        if parts == ["api", "meta"] and self.command == "GET":
-            tracker = _tracker()
-            labels = _ok(tracker.list_labels())
-            self._json(
-                {
-                    "ok": True,
-                    "data": {
-                        "dbPath": str(_db_path()),
-                        "author": _author(),
-                        "labels": labels.get("labels", []) if isinstance(labels, dict) else [],
-                        "reactions": sorted(SUPPORTED_REACTIONS),
-                    },
-                }
-            )
+    # -- API ---------------------------------------------------------------- #
+    def _api(self, parts: list[str], query: dict) -> None:
+        # /api/repos ...
+        if parts[:2] == ["api", "repos"]:
+            self._api_repos(parts[2:], query)
             return
-
-        if parts == ["api", "posts"] and self.command == "GET":
-            state = query.get("state", ["open"])[0]
-            data = _ok(_tracker().list_entries(is_open=_state(state)))
-            self._json({"ok": True, "data": data, "meta": {"dbPath": str(_db_path())}})
-            return
-
-        if parts == ["api", "posts"] and self.command == "POST":
-            body = self._body()
-            data = _ok(
-                _tracker().add_entry(
-                    title=str(body.get("title") or ""),
-                    body=str(body.get("body") or ""),
-                    labels=_csv(body.get("labels")),
-                    assignees=_csv(body.get("assignees")),
-                )
-            )
-            self._json({"ok": True, "data": data}, status=201)
-            return
-
-        if len(parts) >= 3 and parts[:2] == ["api", "posts"]:
-            post_id = parts[2]
-            if len(parts) == 3 and self.command == "GET":
-                self._json({"ok": True, "data": _ok(_tracker().get_entry(post_id))})
-                return
-            if len(parts) == 3 and self.command == "PATCH":
-                body = self._body()
-                self._json(
-                    {
-                        "ok": True,
-                        "data": _ok(
-                            _tracker().edit_entry(
-                                post_id,
-                                title=body.get("title"),
-                                body=body.get("body"),
-                            )
-                        ),
-                    }
-                )
-                return
-            if len(parts) == 3 and self.command == "DELETE":
-                self._json({"ok": True, "data": _ok(_tracker().delete_entry(post_id))})
-                return
-            if parts[3:] == ["toggle"] and self.command == "POST":
-                tracker = _tracker()
-                current = _ok(tracker.is_entry_open(post_id))
-                result = tracker.set_entry_closed(post_id) if current["is_open"] else tracker.set_entry_open(post_id)
-                self._json({"ok": True, "data": _ok(result)})
-                return
-            if parts[3:] == ["labels"] and self.command == "POST":
-                body = self._body()
-                action = str(body.get("action") or "add")
-                label = str(body.get("label") or "").strip()
-                result = (
-                    _tracker().remove_entry_label(post_id, label)
-                    if action == "remove"
-                    else _tracker().add_entry_label(post_id, label)
-                )
-                self._json({"ok": True, "data": _ok(result)})
-                return
-            if parts[3:] == ["comments"] and self.command == "POST":
-                body = self._body()
-                self._json(
-                    {
-                        "ok": True,
-                        "data": _ok(_tracker().add_entry_comment(post_id, str(body.get("body") or ""))),
-                    },
-                    status=201,
-                )
-                return
-            if parts[3:] == ["reactions"] and self.command == "POST":
-                body = self._body()
-                reaction = str(body.get("reaction") or "")
-                if body.get("toggle"):
-                    self._json({"ok": True, "data": _toggle_entry_reaction(post_id, reaction)})
-                    return
-                self._json(
-                    {
-                        "ok": True,
-                        "data": _ok(_tracker().add_entry_reaction(post_id, reaction)),
-                    },
-                    status=201,
-                )
-                return
-            if len(parts) == 6 and parts[3] == "comments" and parts[5] == "reactions" and self.command == "POST":
-                body = self._body()
-                reaction = str(body.get("reaction") or "")
-                if body.get("toggle"):
-                    self._json(
-                        {"ok": True, "data": _toggle_comment_reaction(post_id, parts[4], reaction)}
-                    )
-                    return
-                self._json(
-                    {
-                        "ok": True,
-                        "data": _ok(
-                            _tracker().add_entry_comment_reaction(
-                                post_id,
-                                parts[4],
-                                reaction,
-                            )
-                        ),
-                    },
-                    status=201,
-                )
-                return
-
         self._json({"ok": False, "error": "not found"}, status=404)
 
+    def _api_repos(self, rest: list[str], query: dict) -> None:
+        if not rest:
+            if self.command == "GET":
+                repos = [_repo_summary(r) for r in registry.list_repos()]
+                self._json({"ok": True, "data": repos})
+                return
+            if self.command == "POST":
+                body = self._body()
+                target = str(body.get("target") or "").strip()
+                provider = str(body.get("provider") or "local").strip()
+                if not target or not Path(target).expanduser().is_dir():
+                    raise RuntimeError("target must be an existing directory")
+                if provider not in registry.PROVIDERS:
+                    raise RuntimeError(f"provider must be one of {registry.PROVIDERS}")
+                record = registry.add_repo(target, provider=provider, name=body.get("name") or None)
+                Path(record["storage"]).mkdir(parents=True, exist_ok=True)
+                # remote.json + token are written by the /setup step next.
+                self._json({"ok": True, "data": _repo_summary(record)}, status=201)
+                return
+
+        repo_id = rest[0]
+        record = _repo(repo_id)
+        tail = rest[1:]
+
+        if not tail:
+            if self.command == "GET":
+                self._json({"ok": True, "data": _repo_summary(record)})
+                return
+            if self.command == "DELETE":
+                registry.remove_repo(repo_id)
+                self._json({"ok": True, "data": {"removed": repo_id}})
+                return
+
+        if tail == ["setup"] and self.command == "POST":
+            self._setup(record)
+            return
+        if tail == ["meta"] and self.command == "GET":
+            self._meta(record)
+            return
+        if tail == ["monitor"] and self.command == "GET":
+            self._monitor(record)
+            return
+        if tail == ["runner"] and self.command == "POST":
+            self._runner(record)
+            return
+        if tail == ["config"]:
+            if self.command == "GET":
+                self._get_config(record)
+                return
+            if self.command == "PUT":
+                self._put_config(record)
+                return
+        if tail and tail[0] == "posts":
+            self._posts(record, tail[1:], query)
+            return
+        self._json({"ok": False, "error": "not found"}, status=404)
+
+    # -- setup / config ----------------------------------------------------- #
+    def _setup(self, record: dict) -> None:
+        body = self._body()
+        storage = record["storage"]
+        provider = record["provider"]
+        remote = configure.coerce_remote_state(configure.load_remote_state(storage))
+        cfg = configure.load_config(storage)
+        if provider == "local":
+            remote["enabled"] = False
+            remote["provider"] = None
+            configure.write_config_files(storage, cfg, remote)
+        else:
+            repo = str(body.get("repo") or "").strip()
+            token = str(body.get("token") or "").strip()
+            if not repo or not token:
+                raise RuntimeError("github/gitlab need a repo (owner/name) and an access token")
+            remote["enabled"] = True
+            remote["provider"] = provider
+            remote["repo"] = repo
+            configure.write_config_files(storage, cfg, remote, token=token)
+        self._json({"ok": True, "data": _repo_summary(record)})
+
+    def _meta(self, record: dict) -> None:
+        data = {
+            "provider": record["provider"],
+            "external_link": _external_link(record),
+            "reactions": sorted(SUPPORTED_REACTIONS),
+            "human_labels": _human_labels(),
+            "default_post_titles": sorted(DEFAULT_POST_TITLES),
+        }
+        if record["provider"] == "local":
+            tracker = _tracker_for(record)
+            labels = _ok(tracker.list_labels())
+            data["labels"] = labels.get("labels", []) if isinstance(labels, dict) else []
+        self._json({"ok": True, "data": data})
+
+    def _monitor(self, record: dict) -> None:
+        storage = record["storage"]
+        status = runner_control.read_runner_status(storage)
+        queue = _read_tasks(storage)
+        self._json(
+            {
+                "ok": True,
+                "data": {
+                    "runner": status,
+                    "queue": queue["tasks"],
+                    "counts": queue["counts"],
+                    "errors": queue["errors"],
+                    "log": _tail(Path(storage) / "platform.log"),
+                    "gate": _config_gate({**status, **queue["counts"]}),
+                },
+            }
+        )
+
+    def _runner(self, record: dict) -> None:
+        body = self._body()
+        action = str(body.get("action") or "").strip()
+        storage = record["storage"]
+        if action == "start":
+            if not (Path(storage) / "configuration.json").is_file():
+                raise RuntimeError("configure the repo before starting its runner")
+            data = runner_control.start_runner(record)
+        elif action == "pause":
+            runner_control.pause_runner(storage)
+            data = runner_control.read_runner_status(storage)
+        elif action == "resume":
+            runner_control.resume_runner(storage)
+            data = runner_control.read_runner_status(storage)
+        elif action == "stop":
+            data = runner_control.stop_runner(storage)
+        else:
+            raise RuntimeError("action must be start/pause/resume/stop")
+        self._json({"ok": True, "data": data})
+
+    def _get_config(self, record: dict) -> None:
+        storage = record["storage"]
+        status = runner_control.read_runner_status(storage)
+        counts = _read_tasks(storage)["counts"]
+        self._json(
+            {
+                "ok": True,
+                "data": {
+                    "config": configure.load_config(storage),
+                    "remote": configure.load_remote_state(storage),
+                    "gate": _config_gate({**status, **counts}),
+                },
+            }
+        )
+
+    def _put_config(self, record: dict) -> None:
+        storage = record["storage"]
+        status = runner_control.read_runner_status(storage)
+        counts = _read_tasks(storage)["counts"]
+        gate = _config_gate({**status, **counts})
+        if not gate["editable"]:
+            self._json({"ok": False, "error": gate["reason"]}, status=409)
+            return
+        body = self._body()
+        cfg = configure.coerce_config(body.get("config") or configure.load_config(storage))
+        remote = configure.coerce_remote_state(configure.load_remote_state(storage))
+        # provider stays final; only non-provider remote fields may change here
+        configure.write_config_files(storage, cfg, remote)
+        self._json({"ok": True, "data": {"config": cfg}})
+
+    # -- tracker posts (local provider only) -------------------------------- #
+    def _posts(self, record: dict, tail: list[str], query: dict) -> None:
+        tracker = _tracker_for(record)
+        if not tail:
+            if self.command == "GET":
+                state = query.get("state", ["open"])[0]
+                data = _ok(tracker.list_entries(is_open=_state(state)))
+                self._json({"ok": True, "data": data})
+                return
+            if self.command == "POST":
+                body = self._body()
+                data = _ok(
+                    tracker.add_entry(
+                        title=str(body.get("title") or ""),
+                        body=str(body.get("body") or ""),
+                        labels=_csv(body.get("labels")),
+                        assignees=_csv(body.get("assignees")),
+                    )
+                )
+                self._json({"ok": True, "data": data}, status=201)
+                return
+
+        post_id = tail[0]
+        sub = tail[1:]
+        if not sub and self.command == "GET":
+            self._json({"ok": True, "data": _ok(tracker.get_entry(post_id))})
+            return
+        if not sub and self.command == "PATCH":
+            body = self._body()
+            self._json({"ok": True, "data": _ok(tracker.edit_entry(post_id, title=body.get("title"), body=body.get("body")))})
+            return
+        if not sub and self.command == "DELETE":
+            self._json({"ok": True, "data": _ok(tracker.delete_entry(post_id))})
+            return
+        if sub == ["toggle"] and self.command == "POST":
+            current = _ok(tracker.is_entry_open(post_id))
+            result = tracker.set_entry_closed(post_id) if current["is_open"] else tracker.set_entry_open(post_id)
+            self._json({"ok": True, "data": _ok(result)})
+            return
+        if sub == ["labels"] and self.command == "POST":
+            body = self._body()
+            action = str(body.get("action") or "add")
+            label = str(body.get("label") or "").strip()
+            result = tracker.remove_entry_label(post_id, label) if action == "remove" else tracker.add_entry_label(post_id, label)
+            self._json({"ok": True, "data": _ok(result)})
+            return
+        if sub == ["comments"] and self.command == "POST":
+            body = self._body()
+            self._json({"ok": True, "data": _ok(tracker.add_entry_comment(post_id, str(body.get("body") or "")))}, status=201)
+            return
+        if sub == ["reactions"] and self.command == "POST":
+            body = self._body()
+            reaction = str(body.get("reaction") or "")
+            if body.get("toggle"):
+                self._json({"ok": True, "data": _toggle_entry_reaction(record, post_id, reaction)})
+                return
+            self._json({"ok": True, "data": _ok(tracker.add_entry_reaction(post_id, reaction))}, status=201)
+            return
+        if len(sub) == 3 and sub[0] == "comments" and sub[2] == "reactions" and self.command == "POST":
+            body = self._body()
+            reaction = str(body.get("reaction") or "")
+            if body.get("toggle"):
+                self._json({"ok": True, "data": _toggle_comment_reaction(record, post_id, sub[1], reaction)})
+                return
+            self._json({"ok": True, "data": _ok(tracker.add_entry_comment_reaction(post_id, sub[1], reaction))}, status=201)
+            return
+        self._json({"ok": False, "error": "not found"}, status=404)
+
+    # -- static + io -------------------------------------------------------- #
     def _static(self, path: str) -> None:
         target = ROOT / (path.lstrip("/") or "index.html")
         if not target.exists() or not target.is_file() or ROOT not in target.resolve().parents:
@@ -306,10 +562,11 @@ class Handler(BaseHTTPRequestHandler):
         content_type = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
         self.send_response(200)
         self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(target.read_bytes())
 
-    def _body(self) -> dict[str, object]:
+    def _body(self) -> dict:
         length = int(self.headers.get("Content-Length") or "0")
         if length <= 0:
             return {}
@@ -317,7 +574,7 @@ class Handler(BaseHTTPRequestHandler):
         return json.loads(raw or "{}")
 
     def _json(self, payload: object, status: int = 200) -> None:
-        encoded = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        encoded = json.dumps(payload, separators=(",", ":"), ensure_ascii=False, default=str).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(encoded)))
@@ -325,11 +582,23 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(encoded)
 
 
+def serve(*, port: int = 5050, host: str = "127.0.0.1", open_browser: bool = True) -> None:
+    httpd = ThreadingHTTPServer((host, port), Handler)
+    url = f"http://{host}:{port}"
+    print(f"specseed UI: {url}")
+    print(f"registry: {registry.registry_file()}")
+    if open_browser:
+        threading.Timer(0.6, lambda: webbrowser.open(url)).start()
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        print("\nspecseed UI stopped.")
+    finally:
+        httpd.server_close()
+
+
 def main() -> None:
-    httpd = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
-    print(f"specseed tracker UI: http://127.0.0.1:{PORT}")
-    print(f"TRACKER_DB_PATH={_db_path()}")
-    httpd.serve_forever()
+    serve(port=int(os.environ.get("PORT", "5050")))
 
 
 if __name__ == "__main__":

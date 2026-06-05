@@ -22,6 +22,18 @@ generated `<specseed_dir>/spec/`. In THIS dev repo the target is this repo itsel
 land at the repo root (gitignored). Configure a target via `src/specseed_runtime/configuring/configure.py`.
 (Root `install.py` = just a design-notes stub for a future system-wide install, not code.)
 
+**One engine, many repos.** `src/specseed serve` (or bare `specseed`) launches ONE web UI
+(`src/ui_local_tracker/`, vanilla JS, no deps; default port 5050 / `$PORT`) that manages every
+registered repo. Runners stay SEPARATE - each repo's `run` is its own process; only the webpage is
+shared. The shared index is a global registry at `$SPECSEED_HOME` (default `~/.specseed`),
+`registry.py`. CLI parity for headless boxes: `add`/`list`/`start`/`pause`/`resume`/`stop`/`status`.
+Lifecycle is out-of-band: CLI/UI write `<storage>/control.json` (desired state); the running
+scheduler reconciles it each tick and stamps `<storage>/runner.json` (heartbeat: pid+state+queue),
+liveness = pid alive AND heartbeat fresh (`executing/runner_control.py`). Provider (local/github/
+gitlab) is picked once per repo and is FINAL. UI tabs per repo: Monitor (queue/errors/log + runner
+controls), Tracker (local only; github/gitlab = externally-managed link), Configuration (gated:
+must pause/stop the runner first).
+
 **`old_specseed/` = dead.** Old, badly-working interactive version. Ignore it. Do NOT copy its
 patterns or follow its instructions. Only mined in rare occasions for features/processes that were present there for aligning with request if it makes sense.
 
@@ -52,16 +64,18 @@ remote posts, enqueues it. Never runs it itself, never touches git/code.
 src/
   specseed                           # bash shim: picks python3/python and runs runtime CLI
   specseed_runtime/                  # the RUNTIME (stdlib-only python)
-    specseed.py                      # command router: configure/run/remote_local
+    specseed.py                      # command router: serve/add/list/start/pause/resume/stop/status + configure/run
+    registry.py                      #   global multi-repo index at $SPECSEED_HOME (~/.specseed/registry.json). provider FINAL per repo
     tracking/                        #   provider-neutral tracker layer. README inside. entry=neutral resource
     scheduling/                      #   remote diff -> DB queue (sync_to_db) + spec_change enqueue. README inside
     db/database.py                   #   durable sqlite work queue (tasks + task_errors). thread-safe singleton
     tasks/                           #   one typed task class per change kind (handle_*) + task_base + cleanup
-    executing/                       #   scheduler(poll loop) + dispatch + advance + agent_runner + control + permissions
+    executing/                       #   scheduler(poll loop) + dispatch + advance + agent_runner + control + permissions + runner_control(control.json/runner.json)
     entities/                        #   epic/ticket/issue = meaning over neutral entries (tier/status/links). EntityRef
     state_machines/                  #   legal status transitions + approvals (👍/👎 reactions, approve/reject cmds)
     configuring/                     #   configure.py interactive setup -> config
     migrating/                       #   storage migrations (hops); 0.3.1->0.4.0 deletes copied code; 0.4.0->0.5.0 drops the seed marker so new labels re-seed
+  ui_local_tracker/                  # the SHARED web UI (vanilla JS modules, no deps): server.py (multi-repo API) + shell/ + features/{repos,monitor,tracker,configuration} + theme.css
 skills/specseed/                     # the spec-change worker skill (markdown + helper scripts), at repo root
   SKILL.md                           #   START HERE. router: routes, contract, hard rules
   routes/                            #   adopt/adapt/tweak/inject/plan-next-sprint

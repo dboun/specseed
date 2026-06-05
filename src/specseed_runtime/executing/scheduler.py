@@ -39,6 +39,7 @@ from specseed_runtime.tracking.resolve_remote import (
 from specseed_runtime.executing import cancellation
 from specseed_runtime.executing import dashboards as dashboards_mod
 from specseed_runtime.executing import platform_log
+from specseed_runtime.executing import runner_control
 from specseed_runtime.executing.agent_runner import (
     AgentRunner,
     DEFAULT_AGENT_TIMEOUT_S,
@@ -80,6 +81,9 @@ class Scheduler:
         tick: float = 0.5,
         remote_factory: Optional[Callable[[], Any]] = None,
         local_factory: Optional[Callable[[], Any]] = None,
+        control_file: Optional[str | Path] = None,
+        status_file: Optional[str | Path] = None,
+        heartbeat_interval: float = 5.0,
     ) -> None:
         self.db = db
         self.runner = runner
@@ -97,6 +101,14 @@ class Scheduler:
             if poll_interval is not None
             else float(self.config.get("poll_interval_seconds", DEFAULT_POLL_INTERVAL))
         )
+
+        # Out-of-band operator control: a separate CLI/web process writes the
+        # desired state into control_file; we stamp our heartbeat into status_file.
+        self._control_file = Path(control_file) if control_file else None
+        self._status_file = Path(status_file) if status_file else None
+        self.heartbeat_interval = heartbeat_interval
+        self._last_desired: Optional[str] = None
+        self._last_heartbeat = 0.0
 
         self._remote = remote
         self._local = local
@@ -209,6 +221,8 @@ class Scheduler:
     def _loop(self) -> None:
         platform_log.log_event("scheduler_loop_start")
         while not self._stop.is_set():
+            self._reconcile_control_file()
+            self._heartbeat()
             self._process_control()
             if self._stop.is_set():
                 break
@@ -225,7 +239,45 @@ class Scheduler:
 
             if not did_work and not self._stop.is_set():
                 self._stop.wait(timeout=self._idle_sleep())
+        self._heartbeat(force=True, final=True)
         platform_log.log_event("scheduler_loop_exit", state=self.state)
+
+    def _reconcile_control_file(self) -> None:
+        """Apply the operator's desired state written by the CLI/web service."""
+        if self._control_file is None:
+            return
+        try:
+            desired = runner_control.read_desired(self._control_file.parent)
+        except Exception:  # control plane must never crash the loop
+            return
+        if desired is None or desired == self._last_desired:
+            return
+        self._last_desired = desired
+        platform_log.log_event("control_file_desired", desired=desired)
+        if desired == runner_control.PAUSED:
+            self.pause()
+        elif desired == runner_control.RUNNING:
+            self.resume()
+        elif desired == runner_control.STOPPED:
+            self.request_stop()
+
+    def _heartbeat(self, *, force: bool = False, final: bool = False) -> None:
+        """Stamp the runner status file so other processes can observe us."""
+        if self._status_file is None:
+            return
+        now = time.monotonic()
+        if not force and (now - self._last_heartbeat) < self.heartbeat_interval:
+            return
+        self._last_heartbeat = now
+        try:
+            status = self.status()
+            status["repo_root"] = str(self.repo_root)
+            if final:
+                status["state"] = STOPPED
+                status["alive"] = False
+            runner_control.write_runner_status(self._status_file.parent, status)
+        except Exception:  # heartbeat is best-effort
+            pass
 
     def _idle_sleep(self) -> float:
         if self.state != RUNNING:
