@@ -193,6 +193,22 @@ def _tail(path: Path, lines: int = 120) -> list[dict]:
     return out
 
 
+def _config_schema() -> dict:
+    """Option lists + defaults the Configuration UI renders every field from.
+
+    Sourced from ``configure`` so the UI never drifts from the real taxonomy.
+    """
+    return {
+        "runner_functions": list(configure.RUNNER_FUNCTIONS),
+        "runner_providers": list(configure.RUNNER_PROVIDERS),
+        "provider_homes": dict(configure.PROVIDER_DEFAULT_HOME),
+        "default_spec": configure.default_runner_spec(),
+        "agent_categories": dict(configure.AGENT_CATEGORIES),
+        "agent_levels": list(configure.AGENT_LEVELS),
+        "default_config": configure.default_config(),
+    }
+
+
 def _config_gate(status: dict) -> dict:
     """Whether the configuration may be edited, given the runner state."""
     state = status.get("state", "stopped")
@@ -476,6 +492,7 @@ class Handler(BaseHTTPRequestHandler):
                     "config": configure.load_config(storage),
                     "remote": configure.load_remote_state(storage),
                     "gate": _config_gate({**status, **counts}),
+                    "schema": _config_schema(),
                 },
             }
         )

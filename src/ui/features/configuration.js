@@ -4,123 +4,251 @@ import { escapeHtml, toast } from "../ui/components.js";
 export function createConfiguration({ repo, ctx }) {
   let cfg = null;
   let remote = null;
+  let schema = { runner_functions: [], runner_providers: [], provider_homes: {}, agent_categories: {}, agent_levels: [], default_spec: {} };
   let gate = { editable: true, reason: "" };
+  let onChange = null;
 
   async function load() {
     const data = await api.getConfig(repo.id);
     cfg = data.config;
     remote = data.remote;
+    schema = { ...schema, ...(data.schema || {}) };
     gate = data.gate || gate;
+    ensureShape();
   }
 
+  // Backfill any missing keys so every control renders with a value (defaults).
+  function ensureShape() {
+    const dc = schema.default_config || {};
+    cfg.runner = cfg.runner || {};
+    for (const fn of schema.runner_functions) {
+      if (!Array.isArray(cfg.runner[fn]) || !cfg.runner[fn].length) {
+        cfg.runner[fn] = [{ ...(schema.default_spec || {}) }];
+      }
+    }
+    cfg.approvals = cfg.approvals || { approver_usernames: [] };
+    cfg.review = { ...(dc.review || {}), ...(cfg.review || {}) };
+    const p = (cfg.permissions = cfg.permissions || {});
+    p.git = { ...(dc.permissions?.git || {}), ...(p.git || {}) };
+    p.remote = { ...(dc.permissions?.remote || {}), ...(p.remote || {}) };
+    p.platform = { ...(dc.permissions?.platform || {}), ...(p.platform || {}) };
+    p.agents = { ...(dc.permissions?.agents || {}), ...(p.agents || {}) };
+    for (const cat of Object.keys(schema.agent_categories)) {
+      if (!(cat in p.agents)) p.agents[cat] = dc.permissions?.agents?.[cat] || "block";
+    }
+    cfg.dashboards = cfg.dashboards || {};
+    if (cfg.dashboards.auto_refresh === undefined) cfg.dashboards.auto_refresh = true;
+  }
+
+  // -- field helpers ---------------------------------------------------- #
   const ro = () => (gate.editable ? "" : "disabled");
   const checked = (v) => (v ? "checked" : "");
+  const num = (name, value) => `<input type="number" name="${name}" value="${escapeHtml(value)}" step="any" ${ro()} />`;
+  const text = (name, value) => `<input type="text" name="${name}" value="${escapeHtml(value ?? "")}" ${ro()} />`;
+  const toggle = (name, value, label) =>
+    `<label class="switch-row"><input type="checkbox" name="${name}" ${checked(value)} ${ro()} /><span>${escapeHtml(label)}</span></label>`;
+  function select(attr, value, options, labels = {}) {
+    return `<select ${attr} ${ro()}>${options
+      .map((o) => `<option value="${escapeHtml(o)}" ${o === value ? "selected" : ""}>${escapeHtml(labels[o] || o)}</option>`)
+      .join("")}</select>`;
+  }
 
+  // -- sections --------------------------------------------------------- #
   function gateBanner() {
-    if (gate.editable) return "";
-    return `<div class="banner banner-warn">🔒 ${escapeHtml(gate.reason)}</div>`;
+    return gate.editable ? "" : `<div class="banner banner-warn">🔒 ${escapeHtml(gate.reason)}</div>`;
   }
 
-  function remoteBlock() {
-    const provider = repo.provider;
-    if (provider === "local") {
-      return `<div class="cfg-row"><span class="cfg-k">provider</span><span class="cfg-v">local <span class="muted">(final)</span></span></div>`;
-    }
+  function connectionSection() {
+    const rows =
+      repo.provider === "local"
+        ? `<div class="cfg-row"><span class="cfg-k">provider</span><span class="cfg-v">local <span class="muted">(final)</span></span></div>`
+        : `<div class="cfg-row"><span class="cfg-k">provider</span><span class="cfg-v">${escapeHtml(repo.provider)} <span class="muted">(final)</span></span></div>
+           <div class="cfg-row"><span class="cfg-k">repository</span><span class="cfg-v mono">${escapeHtml(remote.repo || "—")}</span></div>
+           <div class="cfg-row"><span class="cfg-k">token</span><span class="cfg-v"><button type="button" class="btn btn-ghost sm" data-rerun-setup>Re-run setup</button></span></div>`;
+    return `<section class="panel"><div class="panel-title">Connection</div>${rows}
+      <div class="cfg-row"><span class="cfg-k">specseed dir</span><span class="cfg-v mono muted">${escapeHtml(cfg.specseed_dir || ".specseed")} (fixed)</span></div></section>`;
+  }
+
+  function generalSection() {
     return `
-      <div class="cfg-row"><span class="cfg-k">provider</span><span class="cfg-v">${escapeHtml(provider)} <span class="muted">(final)</span></span></div>
-      <div class="cfg-row"><span class="cfg-k">repository</span><span class="cfg-v mono">${escapeHtml(remote.repo || "—")}</span></div>
-      <div class="cfg-row"><span class="cfg-k">token</span><span class="cfg-v"><button type="button" class="btn btn-ghost sm" data-rerun-setup>Re-run setup</button></span></div>`;
+      <section class="panel">
+        <div class="panel-title">General</div>
+        <div class="field"><label>poll interval (seconds)</label>${num("poll_interval_seconds", cfg.poll_interval_seconds)}</div>
+        <div class="field"><label>dev branch</label>${text("dev_branch", cfg.dev_branch)}</div>
+        <div class="field"><label>approver usernames <span class="req">(comma separated)</span></label>
+          ${text("approver_usernames", (cfg.approvals?.approver_usernames || []).join(", "))}</div>
+        ${toggle("dashboards_auto", cfg.dashboards?.auto_refresh, "auto-refresh ROADMAP / sprint dashboards")}
+      </section>`;
   }
 
-  function num(name, value) {
-    return `<input type="number" name="${name}" value="${escapeHtml(value)}" step="any" ${ro()} />`;
+  function specRow(fn, spec, idx, only) {
+    const providers = schema.runner_providers;
+    return `
+      <div class="spec-row" data-spec-fn="${escapeHtml(fn)}">
+        <div class="spec-rank">${idx === 0 ? "primary" : "fallback " + idx}</div>
+        <div class="spec-fields">
+          <label>provider${select(`data-spec="provider"`, spec.provider, providers)}</label>
+          <label>model${text2(`data-spec="model"`, spec.model)}</label>
+          <label>effort${select(`data-spec="effort"`, spec.effort || "high", ["low", "medium", "high"])}</label>
+          <label class="wide">data dir${text2(`data-spec="dir"`, spec.provider_data_dir)}</label>
+        </div>
+        <button type="button" class="icon-btn" data-remove-spec data-fn="${escapeHtml(fn)}" data-idx="${idx}" ${only || !gate.editable ? "disabled" : ""} title="remove">✕</button>
+      </div>`;
   }
-  function text(name, value) {
-    return `<input type="text" name="${name}" value="${escapeHtml(value ?? "")}" ${ro()} />`;
+  // input with a data-attr instead of name (read positionally, not by FormData)
+  function text2(attr, value) {
+    return `<input type="text" ${attr} value="${escapeHtml(value ?? "")}" ${ro()} />`;
   }
-  function toggle(name, value, label) {
-    return `<label class="switch-row"><input type="checkbox" name="${name}" ${checked(value)} ${ro()} /><span>${escapeHtml(label)}</span></label>`;
+
+  function runnersSection() {
+    const blocks = schema.runner_functions
+      .map((fn) => {
+        const chain = cfg.runner[fn] || [];
+        return `
+          <div class="runner-fn">
+            <div class="runner-fn-head">
+              <span class="runner-fn-name">${escapeHtml(fn.replace("_", " "))}</span>
+              <button type="button" class="btn btn-ghost sm" data-add-spec data-fn="${escapeHtml(fn)}" ${ro()}>+ fallback</button>
+            </div>
+            ${chain.map((spec, i) => specRow(fn, spec, i, chain.length === 1)).join("")}
+          </div>`;
+      })
+      .join("");
+    return `<section class="panel">
+      <div class="panel-title">Agent runners</div>
+      <p class="hint">Each function runs an ordered fallback chain — the primary spec first, the rest tried on failure.</p>
+      ${blocks}
+    </section>`;
+  }
+
+  function reviewSection() {
+    return `
+      <section class="panel">
+        <div class="panel-title">Code review</div>
+        ${toggle("review_enabled", cfg.review?.enabled, "enable review loop (gates in_review on every issue)")}
+        <div class="field"><label>confidence threshold</label>${num("review_confidence", cfg.review?.confidence_threshold)}</div>
+        <div class="field"><label>max attempts</label>${num("review_attempts", cfg.review?.max_attempts)}</div>
+      </section>`;
+  }
+
+  function permissionsSection() {
+    const p = cfg.permissions;
+    return `
+      <section class="panel">
+        <div class="panel-title">Permissions — git &amp; remote</div>
+        ${toggle("git_enabled", p.git?.enabled, "git: enabled (create local branches)")}
+        ${toggle("git_merge", p.git?.merge_to_dev_branch, "git: merge into dev branch")}
+        ${toggle("remote_post_control", p.remote?.post_control, "remote: post to CONTROL")}
+        ${toggle("remote_push_branches", p.remote?.push_branches, "remote: push branches")}
+        ${toggle("remote_push_dev", p.remote?.push_dev_branch, "remote: push dev branch")}
+        ${toggle("remote_make_prs", p.remote?.make_prs, "remote: make PRs")}
+      </section>
+      <section class="panel">
+        <div class="panel-title">Permissions — platform</div>
+        ${toggle("plat_auto_impl", p.platform?.auto_implement_issue, "auto-implement issues")}
+        ${toggle("plat_auto_next", p.platform?.auto_proceed_to_next_sprint_if_available, "auto-proceed to next sprint")}
+      </section>
+      <section class="panel">
+        <div class="panel-title">Permissions — agent action gates</div>
+        <p class="hint">How the implementation agent treats each class of risky action.</p>
+        ${Object.entries(schema.agent_categories)
+          .map(
+            ([cat, desc]) => `
+          <div class="gate-row">
+            <div class="gate-info"><div class="gate-name mono">${escapeHtml(cat)}</div><div class="gate-desc muted">${escapeHtml(desc)}</div></div>
+            ${select(`data-agent="${escapeHtml(cat)}"`, p.agents?.[cat], schema.agent_levels)}
+          </div>`
+          )
+          .join("")}
+      </section>`;
+  }
+
+  function formHtml() {
+    return `
+      ${connectionSection()}
+      ${generalSection()}
+      ${runnersSection()}
+      ${reviewSection()}
+      ${permissionsSection()}`;
   }
 
   function html() {
-    const p = cfg.permissions || {};
     return `
       <div class="tab-head">
         <h1>Configuration</h1>
         <div class="tab-head-actions">
+          <button class="btn btn-ghost" data-reset-defaults ${ro()}>Reset defaults</button>
           <button class="btn btn-primary" data-save-config ${ro()}>Save</button>
         </div>
       </div>
       ${gateBanner()}
       <form data-config-form class="config ${gate.editable ? "" : "locked"}">
-        <section class="panel">
-          <div class="panel-title">Connection</div>
-          ${remoteBlock()}
-        </section>
-
-        <section class="panel">
-          <div class="panel-title">Scheduler</div>
-          <div class="field"><label>poll interval (seconds)</label>${num("poll_interval_seconds", cfg.poll_interval_seconds)}</div>
-          <div class="field"><label>dev branch</label>${text("dev_branch", cfg.dev_branch)}</div>
-          <div class="field"><label>approver usernames <span class="req">(comma separated)</span></label>
-            ${text("approver_usernames", (cfg.approvals?.approver_usernames || []).join(", "))}</div>
-        </section>
-
-        <section class="panel">
-          <div class="panel-title">Code review</div>
-          ${toggle("review_enabled", cfg.review?.enabled, "enable review loop")}
-          <div class="field"><label>confidence threshold</label>${num("review_confidence", cfg.review?.confidence_threshold)}</div>
-          <div class="field"><label>max attempts</label>${num("review_attempts", cfg.review?.max_attempts)}</div>
-        </section>
-
-        <section class="panel">
-          <div class="panel-title">Permissions</div>
-          ${toggle("git_merge", p.git?.merge_to_dev_branch, "git: merge into dev branch")}
-          ${toggle("remote_post_control", p.remote?.post_control, "remote: post to CONTROL")}
-          ${toggle("remote_push_branches", p.remote?.push_branches, "remote: push branches")}
-          ${toggle("remote_push_dev", p.remote?.push_dev_branch, "remote: push dev branch")}
-          ${toggle("remote_make_prs", p.remote?.make_prs, "remote: make PRs")}
-          ${toggle("plat_auto_impl", p.platform?.auto_implement_issue, "platform: auto-implement issues")}
-          ${toggle("plat_auto_next", p.platform?.auto_proceed_to_next_sprint_if_available, "platform: auto-proceed to next sprint")}
-        </section>
+        <div data-config-body>${formHtml()}</div>
       </form>`;
   }
 
-  function gather(form) {
-    const d = Object.fromEntries(new FormData(form).entries());
-    const next = JSON.parse(JSON.stringify(cfg));
-    next.poll_interval_seconds = Number(d.poll_interval_seconds) || next.poll_interval_seconds;
-    next.dev_branch = String(d.dev_branch || next.dev_branch);
-    next.approvals = next.approvals || {};
-    next.approvals.approver_usernames = String(d.approver_usernames || "")
+  function paintForm() {
+    const body = document.querySelector("[data-config-body]");
+    if (body) body.innerHTML = formHtml();
+  }
+
+  // -- read the DOM back into cfg --------------------------------------- #
+  function syncFromForm() {
+    const form = document.querySelector("[data-config-form]");
+    if (!form) return;
+    const val = (name) => form.querySelector(`[name="${name}"]`)?.value;
+    const on = (name) => !!form.querySelector(`[name="${name}"]`)?.checked;
+
+    cfg.poll_interval_seconds = Number(val("poll_interval_seconds")) || cfg.poll_interval_seconds;
+    cfg.dev_branch = String(val("dev_branch") || cfg.dev_branch);
+    cfg.approvals = cfg.approvals || {};
+    cfg.approvals.approver_usernames = String(val("approver_usernames") || "")
       .split(",")
       .map((s) => s.trim())
       .filter(Boolean);
-    next.review = next.review || {};
-    next.review.enabled = form.review_enabled.checked;
-    next.review.confidence_threshold = Number(d.review_confidence) || next.review.confidence_threshold;
-    next.review.max_attempts = Number(d.review_attempts) || next.review.max_attempts;
-    const p = (next.permissions = next.permissions || {});
+    cfg.dashboards = cfg.dashboards || {};
+    cfg.dashboards.auto_refresh = on("dashboards_auto");
+
+    cfg.review = cfg.review || {};
+    cfg.review.enabled = on("review_enabled");
+    cfg.review.confidence_threshold = Number(val("review_confidence")) || cfg.review.confidence_threshold;
+    cfg.review.max_attempts = Number(val("review_attempts")) || cfg.review.max_attempts;
+
+    const p = (cfg.permissions = cfg.permissions || {});
     p.git = p.git || {};
-    p.git.merge_to_dev_branch = form.git_merge.checked;
+    p.git.enabled = on("git_enabled");
+    p.git.merge_to_dev_branch = on("git_merge");
     p.remote = p.remote || {};
-    p.remote.post_control = form.remote_post_control.checked;
-    p.remote.push_branches = form.remote_push_branches.checked;
-    p.remote.push_dev_branch = form.remote_push_dev.checked;
-    p.remote.make_prs = form.remote_make_prs.checked;
+    p.remote.post_control = on("remote_post_control");
+    p.remote.push_branches = on("remote_push_branches");
+    p.remote.push_dev_branch = on("remote_push_dev");
+    p.remote.make_prs = on("remote_make_prs");
     p.platform = p.platform || {};
-    p.platform.auto_implement_issue = form.plat_auto_impl.checked;
-    p.platform.auto_proceed_to_next_sprint_if_available = form.plat_auto_next.checked;
-    return next;
+    p.platform.auto_implement_issue = on("plat_auto_impl");
+    p.platform.auto_proceed_to_next_sprint_if_available = on("plat_auto_next");
+
+    p.agents = p.agents || {};
+    form.querySelectorAll("[data-agent]").forEach((el) => {
+      p.agents[el.dataset.agent] = el.value;
+    });
+
+    cfg.runner = cfg.runner || {};
+    for (const fn of schema.runner_functions) {
+      const rows = [...form.querySelectorAll(`[data-spec-fn="${fn}"]`)];
+      const specs = rows.map((row) => ({
+        provider: row.querySelector('[data-spec="provider"]').value,
+        provider_data_dir: row.querySelector('[data-spec="dir"]').value.trim(),
+        model: row.querySelector('[data-spec="model"]').value.trim(),
+        effort: row.querySelector('[data-spec="effort"]').value.trim(),
+      }));
+      cfg.runner[fn] = specs.length ? specs : [{ ...(schema.default_spec || {}) }];
+    }
   }
 
   async function save() {
-    const form = document.querySelector("[data-config-form]");
-    if (!form) return;
+    syncFromForm();
     try {
-      const next = gather(form);
-      await api.putConfig(repo.id, next);
-      cfg = next;
+      await api.putConfig(repo.id, cfg);
       toast("configuration saved", "ok");
       await ctx.refreshRepos?.();
     } catch (err) {
@@ -129,14 +257,33 @@ export function createConfiguration({ repo, ctx }) {
   }
 
   function handleClick(event) {
-    if (event.target.closest("[data-save-config]")) {
-      if (!gate.editable) {
-        toast(gate.reason, "error");
-        return;
-      }
-      save();
+    const t = event.target;
+    if (t.closest("[data-save-config]")) {
+      if (!gate.editable) return toast(gate.reason, "error");
+      return save();
     }
-    if (event.target.closest("[data-rerun-setup]")) ctx.openSetup(repo);
+    if (t.closest("[data-rerun-setup]")) return ctx.openSetup(repo);
+    if (!gate.editable) return;
+    const add = t.closest("[data-add-spec]");
+    if (add) {
+      syncFromForm();
+      cfg.runner[add.dataset.fn] = [...(cfg.runner[add.dataset.fn] || []), { ...(schema.default_spec || {}) }];
+      return paintForm();
+    }
+    const rm = t.closest("[data-remove-spec]");
+    if (rm) {
+      syncFromForm();
+      const chain = cfg.runner[rm.dataset.fn] || [];
+      chain.splice(Number(rm.dataset.idx), 1);
+      cfg.runner[rm.dataset.fn] = chain.length ? chain : [{ ...(schema.default_spec || {}) }];
+      return paintForm();
+    }
+    if (t.closest("[data-reset-defaults]")) {
+      if (!confirm("Reset every field to defaults? (saved only when you press Save)")) return;
+      cfg = JSON.parse(JSON.stringify(schema.default_config || {}));
+      ensureShape();
+      return paintForm();
+    }
   }
 
   function handleSubmit(event) {
@@ -146,5 +293,23 @@ export function createConfiguration({ repo, ctx }) {
     }
   }
 
-  return { load, html, handleClick, handleSubmit, dispose() {} };
+  // Switching a spec's provider auto-fills its data dir with that provider's home.
+  function afterRender(container) {
+    onChange = (e) => {
+      const sel = e.target.closest('[data-spec="provider"]');
+      if (!sel) return;
+      const dir = sel.closest(".spec-row")?.querySelector('[data-spec="dir"]');
+      const homes = Object.values(schema.provider_homes || {});
+      if (dir && (!dir.value.trim() || homes.includes(dir.value.trim()))) {
+        dir.value = schema.provider_homes?.[sel.value] || dir.value;
+      }
+    };
+    container.addEventListener("change", onChange);
+  }
+
+  function dispose() {
+    /* listener lives on the container, replaced on next mount */
+  }
+
+  return { load, html, afterRender, handleClick, handleSubmit, dispose };
 }
