@@ -85,6 +85,7 @@ def build_scheduler(
     )
     # A bare AgentRunner (e.g. a test double) is wrapped as a single-spec chain
     # for every function; otherwise build the configured per-function chains.
+    runner_injected = runner is not None
     if runner is None:
         runner = build_runner_chains(config)
     elif not isinstance(runner, RunnerChains):
@@ -98,6 +99,9 @@ def build_scheduler(
         poll_interval=interval,
         control_file=runner_control.control_file(storage_dir),
         status_file=runner_control.status_file(storage_dir),
+        # Resume re-reads config (edits are gated on a paused runner). Only when
+        # the runner came from config - never swap out an injected double.
+        config_loader=None if runner_injected else (lambda: load_config(storage_dir)),
     )
 
 

@@ -43,6 +43,7 @@ from specseed_runtime.executing import runner_control
 from specseed_runtime.executing.agent_runner import (
     AgentRunner,
     DEFAULT_AGENT_TIMEOUT_S,
+    build_runner_chains,
 )
 from specseed_runtime.executing.context import ExecutionContext
 from specseed_runtime.executing.control import ControlChannel, render_status
@@ -84,6 +85,7 @@ class Scheduler:
         control_file: Optional[str | Path] = None,
         status_file: Optional[str | Path] = None,
         heartbeat_interval: float = 5.0,
+        config_loader: Optional[Callable[[], dict[str, Any]]] = None,
     ) -> None:
         self.db = db
         self.runner = runner
@@ -96,6 +98,10 @@ class Scheduler:
         self.permissions = permissions or Permissions(self.config, remote_state)
         self.agent_timeout_s = agent_timeout_s
         self.tick = tick
+        # Set -> resume() re-reads config (and rebuilds what hangs off it). None
+        # (tests, injected doubles) -> resume never swaps anything out.
+        self._config_loader = config_loader
+        self._poll_interval_override = poll_interval is not None
         self.poll_interval = (
             poll_interval
             if poll_interval is not None
@@ -128,13 +134,14 @@ class Scheduler:
         self._current_task_id: Optional[int] = None
         self._next_poll_at = 0.0  # monotonic; 0 forces an immediate first sync
 
-        dashboards_cfg = self.config.get("dashboards")
-        self._dashboards_enabled = (
-            bool(dashboards_cfg.get("auto_refresh", True))
-            if isinstance(dashboards_cfg, dict)
-            else True
-        )
+        self._dashboards_enabled = self._dashboards_auto_refresh()
         self._last_work_sig: Optional[str] = None
+
+    def _dashboards_auto_refresh(self) -> bool:
+        dashboards_cfg = self.config.get("dashboards")
+        if isinstance(dashboards_cfg, dict):
+            return bool(dashboards_cfg.get("auto_refresh", True))
+        return True
 
     # ------------------------------------------------------------------ #
     # lifecycle
@@ -184,10 +191,58 @@ class Scheduler:
 
     def resume(self) -> None:
         with self._state_lock:
+            if self._state == STOPPED:
+                return
+        # Config edits are gated on a paused/stopped runner, so resume is the
+        # pick-up point: re-read config + remote wiring before running again.
+        self.reload_config()
+        with self._state_lock:
             if self._state != STOPPED:
                 self._state = RUNNING
                 platform_log.log_event("scheduler_resume")
         self._next_poll_at = 0.0  # sync promptly on resume
+
+    def reload_config(self) -> None:
+        """Re-read config and rebuild everything derived from it.
+
+        No-op without a ``config_loader`` (tests, injected doubles). Rebuilds
+        permissions, runner chains, poll interval (unless CLI-overridden),
+        dashboards flag; trackers re-resolve lazily so remote.json edits land.
+        A bad config file logs and keeps the old state - never kills the loop.
+        """
+        if self._config_loader is None:
+            return
+        try:
+            config = self._config_loader() or {}
+        except Exception as exc:
+            platform_log.log_event("config_reload_error", error=repr(exc))
+            return
+        self.config = config
+        remote_state = load_remote_state(self.storage) if self.storage is not None else {}
+        self.permissions = Permissions(self.config, remote_state)
+        self.runner = build_runner_chains(self.config)
+        if not self._poll_interval_override:
+            self.poll_interval = float(self.config.get("poll_interval_seconds", DEFAULT_POLL_INTERVAL))
+        self._dashboards_enabled = self._dashboards_auto_refresh()
+        self._remote = None
+        self._local = None
+        if self._control is not None:
+            # Update the channel IN PLACE: recreating it would reset the comment
+            # cursor and replay every old CONTROL command.
+            try:
+                self._ensure_trackers()
+            except Exception as exc:
+                platform_log.log_event("config_reload_tracker_error", error=repr(exc))
+            else:
+                self._control.tracker = self._remote
+                self._control.config = self.config
+                self._control.permissions = self.permissions
+                self._control.bot_author = getattr(self._remote, "author", None)
+        platform_log.log_event(
+            "config_reloaded",
+            storage=str(self.storage) if self.storage else None,
+            poll_interval=self.poll_interval,
+        )
 
     @property
     def state(self) -> str:

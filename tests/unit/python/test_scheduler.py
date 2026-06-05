@@ -27,6 +27,8 @@ from specseed_runtime.db.database import Database
 from specseed_runtime.executing import cancellation
 from specseed_runtime.executing.agent_runner import (
     AgentResult,
+    ClaudeAgentRunner,
+    CodexAgentRunner,
     FakeAgentRunner,
 )
 from specseed_runtime.executing.control import CONTROL_TITLE
@@ -271,6 +273,102 @@ class SchedulerTest(unittest.TestCase):
         status = runner_control.read_runner_status(storage)
         self.assertEqual(status.get("pid"), os.getpid())
         self.assertTrue(status.get("alive"))
+
+
+class ConfigReloadOnResumeTest(unittest.TestCase):
+    """resume() re-reads config via config_loader and rebuilds derived state."""
+
+    def setUp(self) -> None:
+        cancellation.reset()
+        self.addCleanup(cancellation.reset)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.remote = TrackingRemoteLocal(db_path=self.root / "remote.db", author="bot")
+        self.local = TrackingLocal(db_path=self.root / "local.db", author="agent")
+        self.db = Database(db_path=self.root / "queue.db")
+        self.runner = FakeAgentRunner()
+
+    def _scheduler(self, *, loader=None, poll_interval=None) -> Scheduler:
+        return Scheduler(
+            db=self.db,
+            runner=self.runner,
+            config=_config(),
+            storage=self.root / "storage",
+            repo_root=self.root,
+            remote=self.remote,
+            local=self.local,
+            remote_factory=lambda: self.remote,
+            local_factory=lambda: self.local,
+            poll_interval=poll_interval,
+            tick=0.05,
+            config_loader=loader,
+        )
+
+    def test_resume_without_loader_keeps_everything(self) -> None:
+        sched = self._scheduler()
+        config_before = sched.config
+        sched.resume()
+        self.assertEqual(sched.state, RUNNING)
+        self.assertIs(sched.runner, self.runner)
+        self.assertIs(sched.config, config_before)
+
+    def test_resume_reloads_config_and_rebuilds_runner_chains(self) -> None:
+        new_cfg = dict(_config())
+        new_cfg["runner"] = {"implementation": [{"provider": "codex"}]}
+        new_cfg["poll_interval_seconds"] = 7
+        sched = self._scheduler(loader=lambda: new_cfg)
+        sched.resume()
+        self.assertEqual(sched.state, RUNNING)
+        self.assertIs(sched.config, new_cfg)
+        self.assertEqual(sched.poll_interval, 7.0)
+        impl = sched.runner.chain_for("implementation")[0]
+        self.assertIsInstance(impl, CodexAgentRunner)
+        # missing functions fall back to the default claude spec
+        self.assertIsInstance(sched.runner.chain_for("spec")[0], ClaudeAgentRunner)
+
+    def test_explicit_poll_interval_survives_reload(self) -> None:
+        new_cfg = dict(_config())
+        new_cfg["poll_interval_seconds"] = 7
+        sched = self._scheduler(loader=lambda: new_cfg, poll_interval=0.0)
+        sched.resume()
+        self.assertEqual(sched.poll_interval, 0.0)
+
+    def test_reload_updates_control_channel_in_place_keeping_cursor(self) -> None:
+        sched = self._scheduler(loader=lambda: dict(_config(), marker=True))
+        channel = sched._ensure_control()
+        self.assertIsNotNone(channel)
+        channel._cursor = (0, 5)
+        sched.resume()
+        self.assertIs(sched._control, channel)  # same object: cursor never resets
+        self.assertEqual(channel._cursor, (0, 5))
+        self.assertTrue(channel.config.get("marker"))
+        self.assertIs(channel.permissions, sched.permissions)
+        self.assertIs(channel.tracker, self.remote)
+
+    def test_bad_loader_keeps_old_config(self) -> None:
+        def boom() -> dict:
+            raise OSError("config unreadable")
+
+        sched = self._scheduler(loader=boom)
+        config_before = sched.config
+        sched.resume()
+        self.assertEqual(sched.state, RUNNING)
+        self.assertIs(sched.config, config_before)
+        self.assertIs(sched.runner, self.runner)
+
+    def test_stopped_scheduler_does_not_reload(self) -> None:
+        calls = []
+
+        def loader() -> dict:
+            calls.append(1)
+            return _config()
+
+        sched = self._scheduler(loader=loader)
+        sched.request_stop()
+        sched.resume()
+        self.assertEqual(sched.state, STOPPED)
+        self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":

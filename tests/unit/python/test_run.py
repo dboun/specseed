@@ -10,6 +10,10 @@ from unittest import mock
 
 from specseed_runtime.db.database import Database
 from specseed_runtime.executing import run
+from specseed_runtime.executing.agent_runner import (
+    ClaudeAgentRunner,
+    CodexAgentRunner,
+)
 from specseed_runtime.tracking.populate_defaults import (
     FIRST_ADAPT_DRAFT_TITLE,
 )
@@ -109,6 +113,53 @@ class BuildSchedulerMigratesStorageTest(unittest.TestCase):
             self.assertEqual(
                 (storage / "version.txt").read_text(encoding="utf-8").strip(), code_version()
             )
+
+
+class BuildSchedulerConfigReloadTest(unittest.TestCase):
+    """A config-built scheduler re-reads configuration.json on resume."""
+
+    def _write_config(self, storage: Path, provider: str) -> None:
+        storage.mkdir(parents=True, exist_ok=True)
+        (storage / "configuration.json").write_text(
+            json.dumps({"runner": {"implementation": [{"provider": provider}]}}),
+            encoding="utf-8",
+        )
+
+    def test_resume_picks_up_edited_configuration_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = Path(tmp) / ".specseed" / "storage"
+            self._write_config(storage, "claude")
+            scheduler = run.build_scheduler(
+                storage=storage,
+                repo_root=tmp,
+                db=Database(db_path=Path(tmp) / "queue.db"),
+            )
+            self.assertIsInstance(
+                scheduler.runner.chain_for("implementation")[0], ClaudeAgentRunner
+            )
+
+            self._write_config(storage, "codex")  # the paused-runner config edit
+            scheduler.resume()
+            self.assertIsInstance(
+                scheduler.runner.chain_for("implementation")[0], CodexAgentRunner
+            )
+            scheduler.request_stop()
+
+    def test_injected_runner_never_swapped_on_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = Path(tmp) / ".specseed" / "storage"
+            self._write_config(storage, "claude")
+            double = mock.Mock()
+            scheduler = run.build_scheduler(
+                storage=storage,
+                repo_root=tmp,
+                db=Database(db_path=Path(tmp) / "queue.db"),
+                runner=double,
+            )
+            self._write_config(storage, "codex")
+            scheduler.resume()
+            self.assertEqual(scheduler.runner.chain_for("implementation"), [double])
+            scheduler.request_stop()
 
 
 if __name__ == "__main__":
