@@ -179,51 +179,93 @@ def _external_link(record: dict) -> str | None:
 # --------------------------------------------------------------------------- #
 # monitor data (read-only over storage)
 # --------------------------------------------------------------------------- #
-def _read_tasks(storage: str | Path, limit: int = 100) -> dict:
+def _qint(query: dict, name: str, default: int) -> int:
+    try:
+        return max(0, int(query.get(name, [default])[0]))
+    except (TypeError, ValueError):
+        return default
+
+
+def _page_args(query: dict, key: str, default_limit: int, max_limit: int = 500) -> tuple[int, int]:
+    """(offset, limit) for one paginated monitor section, from ?<key>_offset/_limit."""
+    offset = _qint(query, f"{key}_offset", 0)
+    limit = min(max(_qint(query, f"{key}_limit", default_limit), 1), max_limit)
+    return offset, limit
+
+
+def _empty_page(offset: int, limit: int) -> dict:
+    return {"items": [], "total": 0, "offset": offset, "limit": limit}
+
+
+def _queue_counts(storage: str | Path) -> dict:
+    counts = {"pending": 0, "in_progress": 0, "success": 0, "failed": 0}
     db = _queue_db(storage)
-    out = {"tasks": [], "errors": [], "counts": {"pending": 0, "in_progress": 0, "success": 0, "failed": 0}}
+    if not db.exists():
+        return counts
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5.0)
+        for status, n in conn.execute("SELECT status, COUNT(*) FROM tasks GROUP BY status").fetchall():
+            counts[status] = n
+        conn.close()
+    except sqlite3.Error:
+        pass
+    return counts
+
+
+def _read_tasks(storage: str | Path, queue: tuple[int, int] = (0, 50), errors: tuple[int, int] = (0, 50)) -> dict:
+    """Paginated queue + errors (newest first) plus full status counts."""
+    db = _queue_db(storage)
+    out = {
+        "tasks": _empty_page(*queue),
+        "errors": _empty_page(*errors),
+        "counts": {"pending": 0, "in_progress": 0, "success": 0, "failed": 0},
+    }
     if not db.exists():
         return out
     try:
         conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5.0)
         conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            "SELECT task_id, action, post_id, status, attempts, created_at, last_attempted_at "
-            "FROM tasks ORDER BY task_id DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
-        out["tasks"] = [dict(r) for r in rows]
         for r in conn.execute("SELECT status, COUNT(*) n FROM tasks GROUP BY status").fetchall():
             out["counts"][r["status"]] = r["n"]
+        out["tasks"]["total"] = sum(out["counts"].values())
+        rows = conn.execute(
+            "SELECT task_id, action, post_id, status, attempts, created_at, last_attempted_at "
+            "FROM tasks ORDER BY task_id DESC LIMIT ? OFFSET ?",
+            (queue[1], queue[0]),
+        ).fetchall()
+        out["tasks"]["items"] = [dict(r) for r in rows]
         # Join the originating task so each error carries its action/post/attempts
         # (task_errors outlive their task by design, hence the LEFT JOIN).
+        out["errors"]["total"] = conn.execute("SELECT COUNT(*) FROM task_errors").fetchone()[0]
         errs = conn.execute(
             "SELECT e.error_id, e.task_id, e.message, e.executed_at, "
             "t.action, t.post_id, t.attempts "
             "FROM task_errors e LEFT JOIN tasks t ON t.task_id = e.task_id "
-            "ORDER BY e.error_id DESC LIMIT ?",
-            (limit,),
+            "ORDER BY e.error_id DESC LIMIT ? OFFSET ?",
+            (errors[1], errors[0]),
         ).fetchall()
-        out["errors"] = [dict(r) for r in errs]
+        out["errors"]["items"] = [dict(r) for r in errs]
         conn.close()
     except sqlite3.Error as exc:
         out["db_error"] = str(exc)
     return out
 
 
-def _tail(path: Path, lines: int = 120) -> list[dict]:
+def _read_log(path: Path, offset: int = 0, limit: int = 100) -> dict:
+    """Newest-first page over the JSONL platform log."""
+    out = _empty_page(offset, limit)
     if not path.exists():
-        return []
+        return out
     try:
         raw = path.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
-        return []
-    out = []
-    for line in raw[-lines:]:
+        return out
+    out["total"] = len(raw)
+    for line in reversed(raw[max(0, len(raw) - offset - limit) : max(0, len(raw) - offset)]):
         try:
-            out.append(json.loads(line))
+            out["items"].append(json.loads(line))
         except json.JSONDecodeError:
-            out.append({"raw": line})
+            out["items"].append({"raw": line})
     return out
 
 
@@ -424,7 +466,7 @@ class Handler(BaseHTTPRequestHandler):
             self._meta(record)
             return
         if tail == ["monitor"] and self.command == "GET":
-            self._monitor(record)
+            self._monitor(record, query)
             return
         if tail == ["runner"] and self.command == "POST":
             self._runner(record)
@@ -477,10 +519,15 @@ class Handler(BaseHTTPRequestHandler):
             data["labels"] = labels.get("labels", []) if isinstance(labels, dict) else []
         self._json({"ok": True, "data": data})
 
-    def _monitor(self, record: dict) -> None:
+    def _monitor(self, record: dict, query: dict) -> None:
         storage = record["storage"]
         status = runner_control.read_runner_status(storage)
-        queue = _read_tasks(storage)
+        queue = _read_tasks(
+            storage,
+            queue=_page_args(query, "queue", 50),
+            errors=_page_args(query, "errors", 50),
+        )
+        log_offset, log_limit = _page_args(query, "log", 100)
         self._json(
             {
                 "ok": True,
@@ -489,7 +536,7 @@ class Handler(BaseHTTPRequestHandler):
                     "queue": queue["tasks"],
                     "counts": queue["counts"],
                     "errors": queue["errors"],
-                    "log": _tail(Path(storage) / "platform.log"),
+                    "log": _read_log(Path(storage) / "platform.log", log_offset, log_limit),
                     "gate": _config_gate({**status, **queue["counts"]}),
                 },
             }
@@ -518,7 +565,7 @@ class Handler(BaseHTTPRequestHandler):
     def _get_config(self, record: dict) -> None:
         storage = record["storage"]
         status = runner_control.read_runner_status(storage)
-        counts = _read_tasks(storage)["counts"]
+        counts = _queue_counts(storage)
         self._json(
             {
                 "ok": True,
@@ -534,7 +581,7 @@ class Handler(BaseHTTPRequestHandler):
     def _put_config(self, record: dict) -> None:
         storage = record["storage"]
         status = runner_control.read_runner_status(storage)
-        counts = _read_tasks(storage)["counts"]
+        counts = _queue_counts(storage)
         gate = _config_gate({**status, **counts})
         if not gate["editable"]:
             self._json({"ok": False, "error": gate["reason"]}, status=409)

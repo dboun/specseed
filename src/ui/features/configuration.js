@@ -77,6 +77,8 @@ export function createConfiguration({ repo, ctx }) {
         <div class="field"><label>dev branch</label>${text("dev_branch", cfg.dev_branch)}</div>
         <div class="field"><label>approver usernames <span class="req">(comma separated)</span></label>
           ${text("approver_usernames", (cfg.approvals?.approver_usernames || []).join(", "))}</div>
+        <div class="field"><label>platform username <span class="req">(tracker account the platform posts as; blank = detect by "specseed: " prefix)</span></label>
+          ${text("platform_username", cfg.platform_username || "")}</div>
         ${toggle("dashboards_auto", cfg.dashboards?.auto_refresh, "auto-refresh ROADMAP / sprint dashboards")}
       </section>`;
   }
@@ -206,6 +208,7 @@ export function createConfiguration({ repo, ctx }) {
       .split(",")
       .map((s) => s.trim())
       .filter(Boolean);
+    cfg.platform_username = String(val("platform_username") || "").trim();
     cfg.dashboards = cfg.dashboards || {};
     cfg.dashboards.auto_refresh = on("dashboards_auto");
 

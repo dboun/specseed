@@ -29,8 +29,11 @@ export const api = {
   setup: (id, data) => post(`${base(id)}/setup`, data),
   meta: (id) => request(`${base(id)}/meta`),
 
-  // monitor + runner
-  monitor: (id) => request(`${base(id)}/monitor`),
+  // monitor + runner (params: queue/errors/log _offset/_limit pagination)
+  monitor: (id, params) => {
+    const qs = new URLSearchParams(params || {}).toString();
+    return request(`${base(id)}/monitor${qs ? "?" + qs : ""}`);
+  },
   runner: (id, action) => post(`${base(id)}/runner`, { action }),
 
   // configuration

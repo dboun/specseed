@@ -2,6 +2,10 @@ import { api } from "./api.js";
 import { closeModal, escapeHtml, formatTime, modal, toast } from "../ui/components.js";
 
 const POLL_MS = 3000;
+// page sizes per paginated section (server clamps anyway)
+const PAGE = { queue: 25, errors: 25, log: 100 };
+// queue stat card says "queued"; the db status is "pending" - keep wording aligned
+const STATUS_LABEL = { pending: "queued" };
 
 export function createMonitor({ repo, ctx, refreshTopbar }) {
   let data = null;
@@ -9,9 +13,41 @@ export function createMonitor({ repo, ctx, refreshTopbar }) {
   let timer = null;
   let busy = false; // a runner action is mid-flight (suspend polling)
   let polling = false; // a poll fetch is in flight (no overlap)
+  const pages = { queue: 0, errors: 0, log: 0 }; // current page per section
 
   async function load() {
-    data = await api.monitor(repo.id);
+    data = await api.monitor(repo.id, {
+      queue_offset: pages.queue * PAGE.queue,
+      queue_limit: PAGE.queue,
+      errors_offset: pages.errors * PAGE.errors,
+      errors_limit: PAGE.errors,
+      log_offset: pages.log * PAGE.log,
+      log_limit: PAGE.log,
+    });
+    // section shrank past the current page (e.g. queue cleanup) -> snap back once
+    let refetch = false;
+    for (const key of Object.keys(pages)) {
+      const sec = data?.[key];
+      if (sec && pages[key] > 0 && sec.offset >= (sec.total || 0)) {
+        pages[key] = Math.max(0, Math.ceil((sec.total || 0) / PAGE[key]) - 1);
+        refetch = true;
+      }
+    }
+    if (refetch) await load();
+  }
+
+  function pager(key) {
+    const { total = 0, offset = 0, limit = PAGE[key] } = data?.[key] || {};
+    if (total <= limit && offset === 0) return "";
+    const last = Math.max(0, Math.ceil(total / limit) - 1);
+    const cur = Math.min(Math.floor(offset / limit), last);
+    const from = total ? offset + 1 : 0;
+    const to = Math.min(offset + limit, total);
+    return `<div class="pager">
+      <button class="btn btn-ghost sm" data-page="${key}:prev" ${cur === 0 ? "disabled" : ""}>← Newer</button>
+      <span class="pager-info">${from}–${to} of ${total}</span>
+      <button class="btn btn-ghost sm" data-page="${key}:next" ${cur >= last ? "disabled" : ""}>Older →</button>
+    </div>`;
   }
 
   function runnerState() {
@@ -94,7 +130,7 @@ export function createMonitor({ repo, ctx, refreshTopbar }) {
   }
 
   function queueTable() {
-    const tasks = data?.queue || [];
+    const tasks = data?.queue?.items || [];
     if (!tasks.length) return `<div class="empty-state">Queue is empty.</div>`;
     return `
       <div class="table-wrap"><table class="table">
@@ -107,18 +143,19 @@ export function createMonitor({ repo, ctx, refreshTopbar }) {
               <td>${escapeHtml(t.task_id)}</td>
               <td class="mono">${escapeHtml(t.action)}</td>
               <td>${t.post_id ? "#" + escapeHtml(t.post_id) : "—"}</td>
-              <td><span class="tag tag-${escapeHtml(t.status)}">${escapeHtml(t.status)}</span></td>
+              <td><span class="tag tag-${escapeHtml(t.status)}">${escapeHtml(STATUS_LABEL[t.status] || t.status)}</span></td>
               <td>${escapeHtml(t.attempts)}</td>
               <td class="muted">${escapeHtml(t.last_attempted_at ? formatTime(t.last_attempted_at) : "—")}</td>
             </tr>`
             )
             .join("")}
         </tbody>
-      </table></div>`;
+      </table></div>
+      ${pager("queue")}`;
   }
 
   function errorsList() {
-    const errs = data?.errors || [];
+    const errs = data?.errors?.items || [];
     if (!errs.length) return `<div class="empty-state">No errors recorded.</div>`;
     return errs
       .map((e) => {
@@ -134,11 +171,11 @@ export function createMonitor({ repo, ctx, refreshTopbar }) {
             <button class="btn btn-ghost sm" data-error-details="${escapeHtml(e.error_id)}" title="full error">${multiline ? "Details" : "View"}</button>
           </div>`;
       })
-      .join("");
+      .join("") + pager("errors");
   }
 
   function openErrorModal(id) {
-    const e = (data?.errors || []).find((x) => String(x.error_id) === String(id));
+    const e = (data?.errors?.items || []).find((x) => String(x.error_id) === String(id));
     if (!e) return;
     const row = (k, v) => `<div class="err-meta-row"><span class="cfg-k">${k}</span><span class="mono">${escapeHtml(v)}</span></div>`;
     modal(
@@ -160,7 +197,7 @@ export function createMonitor({ repo, ctx, refreshTopbar }) {
   }
 
   function logList() {
-    const log = (data?.log || []).slice().reverse();
+    const log = data?.log?.items || []; // server already pages newest-first
     if (!log.length) return `<div class="empty-state">No activity logged yet.</div>`;
     return `<div class="log">${log
       .map((line) => {
@@ -173,7 +210,7 @@ export function createMonitor({ repo, ctx, refreshTopbar }) {
           event || ""
         )}</span><span class="log-detail mono">${escapeHtml(detail)}</span></div>`;
       })
-      .join("")}</div>`;
+      .join("")}</div>${pager("log")}`;
   }
 
   function body() {
@@ -275,6 +312,13 @@ export function createMonitor({ repo, ctx, refreshTopbar }) {
       }
       return;
     }
+    const pg = event.target.closest("[data-page]");
+    if (pg && !pg.disabled) {
+      const [key, dir] = pg.dataset.page.split(":");
+      pages[key] = Math.max(0, pages[key] + (dir === "next" ? 1 : -1));
+      refresh();
+      return;
+    }
     if (event.target.closest("[data-copy-addr]")) {
       const env = ctx.env || {};
       if (env.lan_ip && env.port) copyText(`${env.lan_ip}:${env.port}`, "address copied");
@@ -284,7 +328,7 @@ export function createMonitor({ repo, ctx, refreshTopbar }) {
     if (det) return openErrorModal(det.dataset.errorDetails);
     const ce = event.target.closest("[data-copy-error]");
     if (ce) {
-      const e = (data?.errors || []).find((x) => String(x.error_id) === String(ce.dataset.copyError));
+      const e = (data?.errors?.items || []).find((x) => String(x.error_id) === String(ce.dataset.copyError));
       if (e) copyText(e.message || "", "error copied");
       return;
     }
