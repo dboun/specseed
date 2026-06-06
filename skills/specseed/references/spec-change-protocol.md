@@ -210,6 +210,11 @@ Steps, every route that creates issues:
    spec-change request post (and the same marker comment on each gated issue, so a
    `approve APR-NNNN` on an issue resolves that issue). Swap the request status to
    `spec-change:status:awaiting_approval`.
+   **Use `approval_request_comment(...)` output VERBATIM - never hand-write the
+   approval comment.** The helper carries the hidden marker that arms the gate AND
+   the instructions telling the human HOW to approve (`approve APR-NNNN` / 👍). A
+   freehand summary drops both; you may prepend your summary, but the helper body
+   must be in the comment.
 4. **Stop.** The run ends parked. A human approves the token (`approve APR-NNNN`
    comment **or** 👍 thumbs-up reaction on the issue), or rejects it (`reject
    APR-NNNN` / 👎). The executor's deterministic approval system resolves the gate

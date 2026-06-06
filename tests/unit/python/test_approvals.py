@@ -99,9 +99,26 @@ class ApprovedByTest(unittest.TestCase):
         convo = [{"author": "carol", "body": "approve 5"}]
         self.assertEqual(approved_by(_entity(), cfg, convo), ["carol"])
 
-    def test_bot_author_never_approves_under_default(self) -> None:
+    def test_shared_standin_author_can_approve(self) -> None:
+        # On the local stand-ins the human authors as 'remote' too. An author
+        # ban deadlocked every local gate; the platform guard is the prefix.
         cfg = {}
-        convo = [{"author": "remote", "body": "approve 5"}]  # 'remote' is a bot stand-in
+        convo = [{"author": "remote", "body": "approve 5"}]
+        self.assertEqual(approved_by(_entity(), cfg, convo), ["remote"])
+
+    def test_platform_prefixed_comment_never_approves(self) -> None:
+        cfg = {}
+        convo = [{"author": "remote", "body": "specseed: approve 5"}]
+        self.assertEqual(approved_by(_entity(), cfg, convo), [])
+
+    def test_platform_username_author_never_approves(self) -> None:
+        cfg = {"platform_username": "seedbot"}
+        convo = [{"author": "seedbot", "body": "approve 5"}]
+        self.assertEqual(approved_by(_entity(), cfg, convo), [])
+
+    def test_configured_bot_username_never_approves(self) -> None:
+        cfg = {"approvals": {"bot_usernames": ["cibot"]}}
+        convo = [{"author": "cibot", "body": "approve 5"}]
         self.assertEqual(approved_by(_entity(), cfg, convo), [])
 
     def test_allow_any_can_be_disabled(self) -> None:
@@ -123,10 +140,34 @@ class ApprovedByTest(unittest.TestCase):
         entity = _entity([TrackingReaction("thumbs_up", 1, ["erin"])])
         self.assertEqual(approved_by(entity, cfg, []), ["erin"])
 
-    def test_thumbs_up_by_bot_does_not_approve(self) -> None:
+    def test_thumbs_up_by_shared_standin_author_approves(self) -> None:
+        # The bot never reacts; a 'remote' reaction on the stand-in IS the human.
         cfg = {}
         entity = _entity([TrackingReaction("thumbs_up", 1, ["remote"])])
+        self.assertEqual(approved_by(entity, cfg, []), ["remote"])
+
+    def test_thumbs_up_by_platform_username_does_not_approve(self) -> None:
+        cfg = {"platform_username": "seedbot"}
+        entity = _entity([TrackingReaction("thumbs_up", 1, ["seedbot"])])
         self.assertEqual(approved_by(entity, cfg, []), [])
+
+    def test_freehand_platform_apr_mention_arms_the_gate(self) -> None:
+        # The worker skipped the hidden marker and announced the token in a
+        # prefixed comment; `approve APR-0009` must still resolve.
+        cfg = {}
+        convo = [
+            {"author": "remote", "body": "specseed: APR-0009: approve the new sprint batch."},
+            {"author": "dave", "body": "approve APR-0009"},
+        ]
+        self.assertEqual(approved_by(_entity(), cfg, convo), ["dave"])
+
+    def test_human_apr_mention_does_not_arm_the_gate(self) -> None:
+        cfg = {}
+        convo = [
+            {"author": "carol", "body": "what is APR-0042 about?"},
+            {"author": "dave", "body": "approve APR-0042"},
+        ]
+        self.assertEqual(approved_by(_entity(), cfg, convo), [])
 
 
 class RejectedByTest(unittest.TestCase):

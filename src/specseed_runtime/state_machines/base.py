@@ -13,7 +13,8 @@ import re
 from typing import Any, Iterable, Optional
 
 from specseed_runtime.entities.entity_base import Entity
-from specseed_runtime.state_machines.approvals import requested_apr_ids
+from specseed_runtime.platform_identity import is_platform_comment, platform_username
+from specseed_runtime.state_machines.approvals import apr_ids_in_text, requested_apr_ids
 
 
 DEFAULT_STATE = "todo"
@@ -25,9 +26,10 @@ ID_SPLIT_RE = re.compile(r"[\s,]+")
 # Reaction kinds the approval system reads off a post: 👍 approves, 👎 rejects.
 APPROVE_REACTION = "thumbs_up"
 REJECT_REACTION = "thumbs_down"
-# Author names that are the bot itself, never a human approver. The local/remote
-# sqlite stand-ins author as these; real providers add the configured bot login.
-_DEFAULT_BOT_NAMES = {"local", "remote"}
+# NOTE: the local/remote stand-in author names used to be hard-banned from
+# approving. The human authors as them too on those trackers, so the ban
+# deadlocked every local gate. Platform comments are told apart by the
+# "specseed: " prefix / platform_username now, and the bot never reacts.
 
 
 @dataclass(frozen=True)
@@ -117,9 +119,17 @@ def approver_usernames(config: dict[str, Any]) -> set[str]:
 
 
 def bot_usernames(config: dict[str, Any]) -> set[str]:
-    """Author names that are the bot, never a valid human approver."""
+    """Author names that are the bot, never a valid human approver.
 
-    names = set(_DEFAULT_BOT_NAMES)
+    Only EXPLICIT identities count: ``bot_usernames`` config + the configured
+    ``platform_username``. The legacy local/remote stand-in names are shared
+    with the human there, so banning them deadlocked local approvals.
+    """
+
+    names: set[str] = set()
+    bot_name = platform_username(config)
+    if bot_name:
+        names.add(str(bot_name).casefold())
     candidates: list[Any] = []
     for key in ("bot_usernames", "bot_username"):
         value = config.get(key)
@@ -197,6 +207,59 @@ def _entity_reaction_users(entity: Entity, kind: str) -> list[str]:
     return users
 
 
+def _live_gate_targets(
+    entity: Entity,
+    config: dict[str, Any],
+    conversation: Optional[Iterable[Any]],
+) -> set[str]:
+    """IDs an ``approve``/``reject`` command may name for this entity.
+
+    Armed by: the entity's own ids, a hidden approval-request marker, OR any
+    ``APR-NNNN`` mentioned in a PLATFORM comment (the worker sometimes writes
+    the request freehand and skips the marker; only the platform's own words
+    can arm a gate, never human prose).
+    """
+    targets = approval_target_ids(entity)
+    targets.update(item_id.casefold() for item_id in requested_apr_ids(conversation))
+    bot_name = platform_username(config)
+    for item in conversation or []:
+        body = _field(item, "body")
+        if not body:
+            continue
+        if is_platform_comment(author=_field(item, "author"), body=body, username=bot_name):
+            targets.update(item_id.casefold() for item_id in apr_ids_in_text(str(body)))
+    return targets
+
+
+def _command_authors(
+    entity: Entity,
+    config: dict[str, Any],
+    conversation: Optional[Iterable[Any]],
+    parse_ids,
+) -> list[str]:
+    """Authors whose command comment hits a live gate target.
+
+    The platform's own (prefixed / platform_username-authored) comments never
+    count - that, not an author blacklist, is the bot guard: on the local
+    stand-ins bot and human share one author name.
+    """
+    is_approver = _approver_predicate(config)
+    targets = _live_gate_targets(entity, config, conversation)
+    bot_name = platform_username(config)
+    authors = []
+    for item in _conversation_items(entity, conversation):
+        body = _field(item, "body")
+        author = _field(item, "author")
+        if not body or not author or not is_approver(author):
+            continue
+        if is_platform_comment(author=author, body=body, username=bot_name):
+            continue
+        ids = {item_id.casefold() for item_id in parse_ids(str(body))}
+        if targets.intersection(ids):
+            authors.append(str(author))
+    return authors
+
+
 def approved_by(
     entity: Entity,
     config: dict[str, Any],
@@ -210,21 +273,12 @@ def approved_by(
     * a comment ``approve <id>`` whose id matches the entity (its post id, a
       pending approval attr, or a live ``APR-NNNN`` requested in the
       conversation), or
-    * a 👍 (``thumbs_up``) reaction on the post itself.
+    * a 👍 (``thumbs_up``) reaction on the post itself (the bot never reacts,
+      so reactions need no platform guard).
     """
 
     is_approver = _approver_predicate(config)
-    targets = approval_target_ids(entity)
-    targets.update(item_id.casefold() for item_id in requested_apr_ids(conversation))
-    authors = []
-    for item in _conversation_items(entity, conversation):
-        body = _field(item, "body")
-        author = _field(item, "author")
-        if not body or not author or not is_approver(author):
-            continue
-        ids = {item_id.casefold() for item_id in approval_ids_from_body(str(body))}
-        if targets.intersection(ids):
-            authors.append(str(author))
+    authors = _command_authors(entity, config, conversation, approval_ids_from_body)
     for user in _entity_reaction_users(entity, APPROVE_REACTION):
         if is_approver(user):
             authors.append(user)
@@ -239,17 +293,7 @@ def rejected_by(
     """Find approvers who rejected this entity (``reject <id>`` or 👎)."""
 
     is_approver = _approver_predicate(config)
-    targets = approval_target_ids(entity)
-    targets.update(item_id.casefold() for item_id in requested_apr_ids(conversation))
-    authors = []
-    for item in _conversation_items(entity, conversation):
-        body = _field(item, "body")
-        author = _field(item, "author")
-        if not body or not author or not is_approver(author):
-            continue
-        ids = {item_id.casefold() for item_id in reject_ids_from_body(str(body))}
-        if targets.intersection(ids):
-            authors.append(str(author))
+    authors = _command_authors(entity, config, conversation, reject_ids_from_body)
     for user in _entity_reaction_users(entity, REJECT_REACTION):
         if is_approver(user):
             authors.append(user)
