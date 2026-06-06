@@ -81,10 +81,17 @@ def enqueue_spec_change_run(
 ) -> int:
     """Enqueue a generated spec-change script for the executor to run.
 
-    ``script_path`` is the script the skill just wrote (absolute, or relative to
-    its spec-change dir). ``request_id`` is the triggering remote post id (also
-    the spec-change dir name); ``route`` is the spec-change route name. Returns
-    the queued ``task_id``.
+    ``script_path`` is the script the skill just wrote (absolute, or relative).
+    ``request_id`` is the triggering remote post id (also the spec-change dir
+    name); ``route`` is the spec-change route name. Returns the queued ``task_id``.
+
+    With a ``request_id`` the script's home is ALWAYS ``spec_change_dir(request_id)``;
+    only the basename of ``script_path`` is trusted. Agents pass repo-root-relative
+    paths (".specseed/storage/spec-change/<id>/apply.py") which, joined naively
+    under the spec-change dir, double the prefix and enqueue a nonexistent script.
+    So: try the literal join, snap to ``<dir>/<basename>`` when the join is missing,
+    and fail loud here (not at run time, where it would retry forever) if the
+    script still does not exist.
 
     The payload carries ``dir``/``script`` as absolute strings so the executor
     needs no path context of its own, plus ``route`` and ``request_id`` for
@@ -95,8 +102,22 @@ def enqueue_spec_change_run(
     if not script.is_absolute():
         if request_id is None:
             raise ValueError("relative script_path requires request_id to locate its dir")
-        script = spec_change_dir(request_id, storage) / script
+        home = spec_change_dir(request_id, storage)
+        candidate = home / script
+        if not candidate.exists():
+            candidate = home / script.name
+        script = candidate
+    elif not script.exists() and request_id is not None:
+        # Absolute but wrong (e.g. a doubled prefix): snap to the canonical dir.
+        snapped = spec_change_dir(request_id, storage) / script.name
+        if snapped.exists():
+            script = snapped
     script = script.resolve()
+    if not script.is_file():
+        raise ValueError(
+            "spec-change script not found: {0} (request_id={1}). Write apply.py into "
+            "its spec-change dir before enqueueing.".format(script, request_id)
+        )
 
     payload = {
         "dir": str(script.parent),

@@ -64,9 +64,16 @@ class EnqueueSpecChangeTest(unittest.TestCase):
             self.assertEqual(task["payload"]["request_id"], "7")
             self.assertEqual(db.pending_count(), 1)
 
+    def _write_script(self, storage: str, request_id: str) -> Path:
+        script = spec_change_dir(request_id, storage) / DEFAULT_SCRIPT_NAME
+        script.parent.mkdir(parents=True)
+        script.write_text("# apply\n", encoding="utf-8")
+        return script
+
     def test_enqueue_relative_script_resolves_against_request_dir(self) -> None:
         db = self._db()
         with tempfile.TemporaryDirectory() as storage:
+            self._write_script(storage, "9")
             task_id = enqueue_spec_change_run(
                 DEFAULT_SCRIPT_NAME, request_id="9", route="tweak", db=db, storage=storage
             )
@@ -77,6 +84,45 @@ class EnqueueSpecChangeTest(unittest.TestCase):
         db = self._db()
         with self.assertRaises(ValueError):
             enqueue_spec_change_run(DEFAULT_SCRIPT_NAME, db=db)
+
+    def test_repo_root_relative_script_snaps_to_request_dir(self) -> None:
+        # Agents pass ".specseed/storage/spec-change/<id>/apply.py" (relative to
+        # repo root). Joined naively under the spec-change dir the prefix doubles;
+        # enqueue must snap to <dir>/<basename>.
+        db = self._db()
+        with tempfile.TemporaryDirectory() as storage:
+            self._write_script(storage, "16")
+            doubled = Path(".specseed/storage/spec-change/16") / DEFAULT_SCRIPT_NAME
+            task_id = enqueue_spec_change_run(
+                doubled, request_id="16", route="adapt", db=db, storage=storage
+            )
+            payload = db.get_task(task_id)["payload"]
+            self.assertEqual(payload["dir"], str(spec_change_dir("16", storage).resolve()))
+            self.assertEqual(payload["script"], DEFAULT_SCRIPT_NAME)
+
+    def test_wrong_absolute_script_snaps_to_request_dir(self) -> None:
+        db = self._db()
+        with tempfile.TemporaryDirectory() as storage:
+            self._write_script(storage, "16")
+            wrong = (
+                spec_change_dir("16", storage)
+                / ".specseed/storage/spec-change/16"
+                / DEFAULT_SCRIPT_NAME
+            )
+            task_id = enqueue_spec_change_run(
+                wrong, request_id="16", route="adapt", db=db, storage=storage
+            )
+            payload = db.get_task(task_id)["payload"]
+            self.assertEqual(payload["dir"], str(spec_change_dir("16", storage).resolve()))
+
+    def test_missing_script_fails_loud_at_enqueue(self) -> None:
+        db = self._db()
+        with tempfile.TemporaryDirectory() as storage:
+            with self.assertRaises(ValueError):
+                enqueue_spec_change_run(
+                    DEFAULT_SCRIPT_NAME, request_id="9", route="tweak", db=db, storage=storage
+                )
+            self.assertEqual(db.pending_count(), 0)
 
     def test_enqueue_propose_records_action_and_request(self) -> None:
         db = self._db()
