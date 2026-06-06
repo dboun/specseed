@@ -472,5 +472,43 @@ class PlatformErrorDispatchTest(DispatchTestBase):
         self.assertEqual(self.runner.calls, [])
 
 
+class RetryGateTest(DispatchTestBase):
+    """A queued retry whose error post was closed must not execute."""
+
+    def _retried_task(self, action: str = "handle_label_removed") -> dict:
+        task_id = self.db.enqueue(action, post_id="5", payload={})
+        task = self.db.claim_next()
+        return dict(task) | {"attempts": 2}
+
+    def _error_post_for(self, task: dict, closed: bool) -> None:
+        from specseed_runtime.executing import recovery
+
+        self.remote.create_label(recovery.PLATFORM_ERROR_LABEL)
+        created = self.remote.add_entry(
+            recovery.error_post_title(task),
+            body=recovery._marker_line(task["task_id"]),
+            labels=[recovery.PLATFORM_ERROR_LABEL],
+        )
+        self.assertTrue(created.ok)
+        if closed:
+            self.assertTrue(self.remote.set_entry_closed(created.data.id).ok)
+
+    def test_closed_error_post_cancels_queued_retry(self) -> None:
+        task = self._retried_task()
+        self._error_post_for(task, closed=True)
+        out = dispatch(self.ctx, task)
+        self.assertTrue(out.success)
+        self.assertIn("retry cancelled", out.detail)
+        self.assertEqual(self.runner.calls, [])  # handler never ran
+
+    def test_open_error_post_lets_retry_run(self) -> None:
+        task = self._retried_task(action="run_spec_change_script")
+        self._error_post_for(task, closed=False)
+        out = dispatch(self.ctx, task)
+        # gate passed; the handler itself then rejects the empty payload
+        self.assertFalse(out.success)
+        self.assertIn("payload missing", out.error)
+
+
 if __name__ == "__main__":
     unittest.main()

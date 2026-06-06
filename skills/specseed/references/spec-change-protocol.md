@@ -55,9 +55,9 @@ is yours to fit the route, but keep it explicit. Suggested:
   "request_id": "<id>",
   "route": "adapt",
   "creates": [
-    {"tier": "ticket", "title": "...", "body": "...",
+    {"tier": "ticket", "title": "PROJ-0001 ...", "body": "...",
      "labels": ["ticket", "ticket:status:todo"]},
-    {"tier": "issue", "title": "...", "body": "...",
+    {"tier": "issue", "title": "FEAT-0001 ...", "body": "Parent: #{id:PROJ-0001 ...}",
      "labels": ["issue", "issue:status:todo", "type:feature", "difficulty:hard"]}
   ],
   "edits":   [{"post_id": 12, "body": "..."}],
@@ -86,6 +86,10 @@ a short overall summary, then EVERY epic/ticket/issue you will create as a title
 with a one-line description. `apr` is the approval token (see the approval gate). **Issues
 are born `issue:status:todo`, never `awaiting_approval`** — the plan approval is the gate;
 no post exists until it is approved.
+
+**Cross-references between creates:** post ids don't exist until `apply.py` runs, so
+a child body references its parent as `{id:<parent title>}` — the template below
+substitutes the real id at create time. Never hardcode guessed ids (`#1`, `#2`).
 
 `apply.py` reads `plan.json` and applies it — but only AFTER approval (see the gate).
 Keeping the data and the executor separate means a human can eyeball the delta and the
@@ -142,9 +146,25 @@ def main() -> int:
     plan = json.loads((_HERE.parent / "plan.json").read_text(encoding="utf-8"))
     remote = resolve_remote(_STORAGE)
 
+    # Idempotency ledger: title -> created post id, persisted NEXT TO this
+    # script. A crashed run gets retried by the runtime; the ledger makes the
+    # retry skip posts that already exist instead of duplicating them.
+    ledger_path = _HERE.parent / "created.json"
+    created = (json.loads(ledger_path.read_text(encoding="utf-8"))
+               if ledger_path.exists() else {})
+
     for spec in plan.get("creates", []):
-        _ok(remote.add_entry(spec["title"], body=spec.get("body"),
-                             labels=spec.get("labels")), f"create {spec['title']!r}")
+        title = spec["title"]
+        if title in created:
+            continue  # a previous (crashed) run already made this one
+        body = spec.get("body") or ""
+        for parent_title, parent_id in created.items():
+            body = body.replace("{id:" + parent_title + "}", str(parent_id))
+        # .data is a TrackingPostId-shaped object - the id lives at .id
+        new = _ok(remote.add_entry(title, body=body, labels=spec.get("labels")),
+                  f"create {title!r}")
+        created[title] = new.id
+        ledger_path.write_text(json.dumps(created, indent=1), encoding="utf-8")
     for edit in plan.get("edits", []):
         _ok(remote.edit_entry(edit["post_id"], title=edit.get("title"),
                               body=edit.get("body")), f"edit {edit['post_id']}")
@@ -190,6 +210,11 @@ All on the object from `resolve_remote()`. All return `TrackingResult`.
 | `delete_entry(id)` | hard-delete (local + GitLab; **GitHub cannot**, close instead) |
 | `ensure_label(name, color=, description=)` | make sure a label exists |
 | `pin_entry(id)` | pin a dashboard (GitHub only; GitLab no-ops) |
+
+**Payload shapes:** `result.data` is a typed object, NEVER a dict — don't index it.
+`add_entry`/`add_entry_comment`/`delete_entry` → object with the new/affected id at
+`.data.id`. `get_entry` → post details (`.title`, `.body`, `.labels`, `.is_open`,
+`.comments`). Pass BARE ids (`int | str`) into calls, not the id objects.
 
 A **status swap** = `remove_entry_label(id, "<tier>:status:<old>")` then
 `add_entry_label(id, "<tier>:status:<new>")`. A **SCHEDULE refresh** =
@@ -290,11 +315,12 @@ and offer it — early and refreshed, never pasted into the output.
 
 ## Idempotency
 
-A spec-change may be re-triggered (the human comments again, a poll repeats).
-Write `apply.py` so re-running is safe: prefer label add/remove and comments
-(idempotent), check current state from `plan.json`, and do not blindly re-create
-a post that already exists (record created ids back into the request dir if a
-second pass needs them). When unsure, comment rather than duplicate.
+A spec-change may be re-triggered (the human comments again, a poll repeats), and a
+CRASHED `apply.py` is retried by the runtime — a naive script then duplicates every
+post it made before the crash. Write `apply.py` so re-running is safe: keep the
+`created.json` ledger from the template (skip already-created titles), prefer label
+add/remove and comments (idempotent), check current state from `plan.json`. When
+unsure, comment rather than duplicate.
 
 **A re-trigger REWRITES the request dir.** The `plan.json` + `apply.py` you find
 there are a previous run's output - usually the clarification round the human

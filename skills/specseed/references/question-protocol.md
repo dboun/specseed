@@ -112,6 +112,11 @@ changes need brief justification.
 Default LOW. The range "1–3 rounds × 4–6 Qs" is a *range*, **not a target**.
 **Hard cap: 3 rounds** per stage. Human interaction is the real cost, not artifacts.
 
+**Explicit override:** request names a round count ("2 rounds of questions") →
+that count wins over the sizing heuristic and the ranking gate (cap 3 still
+holds). Run exactly that many rounds; fill late rounds with the best remaining
+medium-impact Qs instead of skipping.
+
 Sizing heuristic by task scope:
 - Small/clear: 1 round, 3–4 Qs total
 - Medium: 2 rounds × 4–5 Qs

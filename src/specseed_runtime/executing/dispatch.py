@@ -743,6 +743,19 @@ def dispatch(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
         post_id=task.get("post_id"),
     )
 
+    # A queued retry whose error post a human closed must not run again.
+    if recovery.retry_cancelled(ctx.remote, task):
+        platform_log.log_event(
+            "retry_cancelled_by_closed_error_post",
+            task_id=task.get("task_id"),
+            action=action,
+            post_id=task.get("post_id"),
+        )
+        return HandlerOutcome(
+            success=True,
+            detail="retry cancelled: error post closed by human",
+        )
+
     if action == SPEC_CHANGE_ACTION:
         return run_spec_change_script(ctx, task)
 

@@ -206,6 +206,43 @@ class RecoveryTest(unittest.TestCase):
         self.assertFalse(bool(detail.is_open))
         self.assertTrue(any("Recovered" in c.body for c in detail.comments))
 
+    # -- retry execution gate ----------------------------------------------- #
+    def test_retry_cancelled_true_only_for_closed_post_and_prior_attempts(self) -> None:
+        task = self._failed_task()
+        self._fail(task)
+        retried = self.db.get_task(task["task_id"]) | {"attempts": 2}
+
+        # post open -> retry runs
+        self.assertFalse(recovery.retry_cancelled(self.remote, retried))
+
+        # human closes the post -> queued retry must not run
+        self.remote.set_entry_closed(self._error_posts()[0].id)
+        self.assertTrue(recovery.retry_cancelled(self.remote, retried))
+
+        # first run is never gated, even with a closed post around
+        first = dict(retried) | {"attempts": 1}
+        self.assertFalse(recovery.retry_cancelled(self.remote, first))
+
+    def test_retry_cancelled_safe_without_remote_or_post(self) -> None:
+        task = self._failed_task()
+        retried = self.db.get_task(task["task_id"]) | {"attempts": 2}
+        self.assertFalse(recovery.retry_cancelled(None, retried))
+        self.assertFalse(recovery.retry_cancelled(self.remote, retried))  # no post
+
+    def test_retry_cancelled_never_gates_platform_error_action(self) -> None:
+        task = self._failed_task(action=recovery.PLATFORM_ERROR_ACTION)
+        # closed error post with this task's marker exists; the action guard
+        # must still win (recovery never recovers itself).
+        created = self.remote.add_entry(
+            recovery.error_post_title(task),
+            body=recovery._marker_line(task["task_id"]),
+            labels=[recovery.PLATFORM_ERROR_LABEL],
+        )
+        self.assertTrue(created.ok)
+        self.assertTrue(self.remote.set_entry_closed(created.data.id).ok)
+        retried = self.db.get_task(task["task_id"]) | {"attempts": 2}
+        self.assertFalse(recovery.retry_cancelled(self.remote, retried))
+
 
 class ClaimHonorsNotBeforeTest(unittest.TestCase):
     def test_future_not_before_is_not_claimable_past_is(self) -> None:

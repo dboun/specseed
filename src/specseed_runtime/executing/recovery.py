@@ -158,6 +158,27 @@ def find_error_post(remote: Any, task_id: Any) -> Optional[Any]:
     return None
 
 
+def retry_cancelled(remote: Any, task: dict[str, Any]) -> bool:
+    """True when a queued retry must NOT run: a human closed its error post.
+
+    ``on_failure`` only checks the cancel switch when scheduling the NEXT retry,
+    so a retry already sitting in the queue would still execute once after the
+    close - one more run of a known-failing (possibly half-applied) script.
+    Dispatch calls this before running any task with prior attempts.
+    """
+    if remote is None:
+        return False
+    if int(task.get("attempts") or 0) <= 1:
+        return False  # first run, never gated
+    if str(task.get("action") or "") == PLATFORM_ERROR_ACTION:
+        return False
+    try:
+        post = find_error_post(remote, task.get("task_id"))
+    except Exception:
+        return False  # gate is best-effort; a remote hiccup must not block work
+    return post is not None and not _is_open(post)
+
+
 def _comment(remote: Any, post_id: Any, body: str) -> None:
     try:
         remote.add_entry_comment(post_id, platform_comment(body))
