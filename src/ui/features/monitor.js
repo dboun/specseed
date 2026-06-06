@@ -1,5 +1,5 @@
 import { api } from "./api.js";
-import { escapeHtml, relativeTime, toast } from "../ui/components.js";
+import { closeModal, escapeHtml, modal, relativeTime, toast } from "../ui/components.js";
 
 const POLL_MS = 3000;
 
@@ -64,15 +64,16 @@ export function createMonitor({ repo, ctx, refreshTopbar }) {
     let chips = items
       .map(([k, v]) => `<span class="meta-chip"><b>${escapeHtml(k)}</b> ${escapeHtml(v)}</span>`)
       .join("");
-    const addr = env.lan_ip && env.port ? `${env.lan_ip}:${env.port}` : null;
-    if (addr) {
-      chips += `<button type="button" class="meta-chip copy" data-copy="${escapeHtml(addr)}" title="copy the LAN address">
-        <b>addr</b> ${escapeHtml(addr)} <span class="copy-hint">click to copy</span></button>`;
+    // The LAN address stays hidden (kept off-screen) - this is a copy-only
+    // affordance so it can be pasted into another device's browser.
+    if (env.lan_ip && env.port) {
+      chips += `<button type="button" class="meta-chip copy" data-copy-addr title="copy this machine's LAN address">
+        <b>addr</b> <span class="copy-hint">click to copy</span></button>`;
     }
     return chips;
   }
 
-  async function copyText(text) {
+  async function copyText(text, label = "copied") {
     try {
       if (navigator.clipboard && window.isSecureContext) {
         await navigator.clipboard.writeText(text);
@@ -86,7 +87,7 @@ export function createMonitor({ repo, ctx, refreshTopbar }) {
         document.execCommand("copy");
         ta.remove();
       }
-      toast(`copied ${text}`, "ok");
+      toast(label, "ok");
     } catch {
       toast("copy failed", "error");
     }
@@ -120,14 +121,42 @@ export function createMonitor({ repo, ctx, refreshTopbar }) {
     const errs = data?.errors || [];
     if (!errs.length) return `<div class="empty-state">No errors recorded.</div>`;
     return errs
-      .map(
-        (e) => `
-      <div class="error-row">
-        <div class="error-meta">task #${escapeHtml(e.task_id)} · ${escapeHtml(relativeTime(e.executed_at))}</div>
-        <div class="error-msg mono">${escapeHtml(e.message)}</div>
-      </div>`
-      )
+      .map((e) => {
+        const head = String(e.message || "").split("\n")[0].trim();
+        const ctxbits = [e.action, e.post_id ? "#" + e.post_id : null].filter(Boolean).join(" · ");
+        const multiline = String(e.message || "").includes("\n") || String(e.message || "").length > 160;
+        return `
+          <div class="error-row">
+            <div class="error-main">
+              <div class="error-meta">task #${escapeHtml(e.task_id)}${ctxbits ? " · " + escapeHtml(ctxbits) : ""} · ${escapeHtml(relativeTime(e.executed_at))}</div>
+              <div class="error-msg mono">${escapeHtml(head) || "(no message)"}</div>
+            </div>
+            <button class="btn btn-ghost sm" data-error-details="${escapeHtml(e.error_id)}" title="full error">${multiline ? "Details" : "View"}</button>
+          </div>`;
+      })
       .join("");
+  }
+
+  function openErrorModal(id) {
+    const e = (data?.errors || []).find((x) => String(x.error_id) === String(id));
+    if (!e) return;
+    const row = (k, v) => `<div class="err-meta-row"><span class="cfg-k">${k}</span><span class="mono">${escapeHtml(v)}</span></div>`;
+    modal(
+      `
+      <h2>Task #${escapeHtml(e.task_id)} — error</h2>
+      <div class="err-meta">
+        ${row("action", e.action || "—")}
+        ${row("post", e.post_id ? "#" + e.post_id : "—")}
+        ${row("attempts", e.attempts ?? "—")}
+        ${row("when", e.executed_at || "—")}
+      </div>
+      <pre class="error-full mono">${escapeHtml(e.message || "(no message)")}</pre>
+      <div class="button-row">
+        <button class="btn btn-ghost" data-copy-error="${escapeHtml(e.error_id)}">Copy</button>
+        <button class="btn btn-primary" data-close>Close</button>
+      </div>`,
+      { wide: true }
+    );
   }
 
   function logList() {
@@ -246,8 +275,20 @@ export function createMonitor({ repo, ctx, refreshTopbar }) {
       }
       return;
     }
-    const copy = event.target.closest("[data-copy]");
-    if (copy) return copyText(copy.dataset.copy);
+    if (event.target.closest("[data-copy-addr]")) {
+      const env = ctx.env || {};
+      if (env.lan_ip && env.port) copyText(`${env.lan_ip}:${env.port}`, "address copied");
+      return;
+    }
+    const det = event.target.closest("[data-error-details]");
+    if (det) return openErrorModal(det.dataset.errorDetails);
+    const ce = event.target.closest("[data-copy-error]");
+    if (ce) {
+      const e = (data?.errors || []).find((x) => String(x.error_id) === String(ce.dataset.copyError));
+      if (e) copyText(e.message || "", "error copied");
+      return;
+    }
+    if (event.target.closest("[data-close]")) return closeModal();
     if (event.target.closest("[data-monitor-refresh]")) refresh();
   }
 

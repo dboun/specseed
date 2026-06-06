@@ -9,14 +9,21 @@ in. Modules derive their default paths from here.
 
 ``default_specseed_dir`` is the dev default only: this code repo's root, where
 ``storage/`` and ``skills/`` sit during development. Real runs against a target
-pass storage in explicitly (``<target>/<specseed_dir>/storage``).
+pass storage in explicitly (``<target>/<specseed_dir>/storage``) - or via
+``$SPECSEED_STORAGE``, which the runner exports so its subprocesses (agents,
+generated apply.py) resolve the TARGET's storage, not the engine's.
 
 Only Python stdlib is used.
 """
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+
+# Exported by the running scheduler (executing/run.py) so child processes that
+# call default_storage_dir() land in the target's storage, not the engine's.
+SPECSEED_STORAGE_ENV = "SPECSEED_STORAGE"
 
 
 def default_specseed_dir() -> Path:
@@ -28,6 +35,9 @@ def default_specseed_dir() -> Path:
 
 
 def default_storage_dir() -> Path:
+    env = os.environ.get(SPECSEED_STORAGE_ENV)
+    if env:
+        return Path(env).expanduser()
     return default_specseed_dir() / "storage"
 
 

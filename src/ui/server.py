@@ -195,9 +195,13 @@ def _read_tasks(storage: str | Path, limit: int = 100) -> dict:
         out["tasks"] = [dict(r) for r in rows]
         for r in conn.execute("SELECT status, COUNT(*) n FROM tasks GROUP BY status").fetchall():
             out["counts"][r["status"]] = r["n"]
+        # Join the originating task so each error carries its action/post/attempts
+        # (task_errors outlive their task by design, hence the LEFT JOIN).
         errs = conn.execute(
-            "SELECT error_id, task_id, message, executed_at FROM task_errors "
-            "ORDER BY error_id DESC LIMIT ?",
+            "SELECT e.error_id, e.task_id, e.message, e.executed_at, "
+            "t.action, t.post_id, t.attempts "
+            "FROM task_errors e LEFT JOIN tasks t ON t.task_id = e.task_id "
+            "ORDER BY e.error_id DESC LIMIT ?",
             (limit,),
         ).fetchall()
         out["errors"] = [dict(r) for r in errs]

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import signal
 import sys
 import time
@@ -50,7 +51,7 @@ from specseed_runtime.executing import platform_log
 from specseed_runtime.executing import runner_control
 from specseed_runtime.executing.scheduler import Scheduler
 from specseed_runtime.migrating.migrate import run_migrations
-from specseed_runtime.storage_paths import storage_db_path
+from specseed_runtime.storage_paths import SPECSEED_STORAGE_ENV, storage_db_path
 from specseed_runtime.tracking.populate_defaults import populate_defaults
 from specseed_runtime.tracking.resolve_remote import (
     default_storage_dir,
@@ -178,6 +179,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
 
     storage_dir = Path(args.storage) if args.storage else default_storage_dir()
+    # Export the target's storage for every child process: agent runs and
+    # generated apply.py call default_storage_dir() and must land HERE, not in
+    # the engine repo's dev storage.
+    os.environ[SPECSEED_STORAGE_ENV] = str(storage_dir.resolve())
     platform_log.configure(storage_dir)
     platform_log.log_event(
         "run_start",

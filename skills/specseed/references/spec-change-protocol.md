@@ -16,10 +16,14 @@ current work posts from the **local** tracker only.
 
 ```python
 from specseed_runtime.tracking.resolve_remote import resolve_local
-local = resolve_local()                      # TrackingLocal, the read cache
+local = resolve_local(storage=STORAGE_DIR)    # STORAGE_DIR = <specseed_dir>/storage
 post = local.get_entry(REQUEST_ID).data       # title, body, comments
 work = local.list_entries(is_open=None).data  # current epics/tickets/issues
 ```
+
+**Always pass `storage=` explicitly.** Bare `resolve_local()`/`resolve_remote()`
+fall back to `$SPECSEED_STORAGE` (the runner exports it) and then to the ENGINE
+repo's dev storage - the wrong db when the engine runs against a target.
 
 Never call `resolve_remote()` to *read*: the local cache exists so a planning
 pass never hits the provider API. The remote is touched only by the script you
@@ -102,6 +106,10 @@ for _root in _HERE.parents:
         sys.path.insert(0, str(_root / "src"))
         break
 
+# This file lives at <storage>/spec-change/<id>/apply.py - storage is two
+# levels up. Self-locating: correct even run by hand, without the runner's env.
+_STORAGE = _HERE.parents[2]
+
 from specseed_runtime.tracking.resolve_remote import resolve_remote
 
 
@@ -113,7 +121,7 @@ def _ok(result, what):
 
 def main() -> int:
     plan = json.loads((_HERE.parent / "plan.json").read_text(encoding="utf-8"))
-    remote = resolve_remote()
+    remote = resolve_remote(_STORAGE)
 
     for spec in plan.get("creates", []):
         _ok(remote.add_entry(spec["title"], body=spec.get("body"),
@@ -219,9 +227,15 @@ When no approver list is configured, any non-bot human may approve (the default)
 After writing `plan.json` and `apply.py`, enqueue the run and stop:
 
 ```python
+from specseed_runtime.db.database import Database
 from specseed_runtime.scheduling.spec_change import enqueue_spec_change_run
-enqueue_spec_change_run(script_path, request_id=REQUEST_ID, route=ROUTE)
+enqueue_spec_change_run(script_path, request_id=REQUEST_ID, route=ROUTE,
+                        db=Database.instance(STORAGE_DIR / "specseed.db"))
 ```
+
+`script_path` absolute; `db` explicit so the task lands in the TARGET's queue
+(the bare default falls back to `$SPECSEED_STORAGE`, then the engine's dev
+storage).
 
 The executor (`executing/`) drains the queue and runs `apply.py` as a
 permission-gated subprocess. Your job ends at the enqueue: do not run `apply.py`

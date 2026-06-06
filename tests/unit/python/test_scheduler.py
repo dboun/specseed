@@ -142,6 +142,28 @@ class SchedulerTest(unittest.TestCase):
         self.assertTrue(marker.exists())
         self.assertEqual(marker.read_text(), "applied")
 
+    def test_spec_change_script_gets_target_storage_env(self) -> None:
+        # apply.py resolves trackers via default_storage_dir(): the subprocess
+        # must see SPECSEED_STORAGE = the target's storage, not the engine's.
+        marker = self.root / "seen_env.txt"
+        script_dir = self.root / "storage" / "spec-change" / "req-env"
+        script_dir.mkdir(parents=True, exist_ok=True)
+        (script_dir / "apply.py").write_text(
+            "import os\n"
+            "from pathlib import Path\n"
+            "Path(r'{0}').write_text(os.environ.get('SPECSEED_STORAGE', ''))\n".format(marker)
+        )
+        self.db.enqueue(
+            SPEC_CHANGE_ACTION,
+            post_id="req-env",
+            payload={"dir": str(script_dir), "script": "apply.py", "request_id": "req-env"},
+        )
+
+        sched = self._scheduler()
+        sched.run_once()
+
+        self.assertEqual(marker.read_text(), str((self.root / "storage").resolve()))
+
     def test_idle_post_is_a_no_op(self) -> None:
         # An entry with no actionable status/route just gets bookkeeping success.
         self.remote.create_label("tier:epic")

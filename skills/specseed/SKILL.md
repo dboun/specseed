@@ -101,9 +101,11 @@ is the `post_id` on the queued task.
 Read `references/spec-change-protocol.md` first. The shape is always:
 
 1. **Read context — local only.** Read the spec-change post + its comments and
-   the current work posts from the **local** tracker (`resolve_local()` /
-   `tracking_local.db`). Never poll the remote to plan; that is what the local
-   cache is for. Read the current spec under `<specseed_dir>/spec/`.
+   the current work posts from the **local** tracker
+   (`resolve_local(storage=<specseed_dir>/storage)` / `tracking_local.db`).
+   Always pass `storage=` — the bare default points at the engine repo, not the
+   target. Never poll the remote to plan; that is what the local cache is for.
+   Read the current spec under `<specseed_dir>/spec/`.
 2. **Decide + edit the spec if needed.** Apply the route's logic to
    `<specseed_dir>/spec/`.
    Persist any intermediate reasoning (the planned work-breakdown delta) as JSON

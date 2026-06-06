@@ -38,6 +38,7 @@ from specseed_runtime.executing.context import ExecutionContext
 from specseed_runtime.executing import prompts
 from specseed_runtime.scheduling.spec_change import SPEC_CHANGE_ACTION
 from specseed_runtime.state_machines.base import evaluate_entity_state
+from specseed_runtime.storage_paths import SPECSEED_STORAGE_ENV
 
 
 # How often the spec-change subprocess wait loop checks cancel/timeout.
@@ -250,6 +251,11 @@ def run_spec_change_script(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
     existing = env.get("PYTHONPATH")
     parts = [engine_src, repo_root] + ([existing] if existing else [])
     env["PYTHONPATH"] = os.pathsep.join(parts)
+    # Point default_storage_dir() at the TARGET's storage: a bare
+    # resolve_remote()/Database in apply.py must not land in the engine repo.
+    storage = getattr(ctx, "storage", None)
+    if storage:
+        env[SPECSEED_STORAGE_ENV] = str(Path(storage).resolve())
 
     argv = [sys.executable, script_path]
     start = time.monotonic()
