@@ -47,6 +47,11 @@ _MARKER = "specseed:platform-error"
 RETRY_BACKOFF_S = (60, 300, 900)
 DEFAULT_MAX_RETRIES = 5
 
+# Engage the resolve agent on the Nth consecutive failure: the cheap early
+# retries (1', 5') get a chance to clear a transient first; tokens only burn
+# when the failure looks real. Exhaustion always engages.
+ENGAGE_AFTER_FAILURES = 3
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -87,7 +92,18 @@ def _marker_line(task_id: Any) -> str:
     return f"<!-- {_MARKER} task={task_id} -->"
 
 
-def error_post_body(task: dict[str, Any], outcome: Any, next_delay_s: Optional[int]) -> str:
+def _agent_eta_s(max_retries: int) -> int:
+    """Seconds from first failure until the resolve agent engages."""
+    engage_attempt = min(ENGAGE_AFTER_FAILURES, max_retries + 1)
+    return sum(retry_delay_s(i) for i in range(1, engage_attempt))
+
+
+def error_post_body(
+    task: dict[str, Any],
+    outcome: Any,
+    next_delay_s: Optional[int],
+    max_retries: int = DEFAULT_MAX_RETRIES,
+) -> str:
     """The post the human reads first. Plain words, the raw error quoted once."""
     origin = task.get("post_id")
     about = f" while working on post {origin}" if origin else ""
@@ -103,19 +119,25 @@ def error_post_body(task: dict[str, Any], outcome: Any, next_delay_s: Optional[i
         error,
         "```",
         "",
-        "An agent is taking a look now. Unless something else breaks, it will "
-        "update this post with what it found and what you can do about it. "
-        "Replies here reach the agent - this thread is a conversation.",
-        "",
     ]
     if next_delay_s is not None:
-        lines.append(
-            f"The task retries automatically (next try in {_delay_text(next_delay_s)}, "
-            "then with growing pauses). **Closing this post stops the retries.**"
-        )
+        lines += [
+            f"The task retries automatically: next try in {_delay_text(next_delay_s)}, "
+            "then with growing pauses. **Closing this post stops the retries.**",
+            "",
+            "If the first retries do not fix it, an agent takes a look (in "
+            f"{_delay_text(_agent_eta_s(max_retries))}), updates this post with what "
+            "it found and what you can do about it, and answers replies here - this "
+            "thread is a conversation.",
+            "",
+        ]
     else:
-        lines.append("Automatic retries are off for this failure; the agent will advise.")
-    lines += ["", _marker_line(task.get("task_id"))]
+        lines += [
+            "Automatic retries are off for this failure; an agent will take a look "
+            "and report here. Replies on this thread reach it.",
+            "",
+        ]
+    lines += [_marker_line(task.get("task_id"))]
     return "\n".join(lines)
 
 
@@ -199,7 +221,7 @@ def on_failure(
     if remote is not None:
         try:
             post = find_error_post(remote, task_id)
-            if post is None and attempts <= 1:
+            if post is None:  # also late-creates when the first write failed
                 try:  # the label may predate seeding on old targets
                     remote.ensure_label(
                         PLATFORM_ERROR_LABEL,
@@ -210,7 +232,7 @@ def on_failure(
                     pass
                 result = remote.add_entry(
                     error_post_title(task),
-                    body=error_post_body(task, outcome, delay_s),
+                    body=error_post_body(task, outcome, delay_s, cfg["max_retries"]),
                     labels=[PLATFORM_ERROR_LABEL],
                 )
                 if getattr(result, "ok", False) and result.data is not None:
@@ -256,18 +278,24 @@ def on_failure(
         delay_s=delay_s,
         not_before=_iso(next_at),
     )
+    # The cheap early retries run first; the agent engages on the Nth failure
+    # (or right away when the post arrives late, past that point).
+    engage = attempts == ENGAGE_AFTER_FAILURES or (
+        created and attempts > ENGAGE_AFTER_FAILURES
+    )
     if post_id is not None:
-        if created:
-            _enqueue_resolve(db, post_id, task, reason="new")
-            summary["agent"] = True
-        else:
+        if not created:
             error = stdout_tail(str(getattr(outcome, "error", None) or ""), 400)
+            note = "\nAn agent is taking a look now and will report here." if engage else ""
             _comment(
                 remote,
                 post_id,
                 f"Retry #{attempts - 1} did not fix it. Next try in "
-                f"{_delay_text(delay_s)} ({_iso(next_at)}).\n```\n{error}\n```",
+                f"{_delay_text(delay_s)} ({_iso(next_at)}).{note}\n```\n{error}\n```",
             )
+        if engage:
+            _enqueue_resolve(db, post_id, task, reason="new")
+            summary["agent"] = True
     return summary
 
 

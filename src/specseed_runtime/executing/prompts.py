@@ -175,8 +175,9 @@ def build_implement_prompt(entity: Any, ctx: Any) -> str:
 
 _PE_REASON = {
     "new": (
-        "First failure, fresh post. Investigate, then REWRITE the post body with "
-        "what you found. The body currently holds only the raw error stub."
+        "First engagement: the early automatic retries did not clear it, so this "
+        "looks like a real problem, not a blip. Investigate, then REWRITE the post "
+        "body with what you found. The body currently holds only the raw error stub."
     ),
     "exhausted": (
         "Automatic retries ran out; still failing. Dig deeper than last time and "

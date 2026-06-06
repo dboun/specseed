@@ -277,6 +277,9 @@ button.chip { cursor: pointer; }
 .chip.on { color: var(--accent); border-color: var(--accent); background: rgba(56,225,192,0.07); }
 .chip.removable:hover { color: var(--bad); border-color: var(--bad); }
 .chip-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.post-foot { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.post-foot .chip-row { flex: 1; min-width: 0; }
+.reply-count { margin-top: 8px; font-family: var(--mono); font-size: 11px; color: var(--muted); white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; }
 
 .tracker-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); gap: 16px; align-items: start; }
 .post-list { display: flex; flex-direction: column; gap: 10px; }

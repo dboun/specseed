@@ -470,14 +470,18 @@ class RunnerChains:
 def build_runner_chains(config: Optional[dict[str, Any]] = None) -> RunnerChains:
     """Build a :class:`RunnerChains` from ``config["runner"]``.
 
-    ``runner`` maps each function to an ordered list of specs. Missing/empty
-    functions fall back to the default Claude spec, so the result always has a
-    usable chain per function.
+    ``runner`` maps each function to an ordered list of specs. A missing/empty
+    function rides the configured ``implementation`` chain (a target that set up
+    codex must not get a surprise default-claude run for a newly added
+    function); only a config with no usable chains at all falls back to the
+    default Claude spec.
     """
     runner_cfg = (config or {}).get("runner") or {}
     chains: dict[str, list[AgentRunner]] = {}
     for fn in RUNNER_FUNCTIONS:
         specs = runner_cfg.get(fn)
+        if not isinstance(specs, list) or not specs:
+            specs = runner_cfg.get("implementation")
         if not isinstance(specs, list) or not specs:
             specs = [default_runner_spec()]
         chains[fn] = [runner_from_spec(s) for s in specs]

@@ -157,7 +157,10 @@ export function createTracker({ repo, ctx }) {
         </div>
         <div class="post-title">${escapeHtml(post.title)}</div>
         <div class="post-meta">${escapeHtml(post.author || "unknown")} · ${escapeHtml(formatTime(post.updated_at))}</div>
-        <div class="chip-row">${labels.map((l) => `<span class="chip sm">${escapeHtml(l.name)}</span>`).join("")}</div>
+        <div class="post-foot">
+          <div class="chip-row">${labels.map((l) => `<span class="chip sm">${escapeHtml(l.name)}</span>`).join("")}</div>
+          <span class="reply-count" title="replies">💬 ${escapeHtml(post.comment_count || 0)}</span>
+        </div>
       </article>`;
   }
 

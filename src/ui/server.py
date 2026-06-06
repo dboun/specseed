@@ -352,6 +352,26 @@ def _touch_entry(db: Path, entry_id) -> None:
         conn.execute("UPDATE entries SET updated_at = ? WHERE id = ?", (_now(), entry_id))
 
 
+def _with_comment_counts(record: dict, posts: object) -> object:
+    """Stamp comment_count on listed posts (the summary shape lacks it)."""
+    if not isinstance(posts, list):
+        return posts
+    counts: dict[str, int] = {}
+    try:
+        conn = sqlite3.connect(f"file:{_tracker_db(record['storage'])}?mode=ro", uri=True, timeout=5.0)
+        counts = {
+            str(row[0]): row[1]
+            for row in conn.execute("SELECT entry_id, COUNT(*) FROM comments GROUP BY entry_id")
+        }
+        conn.close()
+    except sqlite3.Error:
+        pass  # count chip degrades to 0; the list itself still renders
+    for post in posts:
+        if isinstance(post, dict):
+            post["comment_count"] = counts.get(str(post.get("id")), 0)
+    return posts
+
+
 def _toggle_entry_reaction(record: dict, entry_id, reaction: str) -> dict:
     tracker = _tracker_for(record)
     db = _tracker_db(record["storage"])
@@ -600,7 +620,7 @@ class Handler(BaseHTTPRequestHandler):
             if self.command == "GET":
                 state = query.get("state", ["open"])[0]
                 data = _ok(tracker.list_entries(is_open=_state(state)))
-                self._json({"ok": True, "data": data})
+                self._json({"ok": True, "data": _with_comment_counts(record, data)})
                 return
             if self.command == "POST":
                 body = self._body()

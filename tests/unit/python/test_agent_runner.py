@@ -127,8 +127,23 @@ class BuildRunnerChainsTest(unittest.TestCase):
         self.assertEqual(len(impl), 2)
         self.assertIsInstance(impl[0], ClaudeAgentRunner)
         self.assertIsInstance(impl[1], CodexAgentRunner)
-        # absent functions fall back to the default single claude spec
-        self.assertEqual(len(chains.chain_for("review")), 1)
+        # absent functions ride the configured implementation chain
+        review = chains.chain_for("review")
+        self.assertEqual(len(review), 2)
+        self.assertIsInstance(review[0], ClaudeAgentRunner)
+        self.assertIsInstance(review[1], CodexAgentRunner)
+
+    def test_unconfigured_function_rides_the_implementation_chain(self) -> None:
+        # A target configured for codex must not get a surprise default-claude
+        # run when the engine grows a new function.
+        config = {"runner": {"implementation": [{"provider": "codex", "model": "m"}]}}
+        chains = build_runner_chains(config)
+        resolver = chains.chain_for("resolve_platform_errors")[0]
+        self.assertIsInstance(resolver, CodexAgentRunner)
+
+    def test_no_chains_at_all_falls_back_to_default_claude(self) -> None:
+        resolver = build_runner_chains({}).chain_for("resolve_platform_errors")[0]
+        self.assertIsInstance(resolver, ClaudeAgentRunner)
 
     def test_default_runner_chains_shape(self) -> None:
         chains = default_runner_chains()

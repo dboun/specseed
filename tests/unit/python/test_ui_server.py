@@ -139,6 +139,35 @@ class ReadLogTest(unittest.TestCase):
         self.assertEqual(out["items"], [{"raw": "not json"}])
 
 
+class CommentCountsTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.storage = Path(self.tmp.name)
+        self.record = {"storage": str(self.storage)}
+
+    def _make_tracker_db(self, rows) -> None:
+        conn = sqlite3.connect(self.storage / "tracking_remote_local.db")
+        conn.execute("CREATE TABLE comments (id INTEGER PRIMARY KEY, entry_id INTEGER, body TEXT)")
+        conn.executemany("INSERT INTO comments(entry_id, body) VALUES (?, ?)", rows)
+        conn.commit()
+        conn.close()
+
+    def test_stamps_counts_per_post(self) -> None:
+        self._make_tracker_db([(1, "a"), (1, "b"), (3, "c")])
+        posts = [{"id": 1}, {"id": 2}, {"id": 3}]
+        out = server._with_comment_counts(self.record, posts)
+        self.assertEqual([p["comment_count"] for p in out], [2, 0, 1])
+
+    def test_missing_db_defaults_zero(self) -> None:
+        posts = [{"id": 1}]
+        out = server._with_comment_counts(self.record, posts)
+        self.assertEqual(out[0]["comment_count"], 0)
+
+    def test_non_list_passthrough(self) -> None:
+        self.assertEqual(server._with_comment_counts(self.record, {"x": 1}), {"x": 1})
+
+
 class PageArgsTest(unittest.TestCase):
     def test_defaults(self) -> None:
         self.assertEqual(server._page_args({}, "queue", 50), (0, 50))

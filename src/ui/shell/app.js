@@ -124,7 +124,6 @@ function render() {
         </div>
         <div class="topbar-right">
           ${runnerPill(repo)}
-          <button class="btn btn-ghost" data-add-repo>+ Add</button>
         </div>
       </header>
       <nav class="tabbar">

@@ -55,30 +55,56 @@ class RecoveryTest(unittest.TestCase):
         return [e for e in listed.data if str(e.title).startswith("Platform error:")]
 
     # -- first failure ----------------------------------------------------- #
-    def test_first_failure_creates_post_schedules_retry_engages_agent(self) -> None:
+    def test_first_failure_creates_post_and_schedules_retry_no_agent_yet(self) -> None:
         task = self._failed_task()
         summary = self._fail(task)
 
         self.assertTrue(summary["retried"])
-        self.assertTrue(summary["agent"])
+        self.assertFalse(summary["agent"])  # early retries run before any agent
         # retry scheduled: pending with a future not_before -> not yet claimable
         row = self.db.get_task(task["task_id"])
         self.assertEqual(row["status"], "pending")
         self.assertIsNotNone(row["not_before"])
-        # the only claimable task is the resolve-agent engagement
-        claimed = self.db.claim_next()
-        self.assertEqual(claimed["action"], recovery.PLATFORM_ERROR_ACTION)
-        self.assertEqual(claimed["payload"]["origin_task_id"], task["task_id"])
-        self.assertEqual(claimed["payload"]["reason"], "new")
-        # post exists with the label, the marker, and the conversation note
+        self.assertIsNone(self.db.claim_next())  # nothing else queued
+        # post exists with the label, the marker, and the plan
         posts = self._error_posts()
         self.assertEqual(len(posts), 1)
         detail = self.remote.get_entry(posts[0].id).data
         self.assertIn("specseed:platform-error task={0}".format(task["task_id"]), detail.body)
-        self.assertIn("agent is taking a look", detail.body)
+        self.assertIn("an agent takes a look", detail.body)
+        self.assertIn("Closing this post stops the retries", detail.body)
         self.assertIn(
             recovery.PLATFORM_ERROR_LABEL,
             [getattr(label, "name", str(label)) for label in detail.labels],
+        )
+
+    def test_agent_engages_on_third_failure(self) -> None:
+        config = {"recovery": {"enabled": True, "max_retries": 5}}
+        task = self._failed_task()
+
+        def fail(attempts: int) -> dict:
+            current = self.db.get_task(task["task_id"]) | {"attempts": attempts}
+            return recovery.on_failure(
+                db=self.db, config=config, remote=self.remote,
+                task=current, outcome=_outcome(),
+            )
+
+        self.assertFalse(fail(1)["agent"])
+        self.assertFalse(fail(2)["agent"])
+        third = fail(3)
+        self.assertTrue(third["agent"])
+        self.assertTrue(third["retried"])  # retries continue past engagement
+        self.assertFalse(fail(4)["agent"])  # engaged once, not every failure
+        resolve_tasks = [
+            t for t in (self.db.get_task(i) for i in range(1, 50))
+            if t and t["action"] == recovery.PLATFORM_ERROR_ACTION
+        ]
+        self.assertEqual(len(resolve_tasks), 1)
+        self.assertEqual(resolve_tasks[0]["payload"]["reason"], "new")
+        # the engagement is announced on the thread
+        detail = self.remote.get_entry(self._error_posts()[0].id).data
+        self.assertTrue(
+            any("agent is taking a look now" in c.body for c in detail.comments)
         )
 
     # -- repeat failure ---------------------------------------------------- #

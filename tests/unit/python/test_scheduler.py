@@ -378,8 +378,8 @@ class ConfigReloadOnResumeTest(unittest.TestCase):
         self.assertEqual(sched.poll_interval, 7.0)
         impl = sched.runner.chain_for("implementation")[0]
         self.assertIsInstance(impl, CodexAgentRunner)
-        # missing functions fall back to the default claude spec
-        self.assertIsInstance(sched.runner.chain_for("spec")[0], ClaudeAgentRunner)
+        # missing functions ride the configured implementation chain
+        self.assertIsInstance(sched.runner.chain_for("spec")[0], CodexAgentRunner)
 
     def test_explicit_poll_interval_survives_reload(self) -> None:
         new_cfg = dict(_config())
