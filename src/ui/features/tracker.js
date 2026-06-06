@@ -15,6 +15,8 @@ export function createTracker({ repo, ctx }) {
     page: 0,
     selectedId: null,
     selected: null,
+    editing: false, // drawer title/body edit mode
+    addLabelOpen: false, // add-label dropdown stays open across repaints
   };
 
   async function load() {
@@ -201,28 +203,55 @@ export function createTracker({ repo, ctx }) {
       <div class="drawer">
         ${drawerHead(post)}
         <div class="reaction-strip">${reactionButtons(post.reactions, "post")}</div>
-        <form data-save-post>
-          <div class="field"><label>title</label><input name="title" value="${escapeHtml(post.title)}" /></div>
-          <div class="field"><label>body</label><textarea name="body" rows="6">${escapeHtml(post.body || "")}</textarea></div>
-          <div class="button-row">
-            <button class="btn btn-primary">Save</button>
-            <button type="button" class="btn btn-ghost" data-toggle-post>${post.is_open ? "Close" : "Reopen"}</button>
-            <button type="button" class="btn btn-danger" data-delete-post>Delete</button>
-          </div>
-        </form>
+        ${state.editing ? editForm(post) : postView(post)}
         <div class="section-title">labels</div>
         <div class="chip-row">
           ${labels
             .map((l) => `<button class="chip removable" data-remove-label="${escapeHtml(l.name)}">${escapeHtml(l.name)} ✕</button>`)
             .join("") || `<span class="muted">none</span>`}
         </div>
-        <form class="add-label" data-label-form>
-          <input name="label" list="ss-labels" placeholder="add label" />
-          <datalist id="ss-labels">${(state.meta.labels || []).map((l) => `<option value="${escapeHtml(l.name)}">`).join("")}</datalist>
-          <button class="btn btn-ghost">Add</button>
-        </form>
+        ${addLabelDropdown(post)}
         ${commentsBlock(post, true)}
       </div>`;
+  }
+
+  // read view: title lives bold in the drawer head; body is plain text
+  function postView(post) {
+    return `
+      <pre class="post-body">${escapeHtml(post.body || "")}</pre>
+      <div class="button-row">
+        <button type="button" class="btn btn-ghost" data-edit-post>Edit</button>
+        <button type="button" class="btn btn-ghost" data-toggle-post>${post.is_open ? "Close" : "Reopen"}</button>
+        <button type="button" class="btn btn-danger" data-delete-post>Delete</button>
+      </div>`;
+  }
+
+  function editForm(post) {
+    return `
+      <form data-save-post>
+        <div class="field"><label>title</label><input name="title" value="${escapeHtml(post.title)}" /></div>
+        <div class="field"><label>body</label><textarea name="body" rows="6">${escapeHtml(post.body || "")}</textarea></div>
+        <div class="button-row">
+          <button class="btn btn-primary">Save</button>
+          <button type="button" class="btn btn-ghost" data-cancel-edit>Cancel</button>
+        </div>
+      </form>`;
+  }
+
+  // multi-select dropdown: each click adds instantly; menu stays open so several
+  // labels can be picked in a row (open state survives the mutate repaint).
+  function addLabelDropdown(post) {
+    const have = new Set((post.labels || []).map((l) => l.name));
+    const avail = (state.meta.labels || []).map((l) => l.name).filter((n) => !have.has(n));
+    return `
+      <details class="label-filter add-label-dd" ${state.addLabelOpen ? "open" : ""} data-add-label-dd>
+        <summary>+ add labels</summary>
+        <div class="label-filter-menu">
+          ${avail
+            .map((n) => `<button type="button" class="chip" data-add-label="${escapeHtml(n)}">${escapeHtml(n)}</button>`)
+            .join("") || `<span class="muted">no labels left</span>`}
+        </div>
+      </details>`;
   }
 
   function commentHtml(comment) {
@@ -265,6 +294,8 @@ export function createTracker({ repo, ctx }) {
     try {
       state.selectedId = id;
       state.selected = await api.getPost(repo.id, id);
+      state.editing = false;
+      state.addLabelOpen = false;
       repaintDrawer();
       repaintList();
     } catch (err) {
@@ -299,10 +330,29 @@ export function createTracker({ repo, ctx }) {
     if (t.closest("[data-close-drawer]")) {
       state.selectedId = null;
       state.selected = null;
+      state.editing = false;
+      state.addLabelOpen = false;
       repaintDrawer();
       repaintList();
       return;
     }
+    if (t.closest("[data-edit-post]")) {
+      state.editing = true;
+      repaintDrawer();
+      return;
+    }
+    if (t.closest("[data-cancel-edit]")) {
+      state.editing = false;
+      repaintDrawer();
+      return;
+    }
+    // mirror the native <details> toggle so repaints keep the menu open/closed
+    if (t.closest("[data-add-label-dd] > summary")) {
+      state.addLabelOpen = !state.addLabelOpen;
+      return;
+    }
+    const add = t.closest("[data-add-label]");
+    if (add) return mutate(() => api.updateLabel(repo.id, state.selectedId, "add", add.dataset.addLabel));
     const stateSeg = t.closest("[data-state]");
     if (stateSeg) {
       state.stateFilter = stateSeg.dataset.state;
@@ -333,6 +383,8 @@ export function createTracker({ repo, ctx }) {
       await mutate(() => api.deletePost(repo.id, state.selectedId), { reopen: false });
       state.selectedId = null;
       state.selected = null;
+      state.editing = false;
+      state.addLabelOpen = false;
       repaintDrawer();
       return;
     }
@@ -362,12 +414,8 @@ export function createTracker({ repo, ctx }) {
       return mutate(() => api.addComment(repo.id, state.selectedId, data.body));
     }
     if (form.dataset.savePost !== undefined) {
+      state.editing = false;
       return mutate(() => api.savePost(repo.id, state.selectedId, { title: data.title, body: data.body }));
-    }
-    if (form.dataset.labelForm !== undefined) {
-      const label = String(data.label || "").trim();
-      if (label) return mutate(() => api.updateLabel(repo.id, state.selectedId, "add", label));
-      return;
     }
     if (form.dataset.newPostForm !== undefined) {
       const labels = [...new FormData(form).getAll("labels")];
