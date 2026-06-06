@@ -41,6 +41,7 @@ from specseed_runtime.entities.entity_base import (
 )
 from specseed_runtime.executing import platform_log
 from specseed_runtime.executing import relationships
+from specseed_runtime.platform_identity import platform_comment
 from specseed_runtime.scheduling.spec_change import spec_change_dir
 
 
@@ -111,7 +112,8 @@ def _set_status(ctx: Any, entity: Any, new_status: str) -> None:
 
 
 def _comment(ctx: Any, post_id: Any, body: str) -> None:
-    ctx.remote.add_entry_comment(post_id, body)
+    # Prefix marks it as ours so the next sync never turns it back into work.
+    ctx.remote.add_entry_comment(post_id, platform_comment(body))
 
 
 def _close(ctx: Any, post_id: Any) -> None:

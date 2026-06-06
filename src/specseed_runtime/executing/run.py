@@ -47,6 +47,7 @@ from specseed_runtime.executing.agent_runner import (
     RunnerChains,
     build_runner_chains,
 )
+from specseed_runtime.executing import inflight
 from specseed_runtime.executing import platform_log
 from specseed_runtime.executing import runner_control
 from specseed_runtime.executing.scheduler import Scheduler
@@ -91,8 +92,12 @@ def build_scheduler(
         runner = build_runner_chains(config)
     elif not isinstance(runner, RunnerChains):
         runner = RunnerChains.single(runner)
+    db = db or Database.instance(storage_db_path("specseed.db", storage_dir))
+    # A prior runner may have died mid-task: kill its orphaned children and
+    # return its in_progress rows to pending BEFORE the loop starts draining.
+    inflight.reclaim(storage_dir, db)
     return Scheduler(
-        db=db or Database.instance(storage_db_path("specseed.db", storage_dir)),
+        db=db,
         runner=runner,
         config=config,
         storage=storage_dir,

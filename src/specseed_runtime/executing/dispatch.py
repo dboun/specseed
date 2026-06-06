@@ -33,6 +33,8 @@ from typing import Any, Optional
 from specseed_runtime.executing import advance
 from specseed_runtime.executing.agent_runner import stdout_tail
 from specseed_runtime.executing import context as context_mod
+from specseed_runtime.executing import inflight
+from specseed_runtime.executing import recovery
 from specseed_runtime.executing import platform_log
 from specseed_runtime.executing.context import ExecutionContext
 from specseed_runtime.executing import prompts
@@ -63,12 +65,17 @@ _SPEC_CHANGE_WAKE_ACTIONS = {"handle_comment_added", "handle_comment_updated"}
 
 @dataclass
 class HandlerOutcome:
-    """Result of handling one task. The scheduler completes/requeues from this."""
+    """Result of handling one task. The scheduler completes/requeues from this.
+
+    ``retryable`` marks failures a scheduled retry may fix (agent/script died);
+    deterministic refusals (permission denied, bad payload) stay False.
+    """
 
     success: bool
     requeue: bool = False
     error: Optional[str] = None
     detail: str = ""
+    retryable: bool = False
 
 
 class AgentIntent:
@@ -77,6 +84,7 @@ class AgentIntent:
     SPEC_CHANGE = "spec_change"
     IMPLEMENT = "implement"
     REVIEW = "review"
+    PLATFORM_ERROR = "platform_error"
     NONE = "none"
 
 
@@ -85,29 +93,42 @@ _INTENT_FUNCTION = {
     AgentIntent.SPEC_CHANGE: "spec",
     AgentIntent.IMPLEMENT: "implementation",
     AgentIntent.REVIEW: "review",
+    AgentIntent.PLATFORM_ERROR: "resolve_platform_errors",
 }
 
 
-def _run_agent(ctx: ExecutionContext, prompt: str, intent: str) -> Any:
+def _run_agent(
+    ctx: ExecutionContext, prompt: str, intent: str, task_id: Any = None
+) -> Any:
     """Run the prompt on the chain for ``intent``'s function.
 
     Works with both a per-function :class:`RunnerChains` (production) and a bare
-    runner (a test double injected straight into the context)."""
+    runner (a test double injected straight into the context). Spawned children
+    are ledgered against ``task_id`` for startup orphan reclaim."""
     runner = ctx.runner
-    if hasattr(runner, "chain_for"):  # RunnerChains
+    on_start = None
+    if task_id is not None:
+        on_start = lambda pid, binary: inflight.record(ctx.storage, task_id, pid, binary)  # noqa: E731
+    try:
+        if hasattr(runner, "chain_for"):  # RunnerChains
+            return runner.run(
+                prompt,
+                function=_INTENT_FUNCTION.get(intent, "implementation"),
+                cwd=ctx.repo_root,
+                cancel=ctx.cancel,
+                timeout_s=ctx.agent_timeout_s,
+                on_start=on_start,
+            )
         return runner.run(
             prompt,
-            function=_INTENT_FUNCTION.get(intent, "implementation"),
             cwd=ctx.repo_root,
             cancel=ctx.cancel,
             timeout_s=ctx.agent_timeout_s,
+            on_start=on_start,
         )
-    return runner.run(
-        prompt,
-        cwd=ctx.repo_root,
-        cancel=ctx.cancel,
-        timeout_s=ctx.agent_timeout_s,
-    )
+    finally:
+        if task_id is not None:
+            inflight.clear(ctx.storage, task_id)
 
 
 def _spec_change_route(entity: Any) -> Optional[str]:
@@ -281,27 +302,32 @@ def run_spec_change_script(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
         return HandlerOutcome(
             success=False,
             error="failed to launch spec-change script: {0}".format(exc),
+            retryable=True,
         )
 
-    cancelled = False
-    timed_out = False
-    while proc.poll() is None:
-        if ctx.cancel is not None and ctx.cancel.is_set():
-            cancelled = True
-            _stop_process(proc)
-            break
-        if deadline is not None and time.monotonic() >= deadline:
-            timed_out = True
-            _stop_process(proc)
-            break
-        time.sleep(_POLL_INTERVAL_S)
-
+    inflight.record(storage, task.get("task_id"), proc.pid, argv[0])
     try:
-        stdout, stderr = proc.communicate(timeout=_GRACE_S)
-    except subprocess.TimeoutExpired:
-        _stop_process(proc)
-        stdout, stderr = proc.communicate()
-    returncode = proc.returncode
+        cancelled = False
+        timed_out = False
+        while proc.poll() is None:
+            if ctx.cancel is not None and ctx.cancel.is_set():
+                cancelled = True
+                _stop_process(proc)
+                break
+            if deadline is not None and time.monotonic() >= deadline:
+                timed_out = True
+                _stop_process(proc)
+                break
+            time.sleep(_POLL_INTERVAL_S)
+
+        try:
+            stdout, stderr = proc.communicate(timeout=_GRACE_S)
+        except subprocess.TimeoutExpired:
+            _stop_process(proc)
+            stdout, stderr = proc.communicate()
+        returncode = proc.returncode
+    finally:
+        inflight.clear(storage, task.get("task_id"))
 
     if cancelled:
         platform_log.log_event(
@@ -355,6 +381,7 @@ def run_spec_change_script(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
         error="spec-change script exited with code {0}\n{1}".format(
             returncode, output
         ),
+        retryable=True,
     )
 
 
@@ -387,6 +414,58 @@ def _truncate(text: str, limit: int = 4000) -> str:
     return text[:limit] + "...[truncated]"
 
 
+def _run_platform_error(
+    ctx: ExecutionContext, task: dict, reason: Optional[str] = None
+) -> HandlerOutcome:
+    """Engage the resolve agent on a platform_error post.
+
+    Reads the post fresh from the remote (it is runtime-owned state, not a work
+    entity); a closed or vanished post means the human cancelled - success no-op.
+    """
+    post_id = task.get("post_id")
+    payload = task.get("payload") or {}
+    reason = reason or str(payload.get("reason") or "new")
+    result = ctx.remote.get_entry(post_id)
+    if not getattr(result, "ok", False) or result.data is None:
+        return HandlerOutcome(
+            success=True, detail="error post {0!r} gone; nothing to resolve".format(post_id)
+        )
+    post = result.data
+    if not _entry_is_open(post):
+        return HandlerOutcome(
+            success=True, detail="error post {0!r} closed; resolution cancelled".format(post_id)
+        )
+
+    prompt = prompts.build_platform_error_prompt(post, payload, reason, ctx)
+    agent_result = _run_agent(
+        ctx, prompt, AgentIntent.PLATFORM_ERROR, task_id=task.get("task_id")
+    )
+    platform_log.log_event(
+        "platform_error_agent_result",
+        task_id=task.get("task_id"),
+        error_post_id=post_id,
+        reason=reason,
+        ok=getattr(agent_result, "ok", False),
+        returncode=getattr(agent_result, "returncode", None),
+        duration_s=getattr(agent_result, "duration_s", None),
+    )
+    if getattr(agent_result, "ok", False):
+        return HandlerOutcome(success=True, detail="resolve agent reported ({0})".format(reason))
+    # NOT retryable: recovery never recovers itself (guarded there too).
+    return HandlerOutcome(
+        success=False,
+        error=getattr(agent_result, "error", None) or "resolve agent failed",
+        detail="resolve agent failed ({0})".format(reason),
+    )
+
+
+def _entry_is_open(post: Any) -> bool:
+    value = getattr(post, "is_open", True)
+    if isinstance(value, str):
+        return value.strip().lower() not in ("0", "false", "")
+    return bool(value)
+
+
 def _run_work(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
     """Common path for every work handler: load entity, judge state, run agent."""
     post_id = task.get("post_id")
@@ -401,6 +480,16 @@ def _run_work(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
         return HandlerOutcome(
             success=True,
             detail="no entity for post {0!r}; nothing to do".format(post_id),
+        )
+
+    # Error posts are runtime-owned: a human reply re-engages the resolve agent;
+    # every other event about them is bookkeeping, never normal work.
+    labels = {str(label) for label in getattr(entity, "labels", []) or []}
+    if recovery.PLATFORM_ERROR_LABEL in labels:
+        if task.get("action") == "handle_comment_added":
+            return _run_platform_error(ctx, task, reason="reply")
+        return HandlerOutcome(
+            success=True, detail="platform_error post bookkeeping; no work"
         )
 
     state_result = evaluate_entity_state(entity, ctx.config, conversation)
@@ -516,7 +605,7 @@ def _run_work(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
     else:  # REVIEW
         prompt = prompts.build_review_prompt(entity, ctx)
 
-    result = _run_agent(ctx, prompt, intent)
+    result = _run_agent(ctx, prompt, intent, task_id=task.get("task_id"))
     platform_log.log_event(
         "agent_result",
         task_id=task.get("task_id"),
@@ -559,6 +648,7 @@ def _run_work(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
         success=False,
         error=error,
         detail="intent {0} failed".format(intent),
+        retryable=True,
     )
 
 
@@ -574,6 +664,9 @@ def dispatch(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
 
     if action == SPEC_CHANGE_ACTION:
         return run_spec_change_script(ctx, task)
+
+    if action == recovery.PLATFORM_ERROR_ACTION:
+        return _run_platform_error(ctx, task)
 
     if action == CLEANUP_ACTION:
         payload = task.get("payload") or {}

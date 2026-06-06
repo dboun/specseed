@@ -21,6 +21,8 @@ from __future__ import annotations
 import re
 from typing import Any, Iterable
 
+from specseed_runtime.platform_identity import platform_comment
+
 # A bare token anywhere in text, e.g. in `approve APR-0007` or in a marker.
 APR_RE = re.compile(r"\bAPR-(\d{4,})\b", re.IGNORECASE)
 
@@ -87,7 +89,7 @@ def approval_request_comment(apr_id: str, summary: str) -> str:
     ways to approve. Kept deterministic so it reads the same every run.
     """
     apr_id = apr_id.strip().upper()
-    return (
+    return platform_comment(
         f"**Approval required — `{apr_id}`**\n\n"
         f"{summary.strip()}\n\n"
         f"This work is **not started** until a human approves. To approve, either:\n"

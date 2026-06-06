@@ -70,13 +70,14 @@ src/
     registry.py                      #   global multi-repo index at $SPECSEED_HOME (~/.specseed/registry.json). provider FINAL per repo
     tracking/                        #   provider-neutral tracker layer. README inside. entry=neutral resource
     scheduling/                      #   remote diff -> DB queue (sync_to_db) + spec_change enqueue. README inside
-    db/database.py                   #   durable sqlite work queue (tasks + task_errors). thread-safe singleton
+    db/database.py                   #   durable sqlite work queue (tasks + task_errors; not_before = scheduled retries). thread-safe singleton
     tasks/                           #   one typed task class per change kind (handle_*) + task_base + cleanup
-    executing/                       #   scheduler(poll loop) + dispatch + advance + agent_runner + control + permissions + runner_control(control.json/runner.json)
+    platform_identity.py             #   who the platform is on the tracker: platform_username + "specseed: " comment prefix (self-retrigger guard)
+    executing/                       #   scheduler(poll loop) + dispatch + advance + agent_runner + control + permissions + runner_control(control.json/runner.json) + recovery(retries + platform_error posts) + inflight(orphan reclaim)
     entities/                        #   epic/ticket/issue = meaning over neutral entries (tier/status/links). EntityRef
     state_machines/                  #   legal status transitions + approvals (👍/👎 reactions, approve/reject cmds)
     configuring/                     #   configure.py interactive setup -> config
-    migrating/                       #   storage migrations (hops); 0.3.1->0.4.0 deletes copied code; 0.4.0->0.5.0 drops the seed marker so new labels re-seed
+    migrating/                       #   storage migrations (hops); 0.3.1->0.4.0 deletes copied code; 0.4.0->0.5.0 + 0.5.0->0.7.0 drop the seed marker so new labels re-seed; 0.5.0->0.7.0 also adds tasks.not_before
   ui/                  # the SHARED web UI (vanilla JS modules, no deps): server.py (multi-repo API) + shell/ + features/{repos,monitor,tracker,configuration} + theme.css
 skills/specseed/                     # the spec-change worker skill (markdown + helper scripts), at repo root
   SKILL.md                           #   START HERE. router: routes, contract, hard rules
@@ -107,6 +108,15 @@ tests/integration/python/            # opt-in integration tests (marker: integra
 - **labels** (`tracking/supported_values.py` + `populate_defaults.py`) - tier + status, plus
   `type:<feature|bug|chore|spike|qa>` and `difficulty:<easy|hard>` on work posts. Seeded on startup;
   existing targets re-seed via the 0.5.0 migration (drops the seed marker).
+- **failure recovery** (`executing/recovery.py`, wired in `scheduler._recover`) - a retryable failure
+  requeues with backoff (1'/5'/15'..., `tasks.not_before`, cap `config.recovery.max_retries`) AND
+  becomes remote state: one `platform_error` post per task (runtime-created, marker-linked), each retry
+  outcome auto-commented, recovered -> closed. Human closes the post = retries cancel. The
+  `resolve_platform_errors` runner chain investigates + converses on the post (engaged on creation /
+  exhaustion / human reply; thread-as-memory, no provider sessions). Never recovers itself. All
+  platform comments carry the `specseed: ` prefix (`platform_identity.py`); `sync_to_db` drops
+  platform-own comments so the bot never re-triggers on its own words (`platform_username` config).
+  `executing/inflight.py` ledgers child pids; startup kills orphans + requeues stranded `in_progress`.
 - **settle-on-approval** (`executing/advance.resolve_spec_change_request`, wired in `dispatch._run_work`) -
   the spec-change REQUEST parks `spec-change:status:awaiting_approval`; when an approver 👍s / `approve`s it,
   the runtime stamps `settled: true` + `settled_at` on the docs the worker listed in `plan.json.settle_docs`

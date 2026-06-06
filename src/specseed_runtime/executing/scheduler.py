@@ -39,6 +39,7 @@ from specseed_runtime.tracking.resolve_remote import (
 from specseed_runtime.executing import cancellation
 from specseed_runtime.executing import dashboards as dashboards_mod
 from specseed_runtime.executing import platform_log
+from specseed_runtime.executing import recovery
 from specseed_runtime.executing import runner_control
 from specseed_runtime.executing.agent_runner import (
     AgentRunner,
@@ -425,7 +426,7 @@ class Scheduler:
         try:
             self._ensure_trackers()
             platform_log.log_event("sync_start")
-            summary = sync_to_db(self._local, self._remote, db=self.db)
+            summary = sync_to_db(self._local, self._remote, db=self.db, config=self.config)
         except Exception as exc:  # never let a bad poll kill the loop
             summary = {"ok": False, "error": repr(exc)}
             platform_log.log_event("sync_error", error=repr(exc))
@@ -507,6 +508,37 @@ class Scheduler:
                 success=outcome.success,
                 error=outcome.error,
                 detail=outcome.detail,
+            )
+            self._recover(task, outcome)
+
+    def _recover(self, task: dict[str, Any], outcome: HandlerOutcome) -> None:
+        """Post-completion recovery: schedule retries / error post / agent.
+
+        Best-effort by design - recovery must never take the loop down.
+        """
+        try:
+            remote = None
+            try:
+                self._ensure_trackers()
+                remote = self._remote
+            except Exception:
+                pass  # retry scheduling still works without a reachable remote
+            if outcome.success:
+                if int(task.get("attempts") or 0) > 1:
+                    recovery.on_recovered(
+                        db=self.db, config=self.config, remote=remote, task=task
+                    )
+                return
+            recovery.on_failure(
+                db=self.db,
+                config=self.config,
+                remote=remote,
+                task=task,
+                outcome=outcome,
+            )
+        except Exception as exc:
+            platform_log.log_event(
+                "recovery_error", task_id=task.get("task_id"), error=repr(exc)
             )
 
     def _run_in_worker(self, task: dict[str, Any], cancel: threading.Event) -> Optional[HandlerOutcome]:

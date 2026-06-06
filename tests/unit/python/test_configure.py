@@ -33,6 +33,7 @@ def _local_answers(*, specseed="seedmeta", dev_branch="", write=""):
     answers += [""] * len(configure.AGENT_CATEGORIES)  # agent gate levels (defaults)
     answers += [
         "",          # no approvers
+        "",          # platform username (blank = prefix detection only)
         "",          # default interval
         write,       # write config
     ]

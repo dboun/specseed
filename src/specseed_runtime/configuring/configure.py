@@ -288,6 +288,10 @@ def default_config():
         # default main (or master if that is the repo's branch).
         "dev_branch": DEFAULT_DEV_BRANCH,
         "poll_interval_seconds": DEFAULT_POLL_INTERVAL,
+        # The account the platform posts as on the tracker. Lets the runtime skip
+        # its own comments (loop guard). Blank = rely on the "specseed: " body
+        # prefix alone (bot and human share a username).
+        "platform_username": "",
         # Per-function ordered fallback chains of agent specs. Each spec is
         # {provider, provider_data_dir, model, effort}; the first is primary, the
         # rest are tried on failure.
@@ -296,6 +300,13 @@ def default_config():
             # Remote approval commands are only accepted from these usernames.
             # Empty means no remote author is allowed to resolve approvals.
             "approver_usernames": [],
+        },
+        # Failure recovery: failed tasks retry with backoff (1'/5'/15'...), each
+        # failure surfaces as a platform_error post, and the resolve agent
+        # investigates + converses there. max_retries caps the automatic retries.
+        "recovery": {
+            "enabled": True,
+            "max_retries": 5,
         },
         # Code-review loop. enabled also gates the in_review state on every issue.
         # A passing review (verdict approve + confidence >= threshold) closes the
@@ -787,6 +798,12 @@ def section_approvals(cfg):
     approvals["approver_usernames"] = ask_csv(
         "Usernames allowed to approve HITL gates remotely (comma/space separated)",
         approvals.get("approver_usernames", []),
+    )
+    # Loop guard: the platform never reacts to its own comments. Blank = detect
+    # by the "specseed: " body prefix alone.
+    cfg["platform_username"] = ask_str(
+        "Tracker username the platform posts as (blank if same as yours)",
+        cfg.get("platform_username", ""),
     )
 
 

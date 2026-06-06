@@ -122,20 +122,24 @@ class Database:
             return int(cursor.lastrowid)
 
     def claim_next(self) -> Optional[dict[str, Any]]:
-        """Atomically claim the oldest pending task, or return ``None``.
+        """Atomically claim the oldest *due* pending task, or return ``None``.
 
-        The claimed task is moved to ``in_progress``, its ``attempts`` is
-        incremented, and ``last_attempted_at`` is stamped. ``BEGIN IMMEDIATE``
-        plus the process lock guarantee that no two callers claim the same row.
+        A task with a future ``not_before`` (a scheduled retry) is skipped until
+        its time comes. The claimed task is moved to ``in_progress``, its
+        ``attempts`` is incremented, and ``last_attempted_at`` is stamped.
+        ``BEGIN IMMEDIATE`` plus the process lock guarantee that no two callers
+        claim the same row.
         """
         with self._tx() as conn:
             row = conn.execute(
                 f"""
                 SELECT task_id FROM tasks
                 WHERE status = '{STATUS_PENDING}'
+                  AND (not_before IS NULL OR not_before <= ?)
                 ORDER BY task_id
                 LIMIT 1
-                """
+                """,
+                (_now(),),
             ).fetchone()
             if row is None:
                 return None
@@ -177,21 +181,40 @@ class Database:
                     (task_id, str(error), now),
                 )
 
-    def requeue(self, task_id: int) -> None:
+    def requeue(self, task_id: int, not_before: Optional[str] = None) -> None:
         """Return a task to ``pending`` so the scheduler may retry it.
 
-        ``attempts`` and any recorded errors are preserved.
+        ``not_before`` (ISO-Z) delays the next claim - a scheduled retry with
+        backoff. ``attempts`` and any recorded errors are preserved.
         """
         with self._tx() as conn:
             conn.execute(
-                "UPDATE tasks SET status = ? WHERE task_id = ?",
-                (STATUS_PENDING, task_id),
+                "UPDATE tasks SET status = ?, not_before = ? WHERE task_id = ?",
+                (STATUS_PENDING, not_before, task_id),
             )
 
     def remove(self, task_id: int) -> None:
         """Delete a task. Its ``task_errors`` rows are intentionally kept."""
         with self._tx() as conn:
             conn.execute("DELETE FROM tasks WHERE task_id = ?", (task_id,))
+
+    def reset_in_progress(self) -> list[int]:
+        """Return every ``in_progress`` task to ``pending``; list the task ids.
+
+        Startup-only reclaim: with no scheduler draining, an ``in_progress`` row
+        can only be the orphan of a dead runner.
+        """
+        with self._tx() as conn:
+            rows = conn.execute(
+                "SELECT task_id FROM tasks WHERE status = ?", (STATUS_IN_PROGRESS,)
+            ).fetchall()
+            ids = [int(row["task_id"]) for row in rows]
+            if ids:
+                conn.execute(
+                    "UPDATE tasks SET status = ? WHERE status = ?",
+                    (STATUS_PENDING, STATUS_IN_PROGRESS),
+                )
+        return ids
 
     # ------------------------------------------------------------------ #
     # queue: reads
@@ -293,7 +316,8 @@ class Database:
                                       )),
                     attempts          INTEGER NOT NULL DEFAULT 0,
                     created_at        TEXT    NOT NULL,
-                    last_attempted_at TEXT
+                    last_attempted_at TEXT,
+                    not_before        TEXT
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_tasks_status_id

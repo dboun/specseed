@@ -173,6 +173,94 @@ def build_implement_prompt(entity: Any, ctx: Any) -> str:
     )
 
 
+_PE_REASON = {
+    "new": (
+        "First failure, fresh post. Investigate, then REWRITE the post body with "
+        "what you found. The body currently holds only the raw error stub."
+    ),
+    "exhausted": (
+        "Automatic retries ran out; still failing. Dig deeper than last time and "
+        "give concrete fix options. Update the body; add a comment summarizing "
+        "what changed since your last report."
+    ),
+    "reply": (
+        "The human replied on the thread. Read their last comment and answer it "
+        "as a comment. Update the body only if the situation materially changed."
+    ),
+}
+
+
+def _thread_transcript(post: Any, limit: int = 4000) -> str:
+    lines = []
+    for comment in getattr(post, "comments", []) or []:
+        author = getattr(comment, "author", None) or "?"
+        body = str(getattr(comment, "body", "") or "").strip()
+        lines.append(f"[{author}] {body}")
+    text = "\n---\n".join(lines) or "(no comments yet)"
+    if len(text) > limit:
+        text = "...[truncated]" + text[-limit:]
+    return text
+
+
+def build_platform_error_prompt(post: Any, payload: dict, reason: str, ctx: Any) -> str:
+    """Prompt for the resolve_platform_errors chain: diagnose + report + converse.
+
+    Thread-as-memory: every engagement is a fresh run; the post body + comments
+    carry the whole conversation state.
+    """
+    storage = str(getattr(ctx, "storage", "") or "")
+    engine_src = str(default_specseed_dir() / "src")
+    post_id = getattr(post, "id", None)
+    origin_task = payload.get("origin_task_id")
+    origin_action = payload.get("origin_action")
+    origin_post = payload.get("origin_post_id")
+    body = str(getattr(post, "body", "") or "")
+    return f"""You are specseed's platform-error resolver. A platform task failed. Diagnose it, \
+report on the error post, talk with the human there. You are read-only everywhere EXCEPT that \
+one post: edit its body, add comments. Never touch code, git, other posts, labels, or the queue.
+
+WHY THIS RUN: {reason}. {_PE_REASON.get(reason, _PE_REASON["new"])}
+
+FACTS
+- error post: id {post_id}, title {getattr(post, "title", "")!r}
+- origin: task {origin_task} ({origin_action}) about post {origin_post}
+- storage dir (logs live here): {storage}
+  - platform.log = JSON-lines event log. grep the origin task id first.
+  - specseed.db = work queue. recorded errors:
+    sqlite3 "{storage}/specseed.db" "SELECT message FROM task_errors WHERE task_id={origin_task}"
+- engine source (read-only; ONLY when the logs do not explain it): {engine_src}
+- target repo (your cwd) is the repo the platform works on, not the platform itself.
+
+THE POST NOW
+---
+{body}
+---
+THREAD (oldest first)
+{_thread_transcript(post)}
+
+HOW TO WRITE BACK (run via Bash; PYTHONPATH and storage env are already wired):
+python3 - <<'PY'
+from specseed_runtime.tracking.resolve_remote import resolve_remote
+from specseed_runtime.platform_identity import platform_comment
+r = resolve_remote(r"{storage}")
+r.edit_entry({post_id!r}, body=NEW_BODY)                          # update the report
+r.add_entry_comment({post_id!r}, platform_comment("..."))        # or reply on the thread
+PY
+Check .ok on every call; if a write fails, say so in your final output.
+
+REPORT RULES (the reader may not be an engineer)
+- Plain words, short. What happened, what it likely means, what you suggest.
+- 2-3 suggestions max, ranked by effort. Say which you would pick and why, in one line.
+- Retries are automatic: the runtime schedules them and comments every attempt. Do not \
+promise manual retries. Do not retry, re-run, or fix anything yourself.
+- Quote at most ONE short error snippet. No log dumps. Not too technical. No em-dashes.
+- KEEP the final `<!-- specseed:platform-error task=... -->` line in the body VERBATIM. It \
+links post to task; losing it breaks recovery.
+
+DONE = the post tells a human something they can act on. End your output with exactly:
+PLATFORM_ERROR_REPORTED"""
+
+
 def build_review_prompt(entity: Any, ctx: Any) -> str:
     """Prompt for reviewing an issue that is in review."""
     return (

@@ -130,6 +130,11 @@ LABEL_SPECS = [
         "d4c5f9",
         "Question or clarification thread.",
     ),
+    LabelSpec(
+        "platform_error",
+        "b60205",
+        "A platform task failed; the runtime reports and retries here.",
+    ),
 ]
 
 DESIRED_LABELS = {label.name for label in LABEL_SPECS}

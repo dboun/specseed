@@ -26,7 +26,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from specseed_runtime.executing import platform_log
 
@@ -38,8 +38,15 @@ DEFAULT_AGENT_TIMEOUT_S = 6 * 60 * 60
 # The agent jobs a runner chain is configured per. Each maps to one dispatch
 # intent except merge_conflicts, which is surfaced but not dispatched yet (the
 # runtime never drives git, so nothing triggers it — conflict handling lives in
-# the implement prompt's git policy instead).
-RUNNER_FUNCTIONS = ("spec", "implementation", "review", "merge_conflicts")
+# the implement prompt's git policy instead). resolve_platform_errors is the
+# failure-recovery investigator (executing/recovery.py).
+RUNNER_FUNCTIONS = (
+    "spec",
+    "implementation",
+    "review",
+    "merge_conflicts",
+    "resolve_platform_errors",
+)
 
 # provider -> the env var its CLI reads for its config/home dir, and the default.
 PROVIDER_CONFIG_ENV = {"claude": "CLAUDE_CONFIG_DIR", "codex": "CODEX_HOME"}
@@ -72,7 +79,11 @@ class AgentResult:
 
 
 class AgentRunner:
-    """Interface: run a prompt to completion and report the outcome."""
+    """Interface: run a prompt to completion and report the outcome.
+
+    ``on_start(pid, binary)`` fires once when a child process spawns, so the
+    caller can ledger it (``executing/inflight``) for orphan reclaim.
+    """
 
     def run(
         self,
@@ -81,6 +92,7 @@ class AgentRunner:
         cwd: str | Path,
         cancel: Optional[threading.Event] = None,
         timeout_s: float = DEFAULT_AGENT_TIMEOUT_S,
+        on_start: Optional[Callable[[int, str], None]] = None,
     ) -> AgentResult:
         raise NotImplementedError
 
@@ -122,6 +134,7 @@ class SubprocessAgentRunner(AgentRunner):
         cwd: str | Path,
         cancel: Optional[threading.Event] = None,
         timeout_s: float = DEFAULT_AGENT_TIMEOUT_S,
+        on_start: Optional[Callable[[int, str], None]] = None,
     ) -> AgentResult:
         argv = self.build_command(prompt, cwd)
         start = time.monotonic()
@@ -155,6 +168,12 @@ class SubprocessAgentRunner(AgentRunner):
             )
             return AgentResult(ok=False, error=f"failed to launch agent: {exc}",
                                duration_s=time.monotonic() - start)
+
+        if on_start is not None:
+            try:
+                on_start(proc.pid, argv[0] if argv else "")
+            except Exception:  # the ledger must never break a run
+                pass
 
         chunks: list[str] = []
         drained = threading.Event()
@@ -423,6 +442,7 @@ class RunnerChains:
         cwd: str | Path,
         cancel: Optional[threading.Event] = None,
         timeout_s: float = DEFAULT_AGENT_TIMEOUT_S,
+        on_start: Optional[Callable[[int, str], None]] = None,
     ) -> AgentResult:
         chain = self.chain_for(function)
         last: Optional[AgentResult] = None
@@ -431,7 +451,9 @@ class RunnerChains:
                 platform_log.log_event(
                     "agent_chain_fallback", function=function, spec_index=i
                 )
-            result = runner.run(prompt, cwd=cwd, cancel=cancel, timeout_s=timeout_s)
+            result = runner.run(
+                prompt, cwd=cwd, cancel=cancel, timeout_s=timeout_s, on_start=on_start
+            )
             last = result
             if getattr(result, "killed", False):
                 return result  # deliberate stop — do not try fallbacks
@@ -486,8 +508,10 @@ class FakeAgentRunner(AgentRunner):
         cwd: str | Path,
         cancel: Optional[threading.Event] = None,
         timeout_s: float = DEFAULT_AGENT_TIMEOUT_S,
+        on_start: Optional[Callable[[int, str], None]] = None,
     ) -> AgentResult:
-        call = {"prompt": prompt, "cwd": str(cwd), "timeout_s": timeout_s, "cancel": cancel}
+        call = {"prompt": prompt, "cwd": str(cwd), "timeout_s": timeout_s, "cancel": cancel,
+                "on_start": on_start}
         self.calls.append(call)
         if self.side_effect is not None:
             return self.side_effect(call)

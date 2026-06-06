@@ -37,7 +37,9 @@ SPEC_CHANGE_LABELS = frozenset(
     }
 )
 
-MANAGEMENT_LABELS = frozenset({"draft", "current_sprint", "management", "question"})
+MANAGEMENT_LABELS = frozenset(
+    {"draft", "current_sprint", "management", "question", "platform_error"}
+)
 WORK_TIER_LABELS = frozenset({"epic", "ticket", "issue"})
 # Work-item kind. Issues always carry one; tickets may (never ``qa``). ``qa`` marks a
 # ticket's terminal QA pass. Drives the entity body template + lets the runtime filter.

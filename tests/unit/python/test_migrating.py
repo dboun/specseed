@@ -16,6 +16,7 @@ from unittest import mock
 from specseed_runtime.migrating import m_0_3_0__0_3_1
 from specseed_runtime.migrating import m_0_3_1__0_4_0
 from specseed_runtime.migrating import m_0_4_0__0_5_0
+from specseed_runtime.migrating import m_0_5_0__0_7_0
 from specseed_runtime.migrating import migrate
 from specseed_runtime import storage_paths
 
@@ -68,7 +69,8 @@ class RunMigrationsTest(unittest.TestCase):
 
             # The whole chain up to the running engine, in order.
             self.assertEqual(
-                applied, ["m_0_3_0__0_3_1", "m_0_3_1__0_4_0", "m_0_4_0__0_5_0"]
+                applied,
+                ["m_0_3_0__0_3_1", "m_0_3_1__0_4_0", "m_0_4_0__0_5_0", "m_0_5_0__0_7_0"],
             )
             self.assertEqual(migrate.storage_version(storage), migrate.code_version())
 
@@ -258,6 +260,75 @@ class Hop_0_4_0__0_5_0_Test(unittest.TestCase):
             self.assertEqual(deleted, ["seed_state.json"])
 
             self.assertEqual(m_0_4_0__0_5_0.run(storage, _specseed_dir), [])
+
+
+class Hop050To070Test(unittest.TestCase):
+    """0.5.0 -> 0.7.0: tasks.not_before column + label re-seed marker drop."""
+
+    def _old_shape(self, root: Path, version: str = "0.6.4") -> tuple[Path, Path]:
+        import sqlite3
+
+        specseed_dir = root / ".specseed"
+        storage = specseed_dir / "storage"
+        storage.mkdir(parents=True)
+        skill_version = specseed_dir / "skills" / "specseed" / "version.txt"
+        skill_version.parent.mkdir(parents=True)
+        skill_version.write_text("0.7.0\n", encoding="utf-8")
+        migrate.write_storage_version(version, storage)
+        (storage / "seed_state.json").write_text('{"kind": "remote_local"}\n', encoding="utf-8")
+        # old-shape queue db: tasks WITHOUT not_before, with one live row
+        with sqlite3.connect(storage / "specseed.db") as conn:
+            conn.execute(
+                """CREATE TABLE tasks (
+                    task_id INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT NOT NULL,
+                    post_id TEXT, payload TEXT NOT NULL DEFAULT '{}',
+                    status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL, last_attempted_at TEXT)"""
+            )
+            conn.execute(
+                "INSERT INTO tasks(action, post_id, created_at) VALUES ('handle_entry_created', '5', 'x')"
+            )
+        return specseed_dir, storage
+
+    def _columns(self, storage: Path) -> set[str]:
+        import sqlite3
+
+        with sqlite3.connect(storage / "specseed.db") as conn:
+            return {row[1] for row in conn.execute("PRAGMA table_info(tasks)")}
+
+    def test_hop_adds_column_and_drops_seed_marker(self) -> None:
+        import sqlite3
+
+        with tempfile.TemporaryDirectory() as tmp:
+            specseed_dir, storage = self._old_shape(Path(tmp))
+
+            applied = migrate.run_migrations(storage=storage, specseed_dir=specseed_dir)
+
+            self.assertIn("m_0_5_0__0_7_0", applied)
+            self.assertIn("not_before", self._columns(storage))
+            self.assertFalse((storage / "seed_state.json").exists())
+            self.assertEqual(migrate.storage_version(storage), migrate.code_version())
+            # the old row survives and the new column reads NULL
+            with sqlite3.connect(storage / "specseed.db") as conn:
+                row = conn.execute("SELECT post_id, not_before FROM tasks").fetchone()
+            self.assertEqual(row, ("5", None))
+
+    def test_hop_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            specseed_dir, storage = self._old_shape(Path(tmp))
+            first = m_0_5_0__0_7_0.run(storage, specseed_dir)
+            self.assertEqual(
+                sorted(p.name for p in first), ["seed_state.json", "specseed.db"]
+            )
+            self.assertEqual(m_0_5_0__0_7_0.run(storage, specseed_dir), [])
+            self.assertIn("not_before", self._columns(storage))
+
+    def test_missing_db_is_noop_for_db_half(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            specseed_dir, storage = self._old_shape(Path(tmp))
+            (storage / "specseed.db").unlink()
+            changed = [p.name for p in m_0_5_0__0_7_0.run(storage, specseed_dir)]
+            self.assertEqual(changed, ["seed_state.json"])
 
 
 if __name__ == "__main__":

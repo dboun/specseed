@@ -110,6 +110,7 @@ for _root in _HERE.parents:
 # levels up. Self-locating: correct even run by hand, without the runner's env.
 _STORAGE = _HERE.parents[2]
 
+from specseed_runtime.platform_identity import platform_comment
 from specseed_runtime.tracking.resolve_remote import resolve_remote
 
 
@@ -137,7 +138,9 @@ def main() -> int:
             _ok(remote.add_entry_label(change["post_id"], label),
                 f"+label {label} on {change['post_id']}")
     for comment in plan.get("comments", []):
-        _ok(remote.add_entry_comment(comment["post_id"], comment["body"]),
+        # platform_comment prefixes "specseed: " - marks the comment as the
+        # platform's own so the next sync never re-triggers the route on it.
+        _ok(remote.add_entry_comment(comment["post_id"], platform_comment(comment["body"])),
             f"comment {comment['post_id']}")
     for post_id in plan.get("closes", []):
         _ok(remote.set_entry_closed(post_id), f"close {post_id}")

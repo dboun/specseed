@@ -32,6 +32,7 @@ from typing import Any, Optional
 
 from specseed_runtime.db.database import Database
 from specseed_runtime.executing import platform_log
+from specseed_runtime.platform_identity import is_platform_comment, platform_username
 from specseed_runtime.tasks.cleanup_task import CleanupTask
 from specseed_runtime.tasks.handle_comment_added import HandleCommentAdded
 from specseed_runtime.tasks.handle_comment_updated import HandleCommentUpdated
@@ -53,12 +54,20 @@ from specseed_runtime.tasks.task_base import resource_key
 _COMMENT_KEYED_ACTIONS = {HandleReactionAdded.ACTION, HandleReactionRemoved.ACTION}
 
 
-def sync_to_db(local: Any, remote: Any, db: Optional[Database] = None) -> dict[str, Any]:
+def sync_to_db(
+    local: Any,
+    remote: Any,
+    db: Optional[Database] = None,
+    config: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
     """Sync ``remote`` into ``local`` and apply the resulting changes to the queue.
 
+    ``config`` supplies ``platform_username`` so the platform's own comments
+    never become work (self-retrigger loop guard).
     Returns a summary dict; on a failed sync, ``{"ok": False, "error": ...}``.
     """
     db = db or Database.instance()
+    bot_name = platform_username(config)
     platform_log.log_event(
         "sync_to_db_start",
         local=type(local).__name__,
@@ -94,6 +103,17 @@ def sync_to_db(local: Any, remote: Any, db: Optional[Database] = None) -> dict[s
             _teardown_post(db, str(change.resource_id), change.action, summary, local=local)
             continue
 
+        if _is_platform_comment_change(change, bot_name):
+            summary["ignored"] += 1
+            platform_log.log_event(
+                "sync_change_ignored",
+                reason="platform_own_comment",
+                resource_type=getattr(change, "resource_type", None),
+                resource_id=getattr(change, "resource_id", None),
+                action=getattr(change, "action", None),
+            )
+            continue
+
         task = _build_task(change)
         if task is None:
             summary["ignored"] += 1
@@ -126,6 +146,18 @@ def sync_to_db(local: Any, remote: Any, db: Optional[Database] = None) -> dict[s
 
     platform_log.log_event("sync_to_db_complete", summary=summary)
     return summary
+
+
+def _is_platform_comment_change(change: Any, bot_name: Optional[str]) -> bool:
+    """A comment the platform itself wrote must never become work."""
+    if getattr(change, "resource_type", None) != "comment":
+        return False
+    if getattr(change, "action", None) not in ("create", "update"):
+        return False
+    row = change.new if isinstance(change.new, dict) else {}
+    return is_platform_comment(
+        author=row.get("author"), body=row.get("body"), username=bot_name
+    )
 
 
 def _build_task(change: Any):

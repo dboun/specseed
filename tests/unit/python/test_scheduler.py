@@ -297,6 +297,38 @@ class SchedulerTest(unittest.TestCase):
         self.assertTrue(status.get("alive"))
 
 
+class FailureRecoveryEndToEndTest(SchedulerTest):
+    """A failing agent task ends up: retried-with-backoff + platform_error post."""
+
+    def test_agent_failure_creates_error_post_and_schedules_retry(self) -> None:
+        self.remote.create_label("spec-change:adapt")
+        post_id = self.remote.add_entry("Adapt it", labels=["spec-change:adapt"]).data.id
+        failing = FakeAgentRunner(
+            result=AgentResult(ok=False, returncode=1, error="agent exited with code 1")
+        )
+        sched = self._scheduler(runner=failing)
+        sched.run_once()
+
+        # the origin task is parked pending with a future not_before
+        origin = next(
+            t
+            for t in (self.db.get_task(i) for i in range(1, 50))
+            if t and str(t.get("post_id")) == str(post_id) and t["status"] == "pending"
+        )
+        self.assertIsNotNone(origin["not_before"])
+        # a platform_error post exists on the remote; its marker links the task
+        # (entry-created and label-added both failed -> one post per task)
+        posts = [
+            e
+            for e in self.remote.list_entries(is_open=None).data
+            if str(e.title).startswith("Platform error:")
+        ]
+        self.assertGreaterEqual(len(posts), 1)
+        marker = "specseed:platform-error task={0}".format(origin["task_id"])
+        bodies = [self.remote.get_entry(p.id).data.body for p in posts]
+        self.assertTrue(any(marker in body for body in bodies))
+
+
 class ConfigReloadOnResumeTest(unittest.TestCase):
     """resume() re-reads config via config_loader and rebuilds derived state."""
 

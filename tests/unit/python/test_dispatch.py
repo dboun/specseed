@@ -369,5 +369,108 @@ class RunAgentRoutingTest(DispatchTestBase):
         self.assertNotIn("function", bare.calls[0])
 
 
+class PlatformErrorDispatchTest(DispatchTestBase):
+    """handle_platform_error routing + the platform_error-post work shield."""
+
+    def _error_post(self, *, body_marker="<!-- specseed:platform-error task=9 -->"):
+        self.remote.create_label("platform_error")
+        return self.remote.add_entry(
+            "Platform error: handle_label_removed (post 5)",
+            body="stub\n\n" + body_marker,
+            labels=["platform_error"],
+        ).data.id
+
+    def test_handle_platform_error_runs_resolve_chain(self) -> None:
+        post_id = self._error_post()
+        out = dispatch(
+            self.ctx,
+            {
+                "action": "handle_platform_error",
+                "task_id": 42,
+                "post_id": str(post_id),
+                "payload": {"origin_task_id": 9, "origin_action": "handle_label_removed",
+                            "origin_post_id": "5", "reason": "new"},
+            },
+        )
+        self.assertTrue(out.success)
+        self.assertEqual(len(self.runner.calls), 1)
+        prompt = self.runner.calls[0]["prompt"]
+        self.assertIn("platform-error resolver", prompt)
+        self.assertIn("specseed:platform-error task=9", prompt)  # body in prompt
+        self.assertIn("PLATFORM_ERROR_REPORTED", prompt)
+
+    def test_resolve_function_chain_is_used(self) -> None:
+        post_id = self._error_post()
+        resolve = FakeAgentRunner(result=AgentResult(ok=True, returncode=0))
+        other = FakeAgentRunner(result=AgentResult(ok=True, returncode=0))
+        self.ctx.runner = RunnerChains(
+            {"resolve_platform_errors": [resolve], "implementation": [other]}
+        )
+        out = dispatch(
+            self.ctx,
+            {"action": "handle_platform_error", "task_id": 1,
+             "post_id": str(post_id), "payload": {"reason": "exhausted"}},
+        )
+        self.assertTrue(out.success)
+        self.assertEqual(len(resolve.calls), 1)
+        self.assertEqual(len(other.calls), 0)
+
+    def test_closed_post_is_cancelled_no_agent(self) -> None:
+        post_id = self._error_post()
+        self.remote.set_entry_closed(post_id)
+        out = dispatch(
+            self.ctx,
+            {"action": "handle_platform_error", "task_id": 1,
+             "post_id": str(post_id), "payload": {}},
+        )
+        self.assertTrue(out.success)
+        self.assertIn("cancelled", out.detail)
+        self.assertEqual(self.runner.calls, [])
+
+    def test_resolve_agent_failure_is_not_retryable(self) -> None:
+        post_id = self._error_post()
+        self.ctx.runner = FakeAgentRunner(
+            result=AgentResult(ok=False, returncode=1, error="agent exited with code 1")
+        )
+        out = dispatch(
+            self.ctx,
+            {"action": "handle_platform_error", "task_id": 1,
+             "post_id": str(post_id), "payload": {}},
+        )
+        self.assertFalse(out.success)
+        self.assertFalse(out.retryable)
+
+    def test_human_comment_on_error_post_reengages_agent(self) -> None:
+        # The post must exist on the remote (read fresh) AND the local mirror
+        # (load_entity reads local).
+        post_id = self._error_post()
+        eid = self._seed_local_entry(
+            "Platform error: handle_label_removed (post 5)", ["platform_error"]
+        )
+        self.assertEqual(str(eid), str(post_id))  # same id space, fresh dbs
+        out = dispatch(
+            self.ctx,
+            {"action": "handle_comment_added", "task_id": 2,
+             "post_id": str(eid), "payload": {"comment_id": 1, "author": "alice"}},
+        )
+        self.assertTrue(out.success)
+        self.assertEqual(len(self.runner.calls), 1)
+        self.assertIn("The human replied", self.runner.calls[0]["prompt"])
+
+    def test_other_events_on_error_post_are_bookkeeping(self) -> None:
+        post_id = self._error_post()
+        self._seed_local_entry(
+            "Platform error: handle_label_removed (post 5)", ["platform_error"]
+        )
+        out = dispatch(
+            self.ctx,
+            {"action": "handle_label_added", "task_id": 3,
+             "post_id": str(post_id), "payload": {}},
+        )
+        self.assertTrue(out.success)
+        self.assertIn("bookkeeping", out.detail)
+        self.assertEqual(self.runner.calls, [])
+
+
 if __name__ == "__main__":
     unittest.main()

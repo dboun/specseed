@@ -319,6 +319,36 @@ class SyncToDbTest(unittest.TestCase):
         self.assertTrue(second["ok"])
         self.assertEqual(second["changes"], 0)
 
+    # -- platform self-comment suppression (loop guard) ------------------- #
+    def test_platform_prefixed_comment_never_becomes_work(self) -> None:
+        entry = self.remote.add_entry("E").data.id
+        self.remote.add_entry_comment(entry, "specseed: clarification round 1")
+
+        summary = self.sync()
+        self.assertTrue(summary["ok"])
+        self.assertNotIn("handle_comment_added", self.actions())
+        self.assertGreaterEqual(summary["ignored"], 1)
+
+    def test_platform_username_comment_never_becomes_work(self) -> None:
+        entry = self.remote.add_entry("E").data.id
+        self.remote.add_entry_comment(entry, "no prefix, but bot-authored")  # author=alice
+
+        summary = sync_to_db(
+            self.local, self.remote, db=self.db, config={"platform_username": "alice"}
+        )
+        self.assertTrue(summary["ok"])
+        self.assertNotIn("handle_comment_added", self.actions())
+
+    def test_human_comment_still_becomes_work(self) -> None:
+        entry = self.remote.add_entry("E").data.id
+        self.remote.add_entry_comment(entry, "please adjust the scope")
+
+        summary = sync_to_db(
+            self.local, self.remote, db=self.db, config={"platform_username": "bot"}
+        )
+        self.assertTrue(summary["ok"])
+        self.assertIn("handle_comment_added", self.actions())
+
 
 if __name__ == "__main__":
     unittest.main()
