@@ -245,5 +245,21 @@ class ConfigureRunnerChainsTest(unittest.TestCase):
             self.assertEqual(cfg["runner"]["review"][0]["model"], "sonnet")
 
 
+class RunnerVocabularySingleSourceTest(unittest.TestCase):
+    """configure re-exports agent_runner's vocabulary - a mirrored copy once
+    drifted and hid resolve_platform_errors from configure + the UI schema."""
+
+    def test_runner_functions_are_agent_runners(self) -> None:
+        from specseed_runtime.executing import agent_runner
+
+        self.assertIs(configure.RUNNER_FUNCTIONS, agent_runner.RUNNER_FUNCTIONS)
+        self.assertIn("resolve_platform_errors", configure.RUNNER_FUNCTIONS)
+
+    def test_default_chains_cover_every_function(self) -> None:
+        self.assertEqual(
+            set(configure.default_runner_chains()), set(configure.RUNNER_FUNCTIONS)
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

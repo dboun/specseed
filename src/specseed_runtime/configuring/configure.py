@@ -59,30 +59,20 @@ _add_package_parent_to_path()
 from specseed_runtime.migrating.migrate import run_migrations
 from specseed_runtime.storage_paths import default_storage_dir as _dev_default_storage_dir
 
+# Single source of truth for the runner vocabulary - a mirrored copy here once
+# drifted and hid a new function from configure + the UI.
+from specseed_runtime.executing.agent_runner import (  # noqa: E402
+    PROVIDER_DEFAULT_HOME,
+    RUNNER_FUNCTIONS,
+    default_runner_chains,
+    default_runner_spec,
+)
+
 DEFAULT_POLL_INTERVAL = 45
 DEFAULT_SPECSEED_DIR = ".specseed"
 DEFAULT_DEV_BRANCH = "main"
 
-# The runner runs one ordered fallback chain of agent specs per function. Kept here
-# so configure.py stays import-light (mirrors executing/agent_runner.py).
-RUNNER_FUNCTIONS = ("spec", "implementation", "review", "merge_conflicts")
 RUNNER_PROVIDERS = ("claude", "codex")
-PROVIDER_DEFAULT_HOME = {"claude": "~/.claude", "codex": "~/.codex"}
-
-
-def default_runner_spec():
-    """The single Claude spec every function defaults to."""
-    return {
-        "provider": "claude",
-        "provider_data_dir": PROVIDER_DEFAULT_HOME["claude"],
-        "model": "opus",
-        "effort": "high",
-    }
-
-
-def default_runner_chains():
-    """One default Claude spec per function."""
-    return {fn: [default_runner_spec()] for fn in RUNNER_FUNCTIONS}
 
 # Action-class gate taxonomy the implementation agent honours. Mirrors
 # executing/permissions.py (kept here so configure.py stays import-light / standalone).

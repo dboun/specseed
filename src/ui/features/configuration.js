@@ -23,7 +23,14 @@ export function createConfiguration({ repo, ctx }) {
     cfg.runner = cfg.runner || {};
     for (const fn of schema.runner_functions) {
       if (!Array.isArray(cfg.runner[fn]) || !cfg.runner[fn].length) {
-        cfg.runner[fn] = [{ ...(schema.default_spec || {}) }];
+        // A function added after this repo was configured rides the
+        // implementation chain (same fallback as the runtime), not the
+        // default spec - a codex repo must not silently gain a claude chain.
+        const impl = cfg.runner.implementation;
+        cfg.runner[fn] =
+          Array.isArray(impl) && impl.length
+            ? impl.map((spec) => ({ ...spec }))
+            : [{ ...(schema.default_spec || {}) }];
       }
     }
     cfg.approvals = cfg.approvals || { approver_usernames: [] };
@@ -109,7 +116,7 @@ export function createConfiguration({ repo, ctx }) {
         return `
           <div class="runner-fn">
             <div class="runner-fn-head">
-              <span class="runner-fn-name">${escapeHtml(fn.replace("_", " "))}</span>
+              <span class="runner-fn-name">${escapeHtml(fn.replace(/_/g, " "))}</span>
               <button type="button" class="btn btn-ghost sm" data-add-spec data-fn="${escapeHtml(fn)}" ${ro()}>+ fallback</button>
             </div>
             ${chain.map((spec, i) => specRow(fn, spec, i, chain.length === 1)).join("")}
