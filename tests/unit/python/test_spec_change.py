@@ -16,6 +16,8 @@ from specseed_runtime.db.database import Database
 from specseed_runtime.scheduling.spec_change import (
     DEFAULT_SCRIPT_NAME,
     SPEC_CHANGE_ACTION,
+    SPEC_CHANGE_PROPOSE_ACTION,
+    enqueue_spec_change_propose,
     enqueue_spec_change_run,
     spec_change_dir,
     spec_change_root,
@@ -75,6 +77,16 @@ class EnqueueSpecChangeTest(unittest.TestCase):
         db = self._db()
         with self.assertRaises(ValueError):
             enqueue_spec_change_run(DEFAULT_SCRIPT_NAME, db=db)
+
+    def test_enqueue_propose_records_action_and_request(self) -> None:
+        db = self._db()
+        task_id = enqueue_spec_change_propose("7", route="adapt", db=db)
+        task = db.get_task(task_id)
+        self.assertEqual(task["action"], SPEC_CHANGE_PROPOSE_ACTION)
+        self.assertEqual(task["post_id"], "7")
+        self.assertEqual(task["payload"]["request_id"], "7")
+        self.assertEqual(task["payload"]["route"], "adapt")
+        self.assertEqual(db.pending_count(), 1)
 
 
 class ResolveRemoteTest(unittest.TestCase):

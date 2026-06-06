@@ -219,6 +219,7 @@ a { color: var(--accent-2); }
 .table { width: 100%; min-width: 460px; border-collapse: collapse; font-size: 13px; }
 .table th { text-align: left; color: var(--muted); font-weight: 600; padding: 6px 10px; border-bottom: 1px solid var(--line); font-family: var(--mono); font-size: 11px; text-transform: uppercase; }
 .table td { padding: 9px 10px; border-bottom: 1px solid var(--line); }
+.table td.row-actions { text-align: right; white-space: nowrap; width: 1%; }
 .tag { font-family: var(--mono); font-size: 11px; padding: 2px 8px; border-radius: 20px; border: 1px solid var(--line-2); text-transform: uppercase; }
 .tag-pending { color: var(--warn); }
 .tag-in_progress { color: var(--live); }

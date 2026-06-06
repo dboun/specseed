@@ -70,7 +70,8 @@ requires). Patch all three; at most 2 loops. This is the main guard against the 
 core docs drifting apart at birth.
 
 Then plan the first work breakdown as remote posts per `work-breakdown.md` (epics +
-tickets at `:status:todo`, **issues at `:status:awaiting_approval`**), run the risk
+tickets AND **issues at `:status:todo`** in `plan.json.creates` — created only on
+approval, plan-first), run the risk
 pass, compute the critical path + first sprint, write the SCHEDULE body. Record which
 spec docs this run created in `plan.json.settle_docs` (see "Settling").
 
@@ -110,8 +111,9 @@ question rounds entirely when the impact map is unambiguous.
 ## 3. Reconcile the work posts (plan.json)
 
 - New scope -> new tickets/issues (`creates`, body links, `satisfies_reqs`). Tickets
-  at `:status:todo`; **issues at `:status:awaiting_approval`**. Run the risk pass over
-  new issues. Recompute ticket-tier critical path; assign to a sprint; refresh SCHEDULE.
+  AND **issues at `:status:todo`** (created only on approval, plan-first). Run the risk
+  pass over new issues. Recompute ticket-tier critical path; assign to a sprint; refresh
+  SCHEDULE.
 - Obsolete work -> swap its status label to `:status:deprecated` (was real) or
   `:status:wont_do` (cancelled before built). Do not delete shipped history.
 - Revised acceptance criteria -> `edit_entry` the post body, or a `comment` noting the
@@ -131,9 +133,11 @@ A spec doc becomes `settled: true` **when the human approves this change**, not 
 moment you write it. So:
 - Record every spec doc this run created or reopened in `plan.json.settle_docs` (a list
   of paths under `<specseed_dir>/spec/`).
-- Park the request `spec-change:status:awaiting_approval` with an `APR-NNNN` request
-  (any run that touches the spec needs sign-off, even a spec-only one). On approval the
-  **runtime** stamps `settled: true` + `settled_at` on each `settle_docs` path and
+- Write `apr` + `plan_summary` in `plan.json` and enqueue a **proposal**; the runtime
+  posts the summary + `APR-NNNN` request and parks the request
+  `spec-change:status:awaiting_approval` (any run that touches the spec needs sign-off,
+  even a spec-only one). On approval the **runtime** stamps `settled: true` +
+  `settled_at` on each `settle_docs` path and
   moves the request to `done`. You never write `settled` yourself.
 This is why adapt is the sole reopen path: once settled, only an approved adapt run
 re-opens and re-settles a doc. `plan-next-sprint` and `tweak` never touch settled docs.
@@ -170,8 +174,10 @@ When the request retires an entire feature, not one req:
 
 ## Finish
 
-Per the protocol: `plan.json` -> `apply.py` -> `enqueue_spec_change_run(...)` -> stop.
-Any run that created issues OR touched the spec parks `spec-change:status:awaiting_approval`
-with an `APR-NNNN` request (and records `settle_docs`); the runtime settles the docs
-and completes the request on approval. If this adapt resolved a draft-adapt concern
-post, unblock its originating issue (swap to `:status:todo`) in the plan.
+Per the protocol: `plan.json` (with `plan_summary` + `apr`) -> `apply.py` ->
+`enqueue_spec_change_propose(...)` -> stop. Any run that plans issues OR touches the
+spec proposes: the runtime posts the summary + `APR-NNNN`, parks
+`spec-change:status:awaiting_approval`, settles the docs and runs `apply.py` (which
+creates the posts) on approval. Nothing is created before approval. If this adapt
+resolved a draft-adapt concern post, unblock its originating issue (swap to
+`:status:todo`) in the plan.

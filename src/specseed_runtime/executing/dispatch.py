@@ -21,6 +21,7 @@ Only Python stdlib is used.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -38,8 +39,17 @@ from specseed_runtime.executing import recovery
 from specseed_runtime.executing import platform_log
 from specseed_runtime.executing.context import ExecutionContext
 from specseed_runtime.executing import prompts
-from specseed_runtime.scheduling.spec_change import SPEC_CHANGE_ACTION
+from specseed_runtime.scheduling.spec_change import (
+    SPEC_CHANGE_ACTION,
+    SPEC_CHANGE_PROPOSE_ACTION,
+    spec_change_dir,
+)
+from specseed_runtime.state_machines.approvals import (
+    approval_request_comment,
+    requested_apr_ids,
+)
 from specseed_runtime.state_machines.base import evaluate_entity_state
+from specseed_runtime.platform_identity import platform_comment
 from specseed_runtime.storage_paths import SPECSEED_STORAGE_ENV
 
 
@@ -652,6 +662,77 @@ def _run_work(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
     )
 
 
+def _read_plan(ctx: ExecutionContext, request_id: Any) -> Optional[dict]:
+    path = spec_change_dir(str(request_id), ctx.storage) / "plan.json"
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _request_labels(post: Any) -> list[str]:
+    return [str(getattr(lbl, "name", lbl)) for lbl in getattr(post, "labels", []) or []]
+
+
+def _park_request_awaiting_approval(ctx: ExecutionContext, request_id: Any, labels: list[str]) -> None:
+    """Swap the request's ``spec-change:status:*`` to ``awaiting_approval`` (idempotent)."""
+    target = _SPEC_CHANGE_STATUS_PREFIX + "awaiting_approval"
+    for name in labels:
+        if name.startswith(_SPEC_CHANGE_STATUS_PREFIX) and name != target:
+            ctx.remote.remove_entry_label(request_id, name)
+    if target not in labels:
+        ctx.remote.add_entry_label(request_id, target)
+
+
+def propose_spec_change(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
+    """Plan-first gate: post the plan summary + approval request, park the request.
+
+    Deterministic, no agent, NO remote work posts. Reads the request's
+    ``plan.json`` (``plan_summary`` + ``apr``), posts both onto the request post,
+    and parks it ``awaiting_approval``. The deferred ``apply.py`` - which actually
+    creates the epics/tickets/issues - runs only after a human approves
+    (``advance.resolve_spec_change_request`` enqueues it). Idempotent: a re-trigger
+    that finds the ``APR-NNNN`` request already posted is a success no-op.
+    """
+    if not ctx.permissions.can_run_spec_change():
+        platform_log.log_event("spec_change_propose_blocked", task_id=task.get("task_id"), reason="permission_denied")
+        return HandlerOutcome(success=False, error="spec-change remote writes not permitted by config")
+
+    request_id = task.get("post_id") or (task.get("payload") or {}).get("request_id")
+    plan = _read_plan(ctx, request_id)
+    if plan is None:
+        return HandlerOutcome(success=False, error="propose: no readable plan.json for request {0}".format(request_id))
+    apr = plan.get("apr") if isinstance(plan.get("apr"), dict) else {}
+    apr_id = str(apr.get("id") or "").strip()
+    if not apr_id:
+        return HandlerOutcome(success=False, error="propose: plan.json missing apr.id (no approval token to gate on)")
+    summary = str(apr.get("summary") or "")
+    plan_summary = str(plan.get("plan_summary") or "").strip()
+
+    result = ctx.remote.get_entry(request_id)
+    post = getattr(result, "data", None)
+    if not getattr(result, "ok", False) or post is None:
+        return HandlerOutcome(success=False, error="propose: request {0} not found on remote".format(request_id), retryable=True)
+    labels = _request_labels(post)
+    conversation = list(getattr(post, "comments", []) or [])
+
+    # Idempotency: the approval-request comment carries the APR marker. If it is
+    # already on the post, a previous propose run finished - do nothing.
+    if apr_id.upper() in {i.upper() for i in requested_apr_ids(conversation)}:
+        platform_log.log_event("spec_change_propose_noop", task_id=task.get("task_id"), post_id=request_id, apr=apr_id)
+        return HandlerOutcome(success=True, detail="proposal {0} already posted; parked".format(apr_id))
+
+    if plan_summary:
+        ctx.remote.add_entry_comment(request_id, platform_comment(plan_summary))
+    ctx.remote.add_entry_comment(request_id, approval_request_comment(apr_id, summary))
+    _park_request_awaiting_approval(ctx, request_id, labels)
+    platform_log.log_event(
+        "spec_change_proposed", task_id=task.get("task_id"), post_id=request_id, apr=apr_id,
+        creates=len(plan.get("creates") or []),
+    )
+    return HandlerOutcome(success=True, detail="proposed {0}; parked awaiting approval".format(apr_id))
+
+
 def dispatch(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
     """Route a claimed task to its handler and return the outcome."""
     action = task.get("action")
@@ -664,6 +745,9 @@ def dispatch(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
 
     if action == SPEC_CHANGE_ACTION:
         return run_spec_change_script(ctx, task)
+
+    if action == SPEC_CHANGE_PROPOSE_ACTION:
+        return propose_spec_change(ctx, task)
 
     if action == recovery.PLATFORM_ERROR_ACTION:
         return _run_platform_error(ctx, task)

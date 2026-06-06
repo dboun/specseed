@@ -25,14 +25,15 @@ follow `routes/adapt.md` for this request. Note the bump in `plan.json`.
 3. **One work post, maybe.** The common pairing is "add this req AND a ticket for
    it". That stays a tweak: one `creates` (ticket at `:status:todo`,
    `satisfies_reqs` the new req) or one label/comment change in `plan.json`. A
-   pure status flip on an existing post is a label swap. If the one created post
-   is an **issue** (claimable), it is born `:status:awaiting_approval` (with its
-   `type:` label) and the run ends with an `APR-NNNN` request, like every other route
-   (protocol approval gate).
-4. **Finish.** `plan.json` -> `apply.py` -> `enqueue_spec_change_run(...)` ->
-   stop. If the tweak ended up touching nothing on the remote (e.g. a doc-only
-   typo fix), still write a `plan.json` that just moves the request post to
-   `done` (a label swap) and enqueue, so the request closes out.
+   pure status flip on an existing post is a label swap. If the one planned post
+   is an **issue** (claimable), it is planned `:status:todo` (with its `type:`
+   label) and the run **proposes** with an `APR-NNNN` like every work-creating route
+   (plan-first: nothing is created until approval).
+4. **Finish.** If the tweak plans a new issue, write `plan_summary` + `apr` and
+   `enqueue_spec_change_propose(...)` -> stop (the runtime creates it on approval).
+   Otherwise it is a **direct apply** (`enqueue_spec_change_run`): a label/comment
+   change, or a doc-only fix where `plan.json` just moves the request post to `done`
+   (a label swap + close), so the request closes out.
 
 ## Escalate to adapt when
 

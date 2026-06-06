@@ -123,8 +123,9 @@ decomposition (nobody claims done work). Off by default; ask which areas, if any
 
 ### Forward gaps -> full breakdown
 
-The gap reqs are the real work. Break them down per `work-breakdown.md`: tickets at
-`:status:todo`, **issues at `:status:awaiting_approval`** (the approval gate). Forward
+The gap reqs are the real work. Break them down per `work-breakdown.md`: tickets AND
+**issues at `:status:todo`** in `plan.json.creates` (plan-first — nothing is created
+until the plan is approved; the request is the gate). Forward
 tickets' `satisfies_reqs` reference gap reqs; their `depends_on` DAG covers only
 forward work. Run the risk-detection & gating pass (adopt repos often touch real infra
 — expect gates). Compute the critical path + first sprint over the *remaining* work.
@@ -147,9 +148,13 @@ is the source of truth from now on. Never set up ongoing sync.
 
 ## Finish
 
-Per the protocol: `plan.json` -> `apply.py` -> `enqueue_spec_change_run(...)` -> stop.
-If you created any remaining-work issue, post one `APR-NNNN` request comment
-summarizing the breakdown (with the risk picture) and park the request
-`spec-change:status:awaiting_approval` (the approval gate), not `done`. Already-built
-`:status:done` posts need no approval. Use async clarification for any material
-behavior you could not determine from the code.
+Per the protocol: `plan.json` (with `plan_summary` + `apr`) -> `apply.py` ->
+`enqueue_spec_change_propose(...)` -> stop. If you planned any remaining-work issue,
+write a `plan_summary` summarizing the breakdown (overall + every epic/ticket/issue
+title with a one-line blurb, plus the risk picture); the runtime posts it + the
+`APR-NNNN` request and parks the request `spec-change:status:awaiting_approval`. Nothing
+is created until a human approves; on approval `apply.py` creates the posts. Already-built
+`:status:done` posts (mapped from existing code) carry no new work — if the run only
+maps existing code and settles docs with nothing to create, it still proposes (the
+approval is the settle). Use async clarification for any material behavior you could not
+determine from the code.

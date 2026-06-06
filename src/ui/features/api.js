@@ -35,6 +35,7 @@ export const api = {
     return request(`${base(id)}/monitor${qs ? "?" + qs : ""}`);
   },
   runner: (id, action) => post(`${base(id)}/runner`, { action }),
+  retryTask: (id, taskId) => post(`${base(id)}/tasks/${enc(taskId)}/retry`),
 
   // configuration
   getConfig: (id) => request(`${base(id)}/config`),

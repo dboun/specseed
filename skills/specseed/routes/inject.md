@@ -43,9 +43,10 @@ proves this manual item done?" Keep questions narrow.
 
 All manual work created by this route becomes the **current sprint**.
 
-- Create the requested epic or ticket at `:status:todo`; create any **issue** at
-  **`:status:awaiting_approval`** (gated, per the protocol's approval gate). Even
-  injected/urgent issues do not auto-implement: a human approves first.
+- Plan the requested epic/ticket AND any **issue** at **`:status:todo`** in
+  `plan.json.creates` — but create nothing yet (plan-first, per the protocol's approval
+  gate). Even injected/urgent items are proposed first: a human approves the plan before
+  anything is created, then `apply.py` creates them claimable.
 - If the injected item is a ticket and needs execution work, create one or more
   child issues. A simple manual ticket may get one issue with matching scope.
 - If the injected item is an issue and no parent ticket is clear, create a
@@ -93,14 +94,16 @@ Record the full decision:
 - `comments` for the request post and any affected parent work posts
 - `sprint_shift` describing what moved from current to next sprint
 
-If clarification is needed, `plan.json` should contain only the clarifying
-comment and the request status swap to `spec-change:status:awaiting_approval`.
+If clarification is needed instead, `plan.json` should contain only the clarifying
+comment(s) + the `awaiting_approval` label, enqueued as a **direct apply**
+(`enqueue_spec_change_run`).
 
 ## Finish
 
-Per the protocol: `plan.json` -> `apply.py` -> `enqueue_spec_change_run(...)` ->
-stop. If the run created any issue, post one `APR-NNNN` request comment and park
-the request `spec-change:status:awaiting_approval` (the approval gate), not `done`.
+Per the protocol: `plan.json` (with `plan_summary` + `apr`) -> `apply.py` ->
+`enqueue_spec_change_propose(...)` -> stop. If the run plans any work, the runtime
+posts the `plan_summary` + `APR-NNNN` and parks the request
+`spec-change:status:awaiting_approval`; `apply.py` creates the posts only on approval.
 
 ## Boundary
 

@@ -60,11 +60,11 @@ to adapt** for that change (note it in `plan.json`), then resume.
 
 ## 3. Break down the slice (plan.json)
 
-- Create tickets/issues for the slice's roadmap titles (`creates`, body links,
-  `satisfies_reqs` -> the reqs just added). Tickets at `:status:todo`; **issues at
-  `:status:awaiting_approval`** (gated, per the protocol's approval gate). Label each
-  issue with its `type:` (and `difficulty:`) and run the risk-detection & gating pass
-  over the new issues (`work-breakdown.md`).
+- Plan tickets/issues for the slice's roadmap titles (`creates`, body links,
+  `satisfies_reqs` -> the reqs just added). Tickets AND **issues at `:status:todo`** in
+  `plan.json.creates` — created only on approval (plan-first, per the protocol's
+  approval gate). Label each issue with its `type:` (and `difficulty:`) and run the
+  risk-detection & gating pass over the new issues (`work-breakdown.md`).
 - Recompute ticket-tier critical path across **all** tickets (prior + new) with
   `scripts/critical_path.py`; each slice sharpens it. Pack with
   `scripts/sprint_pack.py`.
@@ -74,9 +74,10 @@ to adapt** for that change (note it in `plan.json`), then resume.
 
 ## Finish
 
-Per the protocol: `plan.json` -> `apply.py` -> `enqueue_spec_change_run(...)` ->
-stop. The new issues are gated, so post one `APR-NNNN` request comment and park
-the request `spec-change:status:awaiting_approval` (the approval gate), not `done`.
+Per the protocol: `plan.json` (with `plan_summary` + `apr`) -> `apply.py` ->
+`enqueue_spec_change_propose(...)` -> stop. The runtime posts the `plan_summary` +
+`APR-NNNN` and parks the request `spec-change:status:awaiting_approval`; `apply.py`
+creates the sprint's posts only on approval — nothing is created before then.
 
 ## Boundary
 

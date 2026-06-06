@@ -58,7 +58,7 @@ is yours to fit the route, but keep it explicit. Suggested:
     {"tier": "ticket", "title": "...", "body": "...",
      "labels": ["ticket", "ticket:status:todo"]},
     {"tier": "issue", "title": "...", "body": "...",
-     "labels": ["issue", "issue:status:awaiting_approval", "type:feature", "difficulty:hard"]}
+     "labels": ["issue", "issue:status:todo", "type:feature", "difficulty:hard"]}
   ],
   "edits":   [{"post_id": 12, "body": "..."}],
   "labels":  [{"post_id": 12, "add": ["ticket:status:done"],
@@ -66,7 +66,8 @@ is yours to fit the route, but keep it explicit. Suggested:
   "comments":[{"post_id": 12, "body": "..."}],
   "closes":  [34],
   "deletes": [],
-  "apr":     {"id": "APR-0001", "summary": "..."},
+  "apr":         {"id": "APR-0001", "summary": "..."},
+  "plan_summary": "## Proposed plan\n- EPIC-0001 ... — one line\n- FEAT-0001 ... — one line",
   "settle_docs": ["spec/api-srs.md", "spec/sad.md"],
   "questions": {},
   "risk": {}
@@ -79,8 +80,16 @@ approval gate). `questions` records any clarification round already asked (so a
 re-trigger never re-asks; format in `references/question-protocol.md`). `risk` holds the
 risk-detection & gating pass output (`references/work-breakdown.md`).
 
-`apply.py` reads `plan.json` and applies it. Keeping the data and the executor
-separate means a human can eyeball the delta and the script stays generic.
+**`plan_summary` + `apr` are required for a proposing run** (one that creates work or
+settles docs). `plan_summary` is the human-readable plan the runtime posts for approval:
+a short overall summary, then EVERY epic/ticket/issue you will create as a titled bullet
+with a one-line description. `apr` is the approval token (see the approval gate). **Issues
+are born `issue:status:todo`, never `awaiting_approval`** — the plan approval is the gate;
+no post exists until it is approved.
+
+`apply.py` reads `plan.json` and applies it — but only AFTER approval (see the gate).
+Keeping the data and the executor separate means a human can eyeball the delta and the
+script stays generic.
 
 ## apply.py
 
@@ -88,6 +97,15 @@ Self-contained. Imports `resolve_remote()` (the **configured** provider:
 local / GitHub / GitLab) and applies `plan.json` through the tracking contract.
 Every tracking call returns `TrackingResult(ok, error, data)`; check `ok` and
 abort on the first failure so a half-applied run is obvious.
+
+**apply.py runs ONLY after a human approves the plan** (the runtime enqueues it
+then — see the approval gate). So it is the DOER that actually creates the posts.
+It must NOT touch the request's `spec-change:status` to `awaiting_approval` (the
+propose step already parked it). Its job: create the work, then **finalize the
+request** — put `REQUEST_ID` in `plan.json.closes` so apply.py closes it after the
+work exists (the runtime already swapped the request to `spec-change:status:done`
+on approval). A re-trigger before approval REWRITES this script; only the approved
+copy ever runs.
 
 Canonical header (resolves the dev import root by walking up to the package):
 
@@ -178,61 +196,76 @@ A **status swap** = `remove_entry_label(id, "<tier>:status:<old>")` then
 `edit_entry(schedule_id, body=<rendered markdown>)` (ROADMAP + Current sprint are
 runtime-rendered — do not hand-edit). See `remote-posts.md` for the post/label model.
 
-## Approval gate (APR-NNNN): required before any new work
+## Approval gate (APR-NNNN): nothing is created until the plan is approved
 
-**A run is NOT finished until it asks for human approval of the work it created.**
-You never make new work auto-implementable on your own. An impl agent claims an
-**issue** the moment it is `issue:status:todo`; so any issue you newly spec must
-be born **`issue:status:awaiting_approval`**, never `todo`. The executor flips it
-to `todo` (claimable) only after a human approves. This is a status gate, not a
-trust gate: there is no path where you create `todo` issues and "remember" to ask.
+**Plan-first. A run that creates work or settles spec docs does NOT create
+anything — it proposes a PLAN and stops.** No epic, ticket, or issue is posted to
+the tracker before a human approves. The gate is the spec-change request itself;
+there is no per-issue status gate.
 
-This is **not** epic-gating. The gate is per newly-created issue, via its status
-label, plus one approval-request comment that names the batch.
+How it works:
 
-Steps, every route that creates issues:
+1. You write the spec edits (unsettled), `plan.json` (with `plan_summary` + `apr`),
+   and `apply.py` (the doer that creates the posts) — but you do NOT run apply.py.
+   You enqueue a **proposal** instead (see Enqueue + stop).
+2. The runtime posts your `plan_summary` + an `APR-NNNN` approval request onto the
+   request post and parks it `spec-change:status:awaiting_approval`. **Nothing is
+   created.**
+3. A human approves (`approve APR-NNNN` comment **or** 👍 on the request) or rejects
+   (`reject APR-NNNN` / 👎).
+4. On approval the runtime settles the docs, swaps the request to
+   `spec-change:status:done`, and runs your `apply.py` — which NOW creates the
+   epics/tickets/issues. On rejection nothing is created and the request closes.
 
-1. **Allocate one token** for the batch and a short summary of what you propose:
+Consequences for what you write:
+
+- **Issues are born `issue:status:todo`**, never `awaiting_approval`. The plan
+  approval already gated them; once created they are immediately claimable and the
+  executor implements them (per `auto_implement_issue`). Epics/tickets are `todo` too.
+- **`plan_summary` (required):** the human-readable plan the runtime posts for
+  approval — a short overall summary, then EVERY epic/ticket/issue you will create as
+  a titled bullet with a one-line description. Markdown, into `plan.json`.
+- **`apr` (required):** allocate one token at **plan time** and write `{id, summary}`
+  into `plan.json` (stable across re-runs — do NOT re-allocate in apply.py):
 
    ```python
-   from specseed_runtime.executing.approvals import next_apr_id, approval_request_comment
-   apr_id = next_apr_id(STORAGE_DIR)          # e.g. "APR-0001", monotonic, persisted
-   request_body = approval_request_comment(apr_id, summary)  # carries the hidden marker
+   from specseed_runtime.executing.approvals import next_apr_id
+   apr_id = next_apr_id(STORAGE_DIR)   # "APR-0001", monotonic, persisted
    ```
 
-   Allocate at **plan time** and write `apr_id` + `summary` into `plan.json` so the
-   token is stable across re-runs (do NOT re-allocate in `apply.py`; read it from
-   `plan.json`). `STORAGE_DIR` = `<specseed_dir>/storage`.
-2. **Create the new issues at `awaiting_approval`.** In `plan.json.creates`, every
-   issue's labels are `["issue", "issue:status:awaiting_approval"]`. Tickets and
-   epics (PM groupings, not claimed by impl agents) stay `:status:todo`.
-3. **Post the approval request.** Put `request_body` as a `comments` entry on the
-   spec-change request post (and the same marker comment on each gated issue, so a
-   `approve APR-NNNN` on an issue resolves that issue). Swap the request status to
-   `spec-change:status:awaiting_approval`.
-   **Use `approval_request_comment(...)` output VERBATIM - never hand-write the
-   approval comment.** The helper carries the hidden marker that arms the gate AND
-   the instructions telling the human HOW to approve (`approve APR-NNNN` / 👍). A
-   freehand summary drops both; you may prepend your summary, but the helper body
-   must be in the comment.
-4. **Stop.** The run ends parked. A human approves the token (`approve APR-NNNN`
-   comment **or** 👍 thumbs-up reaction on the issue), or rejects it (`reject
-   APR-NNNN` / 👎). The executor's deterministic approval system resolves the gate
-   with no agent run: 👍/approve flips the issue `awaiting_approval -> todo`,
-   👎/reject parks it `blocked`. See `remote-posts.md`.
+  You do NOT hand-write or post the approval comment — the runtime builds it from
+  `apr` (verbatim `approval_request_comment`, hidden marker + how-to-approve text)
+  and posts it. `STORAGE_DIR` = `<specseed_dir>/storage`.
+- **apply.py finalizes the request:** put `REQUEST_ID` in `plan.json.closes` so the
+  doer closes it after the work exists. Do NOT set the request `awaiting_approval`
+  in apply.py — the propose step did that.
 
-**Settling on approval.** Approving the batch is also what **settles the spec**: on
-approval the runtime stamps `settled: true` + `settled_at` on every path in
-`plan.json.settle_docs` and moves the request to `done`. So a run that only changed
-the spec (no new issues) still parks `awaiting_approval` with an `APR-NNNN` if it wrote
-or reopened any settled-track doc — the approval is the settle. The skill never writes
-`settled` itself; `adapt` is the only route that may reopen an already-settled doc.
+**Settling on approval.** Approving the plan is also what **settles the spec**: the
+runtime stamps `settled: true` + `settled_at` on every `plan.json.settle_docs` path
+and moves the request to `done`. A run that only edits the spec (no new work) still
+proposes with an `APR-NNNN` if it touched a settled-track doc — the approval is the
+settle, and the runtime closes the request with no apply.py to run. The skill never
+writes `settled` itself; `adapt` is the only route that may reopen a settled doc.
 
 When no approver list is configured, any non-bot human may approve (the default).
 
 ## Enqueue + stop
 
-After writing `plan.json` and `apply.py`, enqueue the run and stop:
+After writing `plan.json` and `apply.py`, enqueue and stop. Pick ONE:
+
+**Proposing run** — created work and/or settled spec docs (the common case). The
+runtime posts the summary + APR, parks the request, and runs your `apply.py` only
+once a human approves:
+
+```python
+from specseed_runtime.db.database import Database
+from specseed_runtime.scheduling.spec_change import enqueue_spec_change_propose
+enqueue_spec_change_propose(REQUEST_ID, route=ROUTE,
+                            db=Database.instance(STORAGE_DIR / "specseed.db"))
+```
+
+**Direct apply** — a mechanical run that creates NO work and settles NO doc (e.g. a
+sprint label shuffle that needs no sign-off). apply.py runs straight away:
 
 ```python
 from specseed_runtime.db.database import Database
@@ -245,9 +278,10 @@ enqueue_spec_change_run(script_path, request_id=REQUEST_ID, route=ROUTE,
 (the bare default falls back to `$SPECSEED_STORAGE`, then the engine's dev
 storage).
 
-The executor (`executing/`) drains the queue and runs `apply.py` as a
-permission-gated subprocess. Your job ends at the enqueue: do not run `apply.py`
-yourself, do not touch git or code.
+The executor (`executing/`) drains the queue: a proposal posts the summary + APR
+and parks (running `apply.py` only on approval); a direct apply runs `apply.py`
+straight away as a permission-gated subprocess. Either way your job ends at the
+enqueue: do not run `apply.py` yourself, do not touch git or code.
 
 **Chat mode** (no runner; see `references/chat-mode.md`): there is nothing to
 enqueue and no remote. Still write `plan.json` + `apply.py` (inert here, runs
@@ -274,7 +308,9 @@ created ids), then enqueues.
 Cannot proceed safely? Do not guess. Post a **clarification round** — possibly several
 questions in the confidence/suggestion format of `references/question-protocol.md`,
 delivered as comment(s) on the spec-change post into `plan.json.comments` — add label
-`spec-change:status:awaiting_approval`, record the round in `plan.json.questions`,
-enqueue, stop. The human replies on the remote (a one-word `OK` accepts all your
-suggestions); the next poll re-triggers this route with their answers in the comments.
+`spec-change:status:awaiting_approval`, record the round in `plan.json.questions`. A
+clarification creates no work and settles no doc, so enqueue it as a **direct apply**
+(`enqueue_spec_change_run`, not a proposal), then stop. The human replies on the remote
+(a one-word `OK` accepts all your suggestions); the next poll re-triggers this route
+with their answers in the comments.
 A round may carry multiple questions; the rule is one round then park, not one question.

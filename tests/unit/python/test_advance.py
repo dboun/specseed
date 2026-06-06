@@ -418,6 +418,51 @@ class SpecChangeRequestSettleTest(_Base):
         self.assertIn("spec-change:status:done", self._remote_labels(rid))
         self.assertNotIn("spec-change:status:awaiting_approval", self._remote_labels(rid))
         self.assertIn("settled: true", (self.root / "spec" / "api-srs.md").read_text(encoding="utf-8"))
+        self.assertFalse(self._remote_details(rid).is_open)  # request closed on approval
+
+    def test_approval_enqueues_apply_when_work_present(self) -> None:
+        # Plan-first: with a deferred apply.py + work to create, approval queues the
+        # apply run and leaves the request OPEN (apply.py finalizes/closes it).
+        ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
+        rid, entity = self._request_entity()
+        self._write_doc("api-srs.md")
+        d = spec_change_dir(rid, ctx.storage)
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "plan.json").write_text(
+            json.dumps({
+                "request_id": rid, "route": "adapt",
+                "settle_docs": ["spec/api-srs.md"],
+                "creates": [{"tier": "issue", "title": "FEAT-0001", "labels": ["issue", "issue:status:todo"]}],
+            }),
+            encoding="utf-8",
+        )
+        (d / "apply.py").write_text("print('noop')\n", encoding="utf-8")
+        detail = advance.resolve_spec_change_request(ctx, entity, _SR2(approved_by=["alice"]))
+        self.assertIn("apply enqueued", detail)
+        self.assertIn("spec-change:status:done", self._remote_labels(rid))
+        self.assertTrue(self._remote_details(rid).is_open)  # apply.py will close it
+        actions = [t["action"] for t in self.db.tasks_for(rid)]
+        self.assertIn("run_spec_change_script", actions)
+
+    def test_double_approval_does_not_enqueue_apply_twice(self) -> None:
+        # Two stale approval events (👍 + comment in one drain) must not duplicate
+        # the creating apply.py run. The second call sees the remote already 'done'.
+        ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
+        rid, entity = self._request_entity()
+        d = spec_change_dir(rid, ctx.storage)
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "plan.json").write_text(
+            json.dumps({"request_id": rid, "route": "adapt",
+                        "creates": [{"tier": "issue", "title": "FEAT-0001", "labels": ["issue", "issue:status:todo"]}]}),
+            encoding="utf-8",
+        )
+        (d / "apply.py").write_text("print('noop')\n", encoding="utf-8")
+        advance.resolve_spec_change_request(ctx, entity, _SR2(approved_by=["alice"]))
+        # entity is the STALE local snapshot (still awaiting_approval); resolve again
+        again = advance.resolve_spec_change_request(ctx, entity, _SR2(approved_by=["alice"]))
+        self.assertIn("stale", again)
+        apply_tasks = [t for t in self.db.tasks_for(rid) if t["action"] == "run_spec_change_script"]
+        self.assertEqual(len(apply_tasks), 1)
 
     def test_rejection_marks_rejected_and_does_not_settle(self) -> None:
         ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
@@ -428,6 +473,7 @@ class SpecChangeRequestSettleTest(_Base):
         self.assertIn("rejected", detail)
         self.assertIn("spec-change:status:rejected", self._remote_labels(rid))
         self.assertNotIn("settled: true", (self.root / "spec" / "api-srs.md").read_text(encoding="utf-8"))
+        self.assertFalse(self._remote_details(rid).is_open)  # request closed on rejection
 
     def test_no_verdict_returns_none(self) -> None:
         ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
@@ -468,6 +514,74 @@ class SpecChangeRequestSettleTest(_Base):
         self.assertTrue(out.success)
         self.assertIn("settled", out.detail)
         self.assertIn("spec-change:status:done", self._remote_labels(rid))
+
+
+class ProposeSpecChangeTest(_Base):
+    """Plan-first gate: propose posts the summary + APR and parks, creating nothing."""
+
+    def _request(self):
+        for lbl in ("spec-change:adapt", "spec-change:status:awaiting_approval"):
+            self.remote.create_label(lbl)
+        return self.remote.add_entry("adapt request", labels=["spec-change:adapt"]).data.id
+
+    def _write_plan(self, ctx, rid, plan):
+        d = spec_change_dir(rid, ctx.storage)
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
+
+    def _plan(self, rid):
+        return {
+            "request_id": rid, "route": "adapt",
+            "apr": {"id": "APR-0001", "summary": "Approve CLI scaffold"},
+            "plan_summary": "## Proposed plan\n- EPIC-0001 scaffold — the CLI shell\n- FEAT-0001 parsing — arg dispatch",
+            "creates": [{"tier": "issue", "title": "FEAT-0001 parsing", "labels": ["issue", "issue:status:todo"]}],
+        }
+
+    def _dispatch_propose(self, ctx, rid):
+        return dispatch(ctx, {
+            "task_id": 1, "action": "propose_spec_change",
+            "post_id": rid, "payload": {"request_id": str(rid), "route": "adapt"},
+        })
+
+    def test_propose_posts_summary_and_parks_without_creating_posts(self) -> None:
+        ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
+        rid = self._request()
+        before = len(self.remote.list_entries(is_open=None).data)
+        self._write_plan(ctx, rid, self._plan(rid))
+        out = self._dispatch_propose(ctx, rid)
+        self.assertTrue(out.success)
+        self.assertIn("spec-change:status:awaiting_approval", self._remote_labels(rid))
+        bodies = [c.body for c in self.remote.get_entry(rid).data.comments]
+        self.assertTrue(any("APR-0001" in b for b in bodies))
+        self.assertTrue(any("Proposed plan" in b for b in bodies))
+        # NOTHING new created on the remote - the whole point of plan-first.
+        self.assertEqual(len(self.remote.list_entries(is_open=None).data), before)
+
+    def test_propose_is_idempotent(self) -> None:
+        ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
+        rid = self._request()
+        self._write_plan(ctx, rid, self._plan(rid))
+        self._dispatch_propose(ctx, rid)
+        n1 = len(self.remote.get_entry(rid).data.comments)
+        out = self._dispatch_propose(ctx, rid)
+        self.assertTrue(out.success)
+        self.assertIn("already posted", out.detail)
+        self.assertEqual(len(self.remote.get_entry(rid).data.comments), n1)  # no double-post
+
+    def test_propose_without_apr_fails(self) -> None:
+        ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
+        rid = self._request()
+        plan = self._plan(rid)
+        plan.pop("apr")
+        self._write_plan(ctx, rid, plan)
+        out = self._dispatch_propose(ctx, rid)
+        self.assertFalse(out.success)
+
+    def test_propose_missing_plan_fails(self) -> None:
+        ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
+        rid = self._request()
+        out = self._dispatch_propose(ctx, rid)
+        self.assertFalse(out.success)
 
 
 if __name__ == "__main__":

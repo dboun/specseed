@@ -31,7 +31,8 @@ def _make_queue_db(storage: Path, tasks: int = 0, errors: int = 0) -> None:
             payload TEXT NOT NULL DEFAULT '{}',
             status TEXT NOT NULL DEFAULT 'pending',
             attempts INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT NOT NULL, last_attempted_at TEXT
+            created_at TEXT NOT NULL, last_attempted_at TEXT,
+            not_before TEXT
         );
         CREATE TABLE task_errors (
             error_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -166,6 +167,103 @@ class CommentCountsTest(unittest.TestCase):
 
     def test_non_list_passthrough(self) -> None:
         self.assertEqual(server._with_comment_counts(self.record, {"x": 1}), {"x": 1})
+
+
+class InFutureTest(unittest.TestCase):
+    def test_none_and_blank_are_not_future(self) -> None:
+        self.assertFalse(server._in_future(None))
+        self.assertFalse(server._in_future(""))
+
+    def test_past_and_future(self) -> None:
+        self.assertFalse(server._in_future("2000-01-01T00:00:00Z"))
+        self.assertTrue(server._in_future("2999-01-01T00:00:00Z"))
+
+    def test_garbage_is_not_future(self) -> None:
+        self.assertFalse(server._in_future("not-a-date"))
+
+
+class RetryTaskTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.storage = Path(self.tmp.name)
+
+    def _seed(self) -> None:
+        db = self.storage / "specseed.db"
+        conn = sqlite3.connect(db)
+        conn.executescript(
+            """
+            CREATE TABLE tasks (
+                task_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                action TEXT NOT NULL, post_id TEXT,
+                payload TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT 'pending',
+                attempts INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL, last_attempted_at TEXT, not_before TEXT
+            );
+            """
+        )
+        rows = [
+            ("failed", "failed", 3, None),
+            ("sched", "pending", 2, "2999-01-01T00:00:00Z"),
+            ("due", "pending", 0, None),
+            ("running", "in_progress", 1, None),
+            ("ok", "success", 1, None),
+        ]
+        for action, status, attempts, nb in rows:
+            conn.execute(
+                "INSERT INTO tasks(action, status, attempts, created_at, not_before) VALUES (?,?,?,?,?)",
+                (action, status, attempts, "2026-01-01T00:00:00Z", nb),
+            )
+        conn.commit()
+        conn.close()
+
+    def _row(self, task_id: int) -> dict:
+        conn = sqlite3.connect(self.storage / "specseed.db")
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
+        conn.close()
+        return dict(row)
+
+    def test_missing_db_raises(self) -> None:
+        with self.assertRaises(RuntimeError):
+            server._retry_task(self.storage, 1)
+
+    def test_failed_task_requeued_attempts_preserved(self) -> None:
+        self._seed()
+        out = server._retry_task(self.storage, 1)
+        self.assertEqual(out["status"], "pending")
+        self.assertFalse(out["pulled_forward"])
+        row = self._row(1)
+        self.assertEqual(row["status"], "pending")
+        self.assertIsNone(row["not_before"])
+        self.assertEqual(row["attempts"], 3)  # attempts preserved (same task)
+
+    def test_scheduled_pending_pulled_forward(self) -> None:
+        self._seed()
+        out = server._retry_task(self.storage, 2)
+        self.assertTrue(out["pulled_forward"])
+        self.assertIsNone(self._row(2)["not_before"])
+
+    def test_due_pending_rejected(self) -> None:
+        self._seed()
+        with self.assertRaises(RuntimeError):
+            server._retry_task(self.storage, 3)
+
+    def test_in_progress_rejected(self) -> None:
+        self._seed()
+        with self.assertRaises(RuntimeError):
+            server._retry_task(self.storage, 4)
+
+    def test_success_rejected(self) -> None:
+        self._seed()
+        with self.assertRaises(RuntimeError):
+            server._retry_task(self.storage, 5)
+
+    def test_unknown_task_raises(self) -> None:
+        self._seed()
+        with self.assertRaises(RuntimeError):
+            server._retry_task(self.storage, 999)
 
 
 class PageArgsTest(unittest.TestCase):

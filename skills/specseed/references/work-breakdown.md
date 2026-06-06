@@ -73,9 +73,10 @@ a valid slice. Slices may skip layers; the rule is observability.
 5. Insert integration issues at merge points.
 6. Body-link both directions (epic <-> tickets, ticket <-> issues, depends-on).
 7. **Run the risk-detection & gating pass** (below) before sprint planning.
-8. Label every post: tier + status. Epics/tickets at `:status:todo`; **issues at
-   `:status:awaiting_approval`** (the approval gate, see `spec-change-protocol.md`).
-   New issues never start `todo`.
+8. Label every post: tier + status. Epics/tickets AND **issues at `:status:todo`**
+   in `plan.json.creates` — but nothing is created until the plan is approved
+   (plan-first; the spec-change request is the gate, see `spec-change-protocol.md`).
+   On approval the issues are created already-claimable.
 
 Ticket/issue/epic prose gets the humanizer pass (neutral, concrete, no em dashes).
 Labels and req ids are machine text, exempt.

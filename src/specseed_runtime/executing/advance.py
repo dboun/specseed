@@ -42,7 +42,11 @@ from specseed_runtime.entities.entity_base import (
 from specseed_runtime.executing import platform_log
 from specseed_runtime.executing import relationships
 from specseed_runtime.platform_identity import platform_comment
-from specseed_runtime.scheduling.spec_change import spec_change_dir
+from specseed_runtime.scheduling.spec_change import (
+    DEFAULT_SCRIPT_NAME,
+    enqueue_spec_change_run,
+    spec_change_dir,
+)
 
 
 # Hidden marker stamped on every review comment so attempts can be counted from
@@ -389,6 +393,60 @@ def _settle_doc(path: Path, when: str) -> bool:
     return True
 
 
+_APPLY_KEYS = ("creates", "edits", "labels", "comments", "closes", "deletes")
+
+
+def _remote_spec_change_status(ctx: Any, post_id: Any) -> Optional[str]:
+    """The request's CURRENT ``spec-change:status:*`` suffix from the remote, or None."""
+    try:
+        res = ctx.remote.get_entry(post_id)
+    except Exception:
+        return None
+    data = getattr(res, "data", None)
+    if data is None:
+        return None
+    for lbl in getattr(data, "labels", []) or []:
+        name = str(getattr(lbl, "name", lbl))
+        if name.startswith(_SPEC_CHANGE_STATUS_PREFIX):
+            return name[len(_SPEC_CHANGE_STATUS_PREFIX):]
+    return None
+
+
+def _plan_route(ctx: Any, request_id: Any) -> Optional[str]:
+    plan_path = spec_change_dir(str(request_id), ctx.storage) / "plan.json"
+    try:
+        return json.loads(plan_path.read_text(encoding="utf-8")).get("route")
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def _enqueue_apply_on_approval(ctx: Any, request_id: Any, route: Optional[str]) -> bool:
+    """On approval, queue the request's deferred ``apply.py`` (the doer).
+
+    Plan-first: ``apply.py`` is NOT run before approval - the propose step only
+    posted the plan summary. Now that a human approved, run it so the epics /
+    tickets / issues get created on the remote. Returns True if a run was queued
+    (the script exists AND the plan has remote mutations to make), so the caller
+    can decide whether to close the request here (nothing to apply) or leave it
+    open for ``apply.py`` to finalize.
+    """
+    script = spec_change_dir(str(request_id), ctx.storage) / DEFAULT_SCRIPT_NAME
+    if not script.exists():
+        return False
+    plan_path = spec_change_dir(str(request_id), ctx.storage) / "plan.json"
+    try:
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        plan = {}
+    if not any(plan.get(key) for key in _APPLY_KEYS):
+        return False  # spec-only run: nothing to create/edit on the remote
+    if not _can_write(ctx):
+        return False
+    enqueue_spec_change_run(script, request_id=request_id, route=route, db=ctx.db)
+    platform_log.log_event("spec_change_apply_enqueued", post_id=request_id, route=route)
+    return True
+
+
 def _settle_docs_for_request(ctx: Any, request_id: Any) -> list[str]:
     """Read ``plan.json.settle_docs`` for the request and stamp each doc. Returns paths done."""
     plan_path = spec_change_dir(request_id, ctx.storage) / "plan.json"
@@ -423,24 +481,46 @@ def resolve_spec_change_request(ctx: Any, entity: Any, state_result: Any) -> Opt
         return None
     if not _can_write(ctx):
         return None
+    # Remote-truth guard: the local snapshot is one frame for a whole drain, so two
+    # queued approval events for one request (a 👍 reaction AND an approve comment)
+    # both see it `awaiting_approval`. Re-read the remote: if an earlier task already
+    # resolved it, bow out - otherwise we would settle twice and, worse, enqueue the
+    # creating apply.py a SECOND time (duplicate posts).
+    current = _remote_spec_change_status(ctx, entity.post_id)
+    if current in ("done", "rejected"):
+        return "stale spec-change approval; request already {0}".format(current)
     if approved:
         approver = approved[0]
         settled = _settle_docs_for_request(ctx, entity.post_id)
         _set_spec_change_status(ctx, entity, "done")
-        note = (
-            "Approved by {0}. Spec settled ({1} doc(s)): {2}. Request done.".format(
-                approver, len(settled), ", ".join(settled) or "none"
-            )
+        route = _plan_route(ctx, entity.post_id)
+        # Plan-first: the approved plan's apply.py creates the work NOW (nothing
+        # was created before approval). When there is work to apply, apply.py owns
+        # finalizing + closing the request; a spec-only run (nothing to apply) we
+        # close here so the request doesn't linger open.
+        apply_enqueued = _enqueue_apply_on_approval(ctx, entity.post_id, route)
+        tail = "Creating the approved work now." if apply_enqueued else "Request done."
+        _comment(
+            ctx, entity.post_id,
+            "Approved by {0}. Spec settled ({1} doc(s)): {2}. {3}".format(
+                approver, len(settled), ", ".join(settled) or "none", tail
+            ),
         )
-        _comment(ctx, entity.post_id, note)
+        if not apply_enqueued:
+            _close(ctx, entity.post_id)
         platform_log.log_event(
-            "spec_change_settled", post_id=entity.post_id, approver=approver, docs=settled
+            "spec_change_settled", post_id=entity.post_id, approver=approver,
+            docs=settled, apply_enqueued=apply_enqueued,
         )
-        return "spec-change approved -> settled ({0} docs) + done".format(len(settled))
+        return "spec-change approved -> settled ({0} docs); {1}".format(
+            len(settled), "apply enqueued" if apply_enqueued else "done (closed)"
+        )
     rejecter = rejected[0]
+    # Rejected before any work exists (plan-first): nothing to tear down, just close.
     _set_spec_change_status(ctx, entity, "rejected")
-    _comment(ctx, entity.post_id, "Rejected by {0}; request rejected.".format(rejecter))
-    return "spec-change rejected"
+    _comment(ctx, entity.post_id, "Rejected by {0}; request rejected. No work was created.".format(rejecter))
+    _close(ctx, entity.post_id)
+    return "spec-change rejected (closed)"
 
 
 def _review_summary(stdout: str, limit: int = 1500) -> str:

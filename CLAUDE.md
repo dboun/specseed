@@ -117,11 +117,17 @@ tests/integration/python/            # opt-in integration tests (marker: integra
   platform comments carry the `specseed: ` prefix (`platform_identity.py`); `sync_to_db` drops
   platform-own comments so the bot never re-triggers on its own words (`platform_username` config).
   `executing/inflight.py` ledgers child pids; startup kills orphans + requeues stranded `in_progress`.
-- **settle-on-approval** (`executing/advance.resolve_spec_change_request`, wired in `dispatch._run_work`) -
-  the spec-change REQUEST parks `spec-change:status:awaiting_approval`; when an approver 👍s / `approve`s it,
-  the runtime stamps `settled: true` + `settled_at` on the docs the worker listed in `plan.json.settle_docs`
-  and moves the request to `done`. Deterministic, no agent. The skill never writes `settled`; adapt is the
-  only route that reopens a settled doc.
+- **plan-first approval / settle-on-approval** (`executing/dispatch.propose_spec_change` +
+  `advance.resolve_spec_change_request`, wired in `dispatch._run_work`) - NOTHING is created on the tracker
+  before approval. A work-creating / spec-settling run enqueues `propose_spec_change` (`scheduling/spec_change`);
+  the runtime posts `plan.json.plan_summary` + the `APR-NNNN` request and parks the REQUEST
+  `spec-change:status:awaiting_approval` (creates no posts). On 👍/`approve` the runtime stamps
+  `settled: true`+`settled_at` on `plan.json.settle_docs`, moves the request to `done`, and ENQUEUES the worker's
+  deferred `apply.py` (`run_spec_change_script`) which now creates the epics/tickets/issues (issues born `todo`);
+  apply.py closes the request (`plan.json.closes`). A spec-only run with nothing to apply closes in resolve.
+  Reject -> closed, nothing created. Deterministic, no agent. The skill never writes `settled`; adapt is the only
+  route that reopens a settled doc. A mechanical run (clarification round, sprint label shuffle) skips propose and
+  enqueues `run_spec_change_script` directly.
 
 ## Testing (enforced)
 

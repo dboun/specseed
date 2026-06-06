@@ -104,6 +104,19 @@ def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
+def _in_future(ts: object) -> bool:
+    """True if an ISO-Z timestamp is still ahead of now (a scheduled retry)."""
+    if not ts:
+        return False
+    try:
+        dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt > datetime.now(timezone.utc)
+
+
 def _plain(value: object) -> object:
     if is_dataclass(value):
         return asdict(value)
@@ -229,7 +242,7 @@ def _read_tasks(storage: str | Path, queue: tuple[int, int] = (0, 50), errors: t
             out["counts"][r["status"]] = r["n"]
         out["tasks"]["total"] = sum(out["counts"].values())
         rows = conn.execute(
-            "SELECT task_id, action, post_id, status, attempts, created_at, last_attempted_at "
+            "SELECT task_id, action, post_id, status, attempts, created_at, last_attempted_at, not_before "
             "FROM tasks ORDER BY task_id DESC LIMIT ? OFFSET ?",
             (queue[1], queue[0]),
         ).fetchall()
@@ -249,6 +262,34 @@ def _read_tasks(storage: str | Path, queue: tuple[int, int] = (0, 50), errors: t
     except sqlite3.Error as exc:
         out["db_error"] = str(exc)
     return out
+
+
+def _retry_task(storage: str | Path, task_id: object) -> dict:
+    """Make a stuck task runnable now; the scheduler picks it up next claim.
+
+    Two cases, one operation: a terminal ``failed`` task is re-queued, and a
+    ``pending`` task still waiting on a future ``not_before`` (a scheduled
+    backoff retry) is pulled forward by clearing it. ``attempts`` is preserved,
+    so this is the SAME task to the recovery machinery - one more shot, while
+    its ``platform_error`` post and the "close to cancel" switch keep working
+    (a success closes the post via ``on_recovered``; a fresh failure re-enters
+    recovery exactly as it would have). Any other state is rejected.
+    """
+    from specseed_runtime.db.database import Database, STATUS_FAILED, STATUS_PENDING
+
+    db_path = _queue_db(storage)
+    if not db_path.exists():
+        raise RuntimeError("no work queue yet")
+    db = Database(db_path)
+    task = db.get_task(int(task_id))
+    if task is None:
+        raise RuntimeError(f"task {task_id} not found")
+    status = task.get("status")
+    scheduled = status == STATUS_PENDING and _in_future(task.get("not_before"))
+    if status != STATUS_FAILED and not scheduled:
+        raise RuntimeError(f"task {task_id} is '{status}'; only failed or scheduled tasks can be retried")
+    db.requeue(int(task_id), not_before=None)
+    return {"task_id": int(task_id), "status": STATUS_PENDING, "pulled_forward": scheduled}
 
 
 def _read_log(path: Path, offset: int = 0, limit: int = 100) -> dict:
@@ -491,6 +532,9 @@ class Handler(BaseHTTPRequestHandler):
         if tail == ["runner"] and self.command == "POST":
             self._runner(record)
             return
+        if tail[:1] == ["tasks"]:
+            self._tasks(record, tail[1:])
+            return
         if tail == ["config"]:
             if self.command == "GET":
                 self._get_config(record)
@@ -561,6 +605,13 @@ class Handler(BaseHTTPRequestHandler):
                 },
             }
         )
+
+    def _tasks(self, record: dict, sub: list[str]) -> None:
+        # /api/repos/<id>/tasks/<task_id>/retry (POST) - re-queue a failed/scheduled task
+        if len(sub) == 2 and sub[1] == "retry" and self.command == "POST":
+            self._json({"ok": True, "data": _retry_task(record["storage"], sub[0])})
+            return
+        self._json({"ok": False, "error": "not found"}, status=404)
 
     def _runner(self, record: dict) -> None:
         body = self._body()

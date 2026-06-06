@@ -119,11 +119,15 @@ Read `references/spec-change-protocol.md` first. The shape is always:
    renders from the work posts. A status swap is `remove_entry_label` then
    `add_entry_label`. See the protocol for the canonical header and the
    per-provider notes (GitHub cannot hard-delete issues, so close instead).
-4. **Enqueue it (runner mode).** Call `scheduling/spec_change.enqueue_spec_change_run(...)`.
-   The scheduler (`specseed_runtime/executing/`) drains the queue and runs the
-   script as a permission-gated subprocess. Your job ends at the enqueue: do not
-   run the script yourself. **Chat mode:** skip the enqueue — bundle the artifacts
-   into a zip and offer it for download instead (`references/chat-mode.md`).
+4. **Enqueue it (runner mode).** A run that plans work or settles spec docs calls
+   `scheduling/spec_change.enqueue_spec_change_propose(...)` — the runtime posts the
+   plan summary + `APR-NNNN`, parks the request, and runs your `apply.py` only on
+   approval (plan-first: nothing is created before then). A mechanical run that
+   creates no work and settles no doc (e.g. a clarification round, a sprint label
+   shuffle) calls `enqueue_spec_change_run(...)` instead — `apply.py` runs straight
+   away. Either way the scheduler drains the queue under permission gating; your job
+   ends at the enqueue, never run the script yourself. **Chat mode:** skip the enqueue
+   — bundle the artifacts into a zip and offer it for download (`references/chat-mode.md`).
 
 ## Doc style (spec prose only)
 
@@ -141,16 +145,15 @@ reference text: no injected voice, opinions, or first person.
 
 ## Approval before work (mandatory, every route)
 
-You never put new work into a state an impl agent can claim. **A run is not
-finished until it posts an approval request and parks it.** An issue becomes
-claimable the instant it is `issue:status:todo`; so every issue you newly spec is
-born **`issue:status:awaiting_approval`**, and you post one `APR-NNNN`
-approval-request comment naming the batch, then swap the request to
-`spec-change:status:awaiting_approval` and stop. A human approves (`approve
-APR-NNNN` or 👍 on the issue) before any code work begins; the executor then flips
-the issue to `todo`. This is a status gate, not a promise. It is **not**
-epic-gating. Full contract + helpers in `references/spec-change-protocol.md`
-("Approval gate (APR-NNNN)").
+**Plan-first: nothing is created on the tracker until the human approves the plan.**
+A run that creates work (or settles spec docs) does not create posts — it writes the
+plan, then enqueues a **proposal** and stops. The runtime posts a human-readable
+`plan_summary` + one `APR-NNNN` request on the spec-change post and parks it
+`spec-change:status:awaiting_approval`. A human approves (`approve APR-NNNN` or 👍 on
+the request) or rejects (`reject` / 👎). Only on approval does the runtime settle the
+docs and run your `apply.py`, which creates the epics/tickets/issues — issues born
+`issue:status:todo` (the plan approval was the gate; no per-issue gate). Full contract
++ helpers in `references/spec-change-protocol.md` ("Approval gate (APR-NNNN)").
 
 ## Async clarification (the question path in runner mode)
 
@@ -185,10 +188,11 @@ spec. Chat mode asks the same round live (`references/chat-mode.md`).
   fail loudly. The one provider gap: GitHub issues cannot be hard-deleted, so
   use `set_entry_closed` there (`delete_entry` is fine on local and GitLab).
 - **One request, one run.** Do the route, write the script, enqueue, stop.
-- **No work without approval.** New issues are created `:status:awaiting_approval`,
-  never `:status:todo`. Every run that creates issues posts an `APR-NNNN` request
-  and parks the request `awaiting_approval`. You never release claimable work
-  yourself. (See "Approval before work".)
+- **No posts before approval.** A run that creates work or settles docs creates
+  NOTHING on the tracker — it enqueues a **proposal** (`enqueue_spec_change_propose`),
+  and the runtime runs your `apply.py` only after a human approves the `APR-NNNN`
+  plan. Issues are then born `:status:todo`. You never create work posts or release
+  claimable work yourself. (See "Approval before work".)
 
 ## Action gates (awareness only)
 

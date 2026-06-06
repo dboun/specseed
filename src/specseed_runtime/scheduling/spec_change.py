@@ -43,6 +43,16 @@ from specseed_runtime.tracking.resolve_remote import default_storage_dir
 # cancellation, then complete()/requeue()s the task.
 SPEC_CHANGE_ACTION = "run_spec_change_script"
 
+# The queue action a *plan-first proposal* is enqueued under. Deterministic, no
+# agent, no script: the executor (``executing/dispatch.propose_spec_change``)
+# reads the request's ``plan.json``, posts the human-readable ``plan_summary`` +
+# the ``APR-NNNN`` approval request on the request post, and parks it
+# ``spec-change:status:awaiting_approval``. NO remote work posts are created -
+# that is deferred to ``apply.py``, which the runtime enqueues only once a human
+# approves (``advance.resolve_spec_change_request``). This is the gate: nothing
+# is created on the tracker before the plan is approved.
+SPEC_CHANGE_PROPOSE_ACTION = "propose_spec_change"
+
 # Default script filename the skill writes into each spec-change dir.
 DEFAULT_SCRIPT_NAME = "apply.py"
 
@@ -99,4 +109,25 @@ def enqueue_spec_change_run(
         SPEC_CHANGE_ACTION,
         post_id=request_id,
         payload=payload,
+    )
+
+
+def enqueue_spec_change_propose(
+    request_id: str | int,
+    route: Optional[str] = None,
+    db: Optional[Database] = None,
+) -> int:
+    """Enqueue a plan-first PROPOSAL for a spec-change request. Returns the task id.
+
+    A work-creating / spec-settling run emits ``plan.json`` (with ``plan_summary``
+    + ``apr``) and ``apply.py``, then calls THIS instead of running ``apply.py``.
+    The executor posts the summary + approval request and parks the request; the
+    deferred ``apply.py`` runs only on approval. ``post_id`` is the request so
+    sync teardown/supersession can find the task.
+    """
+    db = db or Database.instance()
+    return db.enqueue(
+        SPEC_CHANGE_PROPOSE_ACTION,
+        post_id=request_id,
+        payload={"request_id": str(request_id), "route": route},
     )

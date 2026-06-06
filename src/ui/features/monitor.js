@@ -129,12 +129,28 @@ export function createMonitor({ repo, ctx, refreshTopbar }) {
     }
   }
 
+  // A failed task can be retried; a pending task still waiting on a future
+  // not_before (a scheduled backoff retry) can be pulled forward. A plain
+  // pending task needs no button - the scheduler claims it on the next tick.
+  function retryButton(t) {
+    if (t.status === "failed") {
+      return `<button class="btn btn-ghost sm" data-retry-task="${escapeHtml(t.task_id)}" title="re-queue this task to run now">Retry</button>`;
+    }
+    const scheduled = t.status === "pending" && t.not_before && new Date(t.not_before).getTime() > Date.now();
+    if (scheduled) {
+      return `<button class="btn btn-ghost sm" data-retry-task="${escapeHtml(t.task_id)}" title="scheduled retry at ${escapeHtml(
+        formatTime(t.not_before)
+      )} — run now instead">Run now</button>`;
+    }
+    return "";
+  }
+
   function queueTable() {
     const tasks = data?.queue?.items || [];
     if (!tasks.length) return `<div class="empty-state">Queue is empty.</div>`;
     return `
       <div class="table-wrap"><table class="table">
-        <thead><tr><th>#</th><th>action</th><th>post</th><th>status</th><th>att.</th><th>last</th></tr></thead>
+        <thead><tr><th>#</th><th>action</th><th>post</th><th>status</th><th>att.</th><th>last</th><th></th></tr></thead>
         <tbody>
           ${tasks
             .map(
@@ -146,6 +162,7 @@ export function createMonitor({ repo, ctx, refreshTopbar }) {
               <td><span class="tag tag-${escapeHtml(t.status)}">${escapeHtml(STATUS_LABEL[t.status] || t.status)}</span></td>
               <td>${escapeHtml(t.attempts)}</td>
               <td class="muted">${escapeHtml(t.last_attempted_at ? formatTime(t.last_attempted_at) : "—")}</td>
+              <td class="row-actions">${retryButton(t)}</td>
             </tr>`
             )
             .join("")}
@@ -304,6 +321,21 @@ export function createMonitor({ repo, ctx, refreshTopbar }) {
       try {
         await api.runner(repo.id, action.dataset.runnerAction);
         toast(`runner: ${action.dataset.runnerAction}`, "ok");
+        await refresh();
+      } catch (err) {
+        ctx.onError(err);
+      } finally {
+        busy = false;
+      }
+      return;
+    }
+    const retry = event.target.closest("[data-retry-task]");
+    if (retry && !retry.disabled) {
+      retry.disabled = true;
+      busy = true;
+      try {
+        const res = await api.retryTask(repo.id, retry.dataset.retryTask);
+        toast(res?.pulled_forward ? "retry pulled forward" : "task re-queued", "ok");
         await refresh();
       } catch (err) {
         ctx.onError(err);
