@@ -38,10 +38,18 @@ def _now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def _looks_dev(here: Path, home: Path) -> bool:
+    """Pure dev-checkout test (split out for unit tests). ``here`` = registry.py,
+    ``home`` = user home. Dev = ``<repo>/src/specseed_runtime/`` shape AND not under
+    ``~/.specseed`` - install.sh copies the same layout there."""
+    if not (here.parent.name == "specseed_runtime" and here.parent.parent.name == "src"):
+        return False
+    return not here.resolve().is_relative_to((home / ".specseed").resolve())
+
+
 def is_dev() -> bool:
-    """True when running from a dev checkout: this file at ``<repo>/src/specseed_runtime/``."""
-    here = Path(__file__).resolve()
-    return here.parent.name == "specseed_runtime" and here.parent.parent.name == "src"
+    """True when running from a dev checkout, never for the installed engine."""
+    return _looks_dev(Path(__file__).resolve(), Path.home())
 
 
 def dev_root() -> Path:

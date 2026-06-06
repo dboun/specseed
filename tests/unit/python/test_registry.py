@@ -67,6 +67,19 @@ class DevModeTest(unittest.TestCase):
         # registry.py lives at <repo>/src/specseed_runtime/ here.
         self.assertTrue(registry.is_dev())
 
+    def test_installed_copy_is_not_dev(self) -> None:
+        # install.sh copies the same src/specseed_runtime layout to ~/.specseed.
+        here = Path("/home/u/.specseed/src/specseed_runtime/registry.py")
+        self.assertFalse(registry._looks_dev(here, Path("/home/u")))
+
+    def test_checkout_outside_install_dir_is_dev(self) -> None:
+        here = Path("/home/u/work/specseed/src/specseed_runtime/registry.py")
+        self.assertTrue(registry._looks_dev(here, Path("/home/u")))
+
+    def test_wrong_layout_is_not_dev(self) -> None:
+        here = Path("/opt/specseed/specseed_runtime/registry.py")  # no src/ parent
+        self.assertFalse(registry._looks_dev(here, Path("/home/u")))
+
     def test_dev_home_is_repo_data_dev(self) -> None:
         with mock.patch.dict(os.environ):
             os.environ.pop("SPECSEED_HOME", None)
