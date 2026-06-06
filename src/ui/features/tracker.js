@@ -1,5 +1,6 @@
 import { api } from "./api.js";
 import { closeModal, escapeHtml, formatTime, modal, reactionIcon, toast } from "../ui/components.js";
+import { renderMarkdown } from "../ui/markdown.js";
 
 const PAGE_SIZE = 8;
 
@@ -192,7 +193,7 @@ export function createTracker({ repo, ctx }) {
       <div class="drawer">
         ${drawerHead(post)}
         <div class="managed-note">Managed dashboard · read-only${isControl(post) ? " · operator comments allowed" : ""}</div>
-        <pre class="post-body">${escapeHtml(post.body || "")}</pre>
+        <div class="post-body">${renderMarkdown(post.body || "")}</div>
         ${commentsBlock(post, isControl(post))}
       </div>`;
   }
@@ -215,10 +216,10 @@ export function createTracker({ repo, ctx }) {
       </div>`;
   }
 
-  // read view: title lives bold in the drawer head; body is plain text
+  // read view: title lives bold in the drawer head; body renders as markdown
   function postView(post) {
     return `
-      <pre class="post-body">${escapeHtml(post.body || "")}</pre>
+      <div class="post-body">${renderMarkdown(post.body || "")}</div>
       <div class="button-row">
         <button type="button" class="btn btn-ghost" data-edit-post>Edit</button>
         <button type="button" class="btn btn-ghost" data-toggle-post>${post.is_open ? "Close" : "Reopen"}</button>
@@ -258,7 +259,7 @@ export function createTracker({ repo, ctx }) {
     return `
       <article class="comment">
         <div class="comment-meta">${escapeHtml(comment.author || "unknown")} · ${escapeHtml(formatTime(comment.updated_at || comment.created_at))}</div>
-        <div class="comment-body">${escapeHtml(comment.body || "")}</div>
+        <div class="comment-body">${renderMarkdown(comment.body || "")}</div>
         <div class="reaction-strip sm">${reactionButtons(comment.reactions, "comment", comment.id)}</div>
       </article>`;
   }
