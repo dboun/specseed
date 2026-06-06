@@ -1,5 +1,5 @@
 import { api } from "./api.js";
-import { closeModal, escapeHtml, modal, relativeTime, toast } from "../ui/components.js";
+import { closeModal, escapeHtml, formatTime, modal, toast } from "../ui/components.js";
 
 const POLL_MS = 3000;
 
@@ -56,7 +56,7 @@ export function createMonitor({ repo, ctx, refreshTopbar }) {
       ["poll", r.poll_interval_seconds != null ? `${r.poll_interval_seconds}s` : "—"],
       // last poll is only meaningful while the runner is live; a stopped runner's
       // value is frozen and would otherwise just keep aging from its last sync.
-      ["last poll", alive && r.last_poll_at ? relativeTime(r.last_poll_at) : "—"],
+      ["last poll", alive && r.last_poll_at ? formatTime(r.last_poll_at) : "—"],
       ["current task", r.current_task_id != null ? `#${r.current_task_id}` : "idle"],
       ["pid (repo)", r.pid || "—"],
       ["pid (specseed)", env.pid || "—"],
@@ -68,7 +68,7 @@ export function createMonitor({ repo, ctx, refreshTopbar }) {
     // affordance so it can be pasted into another device's browser.
     if (env.lan_ip && env.port) {
       chips += `<button type="button" class="meta-chip copy" data-copy-addr title="copy this machine's LAN address">
-        <b>addr</b> <span class="copy-hint">click to copy</span></button>`;
+        <b>ip+port</b> <span class="copy-hint">click to copy</span></button>`;
     }
     return chips;
   }
@@ -109,7 +109,7 @@ export function createMonitor({ repo, ctx, refreshTopbar }) {
               <td>${t.post_id ? "#" + escapeHtml(t.post_id) : "—"}</td>
               <td><span class="tag tag-${escapeHtml(t.status)}">${escapeHtml(t.status)}</span></td>
               <td>${escapeHtml(t.attempts)}</td>
-              <td class="muted">${escapeHtml(t.last_attempted_at ? relativeTime(t.last_attempted_at) : "—")}</td>
+              <td class="muted">${escapeHtml(t.last_attempted_at ? formatTime(t.last_attempted_at) : "—")}</td>
             </tr>`
             )
             .join("")}
@@ -128,7 +128,7 @@ export function createMonitor({ repo, ctx, refreshTopbar }) {
         return `
           <div class="error-row">
             <div class="error-main">
-              <div class="error-meta">task #${escapeHtml(e.task_id)}${ctxbits ? " · " + escapeHtml(ctxbits) : ""} · ${escapeHtml(relativeTime(e.executed_at))}</div>
+              <div class="error-meta">task #${escapeHtml(e.task_id)}${ctxbits ? " · " + escapeHtml(ctxbits) : ""} · ${escapeHtml(formatTime(e.executed_at))}</div>
               <div class="error-msg mono">${escapeHtml(head) || "(no message)"}</div>
             </div>
             <button class="btn btn-ghost sm" data-error-details="${escapeHtml(e.error_id)}" title="full error">${multiline ? "Details" : "View"}</button>
@@ -148,7 +148,7 @@ export function createMonitor({ repo, ctx, refreshTopbar }) {
         ${row("action", e.action || "—")}
         ${row("post", e.post_id ? "#" + e.post_id : "—")}
         ${row("attempts", e.attempts ?? "—")}
-        ${row("when", e.executed_at || "—")}
+        ${row("when", formatTime(e.executed_at))}
       </div>
       <pre class="error-full mono">${escapeHtml(e.message || "(no message)")}</pre>
       <div class="button-row">

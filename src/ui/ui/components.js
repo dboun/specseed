@@ -48,6 +48,15 @@ export function relativeTime(value) {
   return `${Math.round(hrs / 24)}d ago`;
 }
 
+// Absolute local time, "YYYY-MM-DD HH:MM:SS" (browser timezone, not UTC).
+export function formatTime(value) {
+  if (!value) return "—";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
 const REACTION_ICONS = {
   eyes: "\u{1F440}",
   heart: "❤️",

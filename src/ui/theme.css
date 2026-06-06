@@ -391,6 +391,13 @@ textarea { resize: vertical; min-height: 70px; }
   .content { padding: 16px; }
   .topbar { padding: 10px 14px; }
   .switcher-menu { min-width: 220px; }
+  /* Mobile: an open post takes over the content area so you don't scroll past
+     the whole list. The global top bar + tabs stay (they're outside this root). */
+  .tracker-root.detail .tab-head,
+  .tracker-root.detail .quick-toggles,
+  .tracker-root.detail .filters,
+  .tracker-root.detail .post-list { display: none; }
+  .tracker-root.detail .drawer { min-height: calc(100vh - 140px); }
 }
 @media (max-width: 520px) {
   .stat-grid { grid-template-columns: 1fr 1fr; }

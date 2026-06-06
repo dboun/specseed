@@ -1,5 +1,5 @@
 import { api } from "./api.js";
-import { closeModal, escapeHtml, modal, reactionIcon, relativeTime, toast } from "../ui/components.js";
+import { closeModal, escapeHtml, formatTime, modal, reactionIcon, toast } from "../ui/components.js";
 
 const PAGE_SIZE = 8;
 
@@ -62,6 +62,7 @@ export function createTracker({ repo, ctx }) {
   function html() {
     if (state.external) return externalHtml();
     return `
+    <div class="tracker-root ${state.selected ? "detail" : ""}" data-tracker-root>
       <div class="tab-head">
         <h1>Tracker</h1>
         <div class="tab-head-actions">
@@ -74,7 +75,8 @@ export function createTracker({ repo, ctx }) {
       <div class="tracker-grid">
         <div class="post-list" data-post-list>${listHtml()}</div>
         <aside class="drawer-host" data-drawer>${drawerHtml()}</aside>
-      </div>`;
+      </div>
+    </div>`;
   }
 
   function externalHtml() {
@@ -151,7 +153,7 @@ export function createTracker({ repo, ctx }) {
           <span class="state-dot ${post.is_open ? "open" : "closed"}"></span>
         </div>
         <div class="post-title">${escapeHtml(post.title)}</div>
-        <div class="post-meta">${escapeHtml(post.author || "unknown")} · ${escapeHtml(relativeTime(post.updated_at))}</div>
+        <div class="post-meta">${escapeHtml(post.author || "unknown")} · ${escapeHtml(formatTime(post.updated_at))}</div>
         <div class="chip-row">${labels.map((l) => `<span class="chip sm">${escapeHtml(l.name)}</span>`).join("")}</div>
       </article>`;
   }
@@ -170,7 +172,7 @@ export function createTracker({ repo, ctx }) {
         <button class="icon-btn" data-close-drawer aria-label="close">✕</button>
       </div>
       <h2 class="drawer-title">#${escapeHtml(post.id)} ${escapeHtml(post.title)}</h2>
-      <div class="post-meta">by ${escapeHtml(post.author || "unknown")} · updated ${escapeHtml(relativeTime(post.updated_at))}</div>`;
+      <div class="post-meta">by ${escapeHtml(post.author || "unknown")} · updated ${escapeHtml(formatTime(post.updated_at))}</div>`;
   }
 
   function commentsBlock(post, composer) {
@@ -226,7 +228,7 @@ export function createTracker({ repo, ctx }) {
   function commentHtml(comment) {
     return `
       <article class="comment">
-        <div class="comment-meta">${escapeHtml(comment.author || "unknown")} · ${escapeHtml(relativeTime(comment.updated_at || comment.created_at))}</div>
+        <div class="comment-meta">${escapeHtml(comment.author || "unknown")} · ${escapeHtml(formatTime(comment.updated_at || comment.created_at))}</div>
         <div class="comment-body">${escapeHtml(comment.body || "")}</div>
         <div class="reaction-strip sm">${reactionButtons(comment.reactions, "comment", comment.id)}</div>
       </article>`;
@@ -254,6 +256,9 @@ export function createTracker({ repo, ctx }) {
   function repaintDrawer() {
     const host = document.querySelector("[data-drawer]");
     if (host) host.innerHTML = drawerHtml();
+    // On mobile the detail view takes over the content area (CSS hides the list);
+    // toggling this class drives that. Desktop layout ignores it.
+    document.querySelector("[data-tracker-root]")?.classList.toggle("detail", !!state.selected);
   }
 
   async function openPost(id) {
