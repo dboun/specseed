@@ -92,6 +92,23 @@ def build_scheduler(
         runner = build_runner_chains(config)
     elif not isinstance(runner, RunnerChains):
         runner = RunnerChains.single(runner)
+    # Exactly one runner per storage. A live owner means THIS start is the
+    # mistake (busy runner misread as dead) - refuse, or the reclaim below
+    # would kill the live owner's in-flight agent.
+    owner = runner_control.read_runner_status(storage_dir)
+    owner_pid = owner.get("pid")
+    if (
+        owner_pid
+        and int(owner_pid) != os.getpid()
+        and runner_control.pid_is_runner(owner_pid)
+    ):
+        platform_log.log_event(
+            "run_refused_storage_owned", owner_pid=owner_pid, storage=str(storage_dir)
+        )
+        raise RuntimeError(
+            f"another runner (pid {owner_pid}) already owns {storage_dir}; "
+            "stop it first (specseed stop) or wait for it to finish"
+        )
     db = db or Database.instance(storage_db_path("specseed.db", storage_dir))
     # A prior runner may have died mid-task: kill its orphaned children and
     # return its in_progress rows to pending BEFORE the loop starts draining.

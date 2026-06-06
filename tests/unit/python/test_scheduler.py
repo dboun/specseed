@@ -297,6 +297,54 @@ class SchedulerTest(unittest.TestCase):
         self.assertTrue(status.get("alive"))
 
 
+class HeartbeatDuringTaskTest(unittest.TestCase):
+    """The heartbeat keeps stamping while a long task blocks the loop thread -
+    a busy runner must never read as dead (the operator would 'restart' it and
+    the new process would kill the live agent)."""
+
+    def test_worker_wait_loop_heartbeats(self) -> None:
+        cancellation.reset()
+        self.addCleanup(cancellation.reset)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+
+        def slow(call):
+            time.sleep(0.3)
+            return AgentResult(ok=True, returncode=0)
+
+        db = Database(db_path=root / "queue.db")
+        remote = TrackingRemoteLocal(db_path=root / "remote.db", author="bot")
+        local = TrackingLocal(db_path=root / "local.db", author="agent")
+        remote.create_label("spec-change:adapt")
+        remote.add_entry("Adapt", labels=["spec-change:adapt"])
+        sched = Scheduler(
+            db=db,
+            runner=FakeAgentRunner(side_effect=slow),
+            config=_config(),
+            storage=root / "storage",
+            repo_root=root,
+            remote=remote,
+            local=local,
+            poll_interval=0.0,
+            tick=0.05,
+            status_file=root / "storage" / "runner.json",
+            heartbeat_interval=0.05,
+        )
+        calls = {"n": 0}
+        original = sched._heartbeat
+
+        def counting(**kw):
+            calls["n"] += 1
+            return original(**kw)
+
+        sched._heartbeat = counting
+        sched.run_once()
+        # the wait loop ticked the heartbeat repeatedly during the 0.3s run
+        self.assertGreaterEqual(calls["n"], 3)
+        self.assertTrue((root / "storage" / "runner.json").exists())
+
+
 class FailureRecoveryEndToEndTest(SchedulerTest):
     """A failing agent task ends up: retried-with-backoff + platform_error post."""
 

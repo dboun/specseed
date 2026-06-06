@@ -115,6 +115,52 @@ class BuildSchedulerMigratesStorageTest(unittest.TestCase):
             )
 
 
+class BuildSchedulerRefusesOwnedStorageTest(unittest.TestCase):
+    """One runner per storage: a live owner refuses a second build (whose
+    startup reclaim would kill the owner's in-flight agent)."""
+
+    def _stale_owner(self, storage: Path, pid: int = 4242) -> None:
+        storage.mkdir(parents=True, exist_ok=True)
+        (storage / "runner.json").write_text(
+            json.dumps(
+                {"pid": pid, "state": "running", "updated_at": "2000-01-01T00:00:00Z"}
+            ),
+            encoding="utf-8",
+        )
+
+    def test_live_owner_refuses_second_runner(self) -> None:
+        from specseed_runtime.executing import runner_control
+
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = Path(tmp) / ".specseed" / "storage"
+            self._stale_owner(storage)
+            with mock.patch.object(runner_control, "pid_is_runner", return_value=True):
+                with self.assertRaises(RuntimeError) as caught:
+                    run.build_scheduler(
+                        storage=storage,
+                        repo_root=tmp,
+                        db=Database(db_path=Path(tmp) / "queue.db"),
+                        runner=mock.Mock(),
+                    )
+            self.assertIn("already owns", str(caught.exception))
+
+    def test_dead_owner_builds_and_reclaims(self) -> None:
+        from specseed_runtime.executing import runner_control
+
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = Path(tmp) / ".specseed" / "storage"
+            self._stale_owner(storage)
+            db = Database(db_path=Path(tmp) / "queue.db")
+            task_id = db.enqueue("handle_entry_created", post_id="1", payload={})
+            db.claim_next()  # orphaned in_progress from the dead owner
+            with mock.patch.object(runner_control, "pid_is_runner", return_value=False):
+                scheduler = run.build_scheduler(
+                    storage=storage, repo_root=tmp, db=db, runner=mock.Mock()
+                )
+            self.assertIsNotNone(scheduler)
+            self.assertEqual(db.get_task(task_id)["status"], "pending")
+
+
 class BuildSchedulerConfigReloadTest(unittest.TestCase):
     """A config-built scheduler re-reads configuration.json on resume."""
 

@@ -108,6 +108,23 @@ def is_pid_alive(pid: Optional[int]) -> bool:
     return True
 
 
+def pid_is_runner(pid: Optional[int]) -> bool:
+    """Alive AND its command line looks like a specseed runner (not a recycled pid)."""
+    if not is_pid_alive(pid):
+        return False
+    try:
+        out = subprocess.run(
+            ["ps", "-p", str(int(pid)), "-o", "command="],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return True  # cannot inspect: assume it is ours, never start over it
+    command = (out.stdout or "").strip().lower()
+    return "specseed" in command if command else True
+
+
 def _heartbeat_fresh(updated_at: Optional[str]) -> bool:
     if not updated_at:
         return False
@@ -160,6 +177,14 @@ def start_runner(
     current = read_runner_status(storage)
     if current.get("alive"):
         return current
+    # A stale heartbeat with a LIVE runner pid means busy, not dead (e.g. a long
+    # agent run before heartbeats kept up). Starting a second runner over the
+    # same storage kills the live agent at startup reclaim - never do it.
+    if pid_is_runner(current.get("pid")):
+        busy = dict(current)
+        busy["state"] = "busy"
+        busy["alive"] = True
+        return busy
 
     Path(storage).mkdir(parents=True, exist_ok=True)
     write_command(storage, RUNNING)

@@ -152,7 +152,11 @@ def build_spec_change_prompt(route: str, request_id: Any, entity: Any, ctx: Any)
         "scheduling/spec_change.enqueue_spec_change_run(...). Do NOT run the script, touch "
         "git, or edit application code. If the request is materially ambiguous, make only "
         "the edits you are confident about, have apply.py post a clarifying comment plus the "
-        "spec-change:status:awaiting_approval label, enqueue, and stop. One request, one run."
+        "spec-change:status:awaiting_approval label, enqueue, and stop. One request, one run.\n\n"
+        "A leftover plan.json/apply.py in the request dir is a PREVIOUS run's output (e.g. a "
+        "clarification round the human has now answered). Re-enqueueing it unchanged is a no-op "
+        "and the human gets silence. ALWAYS rewrite plan.json + apply.py for what THIS run "
+        "decided (carry forward plan.json bookkeeping like questions/apr), then enqueue."
     )
 
 

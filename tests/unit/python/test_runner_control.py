@@ -105,6 +105,60 @@ class StartRunnerTest(unittest.TestCase):
             popen.assert_not_called()
             self.assertTrue(status["alive"])
 
+    def _stale_status(self, storage: Path, pid: int = 4242) -> None:
+        import json
+
+        storage.mkdir(parents=True, exist_ok=True)
+        (storage / "runner.json").write_text(
+            json.dumps(
+                {"pid": pid, "state": "running", "updated_at": "2000-01-01T00:00:00Z"}
+            ),
+            encoding="utf-8",
+        )
+
+    def test_start_runner_refuses_stale_heartbeat_with_live_runner_pid(self) -> None:
+        # Busy runner: heartbeat starved but the pid is a live specseed process.
+        # A second runner over the same storage would kill its live agent.
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = Path(tmp) / "storage"
+            self._stale_status(storage)
+            record = {"name": "r", "target": tmp, "specseed_dir": ".specseed", "storage": str(storage)}
+            with mock.patch.object(runner_control, "pid_is_runner", return_value=True), \
+                 mock.patch.object(runner_control.subprocess, "Popen") as popen:
+                status = runner_control.start_runner(record)
+            popen.assert_not_called()
+            self.assertEqual(status["state"], "busy")
+            self.assertTrue(status["alive"])
+
+    def test_start_runner_proceeds_when_stale_pid_is_not_a_runner(self) -> None:
+        # Recycled pid (alive but not specseed) must not block a legit start.
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = Path(tmp) / "storage"
+            self._stale_status(storage)
+            record = {"name": "r", "target": tmp, "specseed_dir": ".specseed", "storage": str(storage)}
+
+            class FakeProc:
+                pid = 777
+
+            with mock.patch.object(runner_control, "pid_is_runner", return_value=False), \
+                 mock.patch.object(runner_control.subprocess, "Popen", return_value=FakeProc()) as popen:
+                status = runner_control.start_runner(record)
+            popen.assert_called_once()
+            self.assertEqual(status["pid"], 777)
+
+
+class PidIsRunnerTest(unittest.TestCase):
+    def test_dead_pid_is_not_a_runner(self) -> None:
+        import subprocess
+        import sys
+
+        proc = subprocess.Popen([sys.executable, "-c", "pass"])
+        proc.wait(timeout=10)
+        self.assertFalse(runner_control.pid_is_runner(proc.pid))
+
+    def test_none_pid_is_not_a_runner(self) -> None:
+        self.assertFalse(runner_control.pid_is_runner(None))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -561,6 +561,10 @@ class Scheduler:
         logged_stop_cancel = False
         logged_timeout_cancel = False
         while worker.is_alive():
+            # The loop thread sits here for the whole run (minutes-hours): keep
+            # the heartbeat fresh or the runner reads as dead while merely busy
+            # (and an operator "restart" then kills the live agent).
+            self._heartbeat()
             if self._stop.is_set():
                 cancel.set()
                 if not logged_stop_cancel:

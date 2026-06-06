@@ -257,6 +257,13 @@ Write `apply.py` so re-running is safe: prefer label add/remove and comments
 a post that already exists (record created ids back into the request dir if a
 second pass needs them). When unsure, comment rather than duplicate.
 
+**A re-trigger REWRITES the request dir.** The `plan.json` + `apply.py` you find
+there are a previous run's output - usually the clarification round the human
+just answered. Re-enqueueing that stale script is an idempotent no-op: nothing
+posts, the human gets silence. Every run writes a fresh `plan.json` + `apply.py`
+for what IT decided (carry forward bookkeeping: `questions`, `apr`, recorded
+created ids), then enqueues.
+
 ## Async clarification
 
 Cannot proceed safely? Do not guess. Post a **clarification round** — possibly several
