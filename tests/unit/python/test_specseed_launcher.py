@@ -179,7 +179,7 @@ class MainTest(unittest.TestCase):
             config_path = Path(tmp) / "configuration.json"
             remote_path = Path(tmp) / "remote.json"
             config_path.write_text(
-                json.dumps({"poll_interval_seconds": 12, "dev_branch": "develop"}) + "\n",
+                json.dumps({"poll_interval_seconds": 12, "specseed_primary_branch": "develop"}) + "\n",
                 encoding="utf-8",
             )
             remote_path.write_text(
@@ -205,7 +205,7 @@ class MainTest(unittest.TestCase):
             cfg = json.loads((storage / "configuration.json").read_text(encoding="utf-8"))
             remote = json.loads((storage / "remote.json").read_text(encoding="utf-8"))
             self.assertEqual(cfg["poll_interval_seconds"], 12)
-            self.assertEqual(cfg["dev_branch"], "develop")
+            self.assertEqual(cfg["specseed_primary_branch"], "develop")
             self.assertEqual(remote["repo"], "local/example")
             self.assertFalse((target / ".gitignore").exists())
 

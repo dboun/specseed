@@ -7,9 +7,9 @@ Permissions are judged HERE, in code, never by an agent.
 Shape of ``configuration.json`` permissions::
 
     "permissions": {
-        "git":      {"enabled": true, "merge_to_dev_branch": false},
+        "git":      {"merge_to_primary": false},
         "remote":   {"post_control": false, "push_branches": false,
-                     "push_dev_branch": false, "make_prs": false},
+                     "push_primary": false, "make_prs": false},
         "platform": {"auto_implement_issue": true,
                      "auto_proceed_to_next_sprint_if_available": false},
         "agents":   {"<action-class>": "block"|"surface"|"auto"|"require_human_approval", ...},
@@ -87,8 +87,8 @@ class Permissions:
         # Kept as a constant True for any back-compat callers.
         return True
 
-    def can_merge_to_dev_branch(self) -> bool:
-        return bool(self._git.get("merge_to_dev_branch"))
+    def can_merge_to_primary(self) -> bool:
+        return bool(self._git.get("merge_to_primary"))
 
     # -- remote ---------------------------------------------------------- #
     def _remote_switch(self, key: str) -> bool:
@@ -107,8 +107,8 @@ class Permissions:
     def can_push_branches(self) -> bool:
         return self._remote_switch("push_branches")
 
-    def can_push_dev_branch(self) -> bool:
-        return self._remote_switch("push_dev_branch")
+    def can_push_primary(self) -> bool:
+        return self._remote_switch("push_primary")
 
     def can_make_prs(self) -> bool:
         return self._remote_switch("make_prs")

@@ -5,7 +5,7 @@ Two environment fixes the run history demanded:
 1. **Git is mandatory.** A target with no commits made the whole branch / diff /
    isolation policy degrade silently (reviewer judged the whole tree, concurrent
    issues clobbered each other). So we ``git init`` a non-git target and give the
-   dev branch a root commit to branch from.
+   primary branch a root commit to branch from.
 2. **The engine is off-limits.** Agents kept concluding the "app" was specseed
    itself and editing the engine. We drop per-route instruction files into the
    target's specseed_dir and prepend a small router block to the repo-root
@@ -54,8 +54,8 @@ def _has_head(repo_root: Path) -> bool:
         return False
 
 
-def ensure_git_repo(repo_root: str | Path, dev_branch: str = "main") -> list[str]:
-    """Init a non-git target and ensure the dev branch has a root commit.
+def ensure_git_repo(repo_root: str | Path, primary_branch: str = "main") -> list[str]:
+    """Init a non-git target and ensure the primary branch has a root commit.
 
     Returns a list of human-readable actions taken (empty when already set up).
     An empty root commit (no ``git add``) keeps it safe - never sweeps in storage
@@ -68,7 +68,7 @@ def ensure_git_repo(repo_root: str | Path, dev_branch: str = "main") -> list[str
             return actions  # git unavailable / unwritable; bail quietly
         actions.append("git init")
         # Name the initial (unborn) branch before the first commit.
-        _run_git(repo_root, ["symbolic-ref", "HEAD", f"refs/heads/{dev_branch}"])
+        _run_git(repo_root, ["symbolic-ref", "HEAD", f"refs/heads/{primary_branch}"])
     if not _has_head(repo_root):
         res = _run_git(
             repo_root,
@@ -79,7 +79,7 @@ def ensure_git_repo(repo_root: str | Path, dev_branch: str = "main") -> list[str
             ],
         )
         if res.returncode == 0:
-            actions.append(f"root commit on {dev_branch}")
+            actions.append(f"root commit on {primary_branch}")
     return actions
 
 
@@ -96,7 +96,7 @@ def _instruction_body(repo_root: Path, specseed_dir: str, kind: str) -> str:
         "build the equivalent in THIS repo.\n\n"
         "**An empty or near-empty target at the start is normal.** Do not go looking for an "
         "existing app to modify; create it.\n\n"
-        "**Git:** work on a branch forked from the dev branch; never commit straight onto it. "
+        "**Git:** work on a branch forked from the primary branch; never commit straight onto it. "
         "The runtime never runs git for you - you do.\n"
     )
 
@@ -171,10 +171,10 @@ def _splice_block(existing: str, block: str) -> str:
     return block + "\n\n" + existing
 
 
-def scaffold_target(repo_root: str | Path, specseed_dir: str, dev_branch: str = "main") -> dict:
+def scaffold_target(repo_root: str | Path, specseed_dir: str, primary_branch: str = "main") -> dict:
     """Do all three: git, instruction files, router block. Best-effort."""
     return {
-        "git": ensure_git_repo(repo_root, dev_branch),
+        "git": ensure_git_repo(repo_root, primary_branch),
         "instructions": [str(p) for p in write_instruction_files(repo_root, specseed_dir)],
         "router": [str(p) for p in ensure_router_block(repo_root, specseed_dir)],
     }

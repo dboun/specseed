@@ -79,31 +79,31 @@ def render_git_policy(ctx: Any) -> str:
 
     The runtime never runs git itself; the agent does. This block is the agent's
     only source of truth for branch/merge/push/PR behaviour, derived from
-    ``dev_branch`` + the git/remote permissions. Refresh-on-merge and the
-    conflict-park rule are stated here because there is no runtime merge driver.
+    ``specseed_primary_branch`` + the git/remote permissions. Refresh-on-merge and
+    the conflict-park rule are stated here because there is no runtime merge driver.
     """
     perms = _perms(ctx)
     config = getattr(ctx, "config", {}) or {}
-    dev_branch = config.get("dev_branch") or "main"
+    primary_branch = config.get("specseed_primary_branch") or "main"
     remote_on = perms.remote_enabled()
     lines = ["Git rules:"]
     lines.append(
         "- Work on a dedicated branch for this issue, forked from `{0}`. Never commit "
-        "straight onto `{0}`.".format(dev_branch)
+        "straight onto `{0}`.".format(primary_branch)
     )
-    if perms.can_merge_to_dev_branch():
+    if perms.can_merge_to_primary():
         lines.append(
-            "- When the work is complete and tests pass, merge your branch into `{0}`.".format(dev_branch)
+            "- When the work is complete and tests pass, merge your branch into `{0}`.".format(primary_branch)
         )
         lines.append(
             "- Refresh: after merging into `{0}`, and when you resume a parked branch, merge "
             "the latest `{0}` into the other live issue branches. Resolve trivial conflicts "
             "silently. Only a genuinely unsafe conflict you cannot settle should be left in "
-            "place and reported for a human.".format(dev_branch)
+            "place and reported for a human.".format(primary_branch)
         )
     else:
         lines.append(
-            "- Do NOT merge into `{0}` yourself; leave your branch for a human to merge.".format(dev_branch)
+            "- Do NOT merge into `{0}` yourself; leave your branch for a human to merge.".format(primary_branch)
         )
     if remote_on:
         lines.append(
@@ -112,9 +112,9 @@ def render_git_policy(ctx: Any) -> str:
             else "- Do NOT push your issue branch to the remote."
         )
         lines.append(
-            "- You may push `{0}` to the remote.".format(dev_branch)
-            if perms.can_push_dev_branch()
-            else "- Do NOT push `{0}` to the remote.".format(dev_branch)
+            "- You may push `{0}` to the remote.".format(primary_branch)
+            if perms.can_push_primary()
+            else "- Do NOT push `{0}` to the remote.".format(primary_branch)
         )
         lines.append(
             "- You may open a pull/merge request for completed work."
@@ -310,7 +310,7 @@ def build_review_prompt(entity: Any, ctx: Any) -> str:
         + "You are reviewing completed work for specseed work issue "
         f"{getattr(entity, 'post_id', '?')} titled {_title(entity)!r}. Read the issue body "
         "and comments from the local tracker and inspect the relevant changes in this "
-        "repository (use the git diff against the dev branch to see what this work touched). "
+        "repository (use the git diff against the primary branch to see what this work touched). "
         "Assess correctness, scope, and whether the issue's acceptance criteria "
         "are met. Do not merge, do not change "
         "workflow labels, and do not approve; the scheduler resolves the outcome "

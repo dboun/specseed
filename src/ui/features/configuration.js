@@ -81,7 +81,7 @@ export function createConfiguration({ repo, ctx }) {
       <section class="panel">
         <div class="panel-title">General</div>
         <div class="field"><label>poll interval seconds <span class="req">(how often to check remote for changes)</span></label>${num("poll_interval_seconds", cfg.poll_interval_seconds)}</div>
-        <div class="field"><label>dev branch <span class="req">(what specseed considers primary; recommended 'dev' or similar, but it could be main/master)</span></label>${text("dev_branch", cfg.dev_branch)}</div>
+        <div class="field"><label>primary branch <span class="req">(branch specseed treats as the integration trunk; usually main/master)</span></label>${text("specseed_primary_branch", cfg.specseed_primary_branch)}</div>
         <div class="field"><label>approver usernames <span class="req">(comma separated)</span></label>
           ${text("approver_usernames", (cfg.approvals?.approver_usernames || []).join(", "))}</div>
         <div class="field"><label>platform username <span class="req">(tracker account the platform posts as; blank = detect by "specseed: " prefix)</span></label>
@@ -162,10 +162,10 @@ export function createConfiguration({ repo, ctx }) {
       <section class="panel">
         <div class="panel-title">Permissions — git &amp; remote</div>
         <div class="muted">git is mandatory (branching always allowed)</div>
-        ${toggle("git_merge", p.git?.merge_to_dev_branch, "git: merge into dev branch")}
+        ${toggle("git_merge", p.git?.merge_to_primary, "git: merge into primary branch")}
         ${repo.provider === "local" ? "" : toggle("remote_post_control", p.remote?.post_control, "remote: create CONTROL post")}
         ${toggle("remote_push_branches", p.remote?.push_branches, "remote: push branches")}
-        ${toggle("remote_push_dev", p.remote?.push_dev_branch, "remote: push dev branch")}
+        ${toggle("remote_push_dev", p.remote?.push_primary, "remote: push primary branch")}
         ${toggle("remote_make_prs", p.remote?.make_prs, "remote: make PRs")}
       </section>
       <section class="panel">
@@ -233,7 +233,7 @@ export function createConfiguration({ repo, ctx }) {
     const on = (name) => !!form.querySelector(`[name="${name}"]`)?.checked;
 
     cfg.poll_interval_seconds = Number(val("poll_interval_seconds")) || cfg.poll_interval_seconds;
-    cfg.dev_branch = String(val("dev_branch") || cfg.dev_branch);
+    cfg.specseed_primary_branch = String(val("specseed_primary_branch") || cfg.specseed_primary_branch);
     cfg.approvals = cfg.approvals || {};
     cfg.approvals.approver_usernames = String(val("approver_usernames") || "")
       .split(",")
@@ -248,11 +248,11 @@ export function createConfiguration({ repo, ctx }) {
 
     const p = (cfg.permissions = cfg.permissions || {});
     p.git = p.git || {};
-    p.git.merge_to_dev_branch = on("git_merge");
+    p.git.merge_to_primary = on("git_merge");
     p.remote = p.remote || {};
     p.remote.post_control = on("remote_post_control");
     p.remote.push_branches = on("remote_push_branches");
-    p.remote.push_dev_branch = on("remote_push_dev");
+    p.remote.push_primary = on("remote_push_dev");
     p.remote.make_prs = on("remote_make_prs");
     p.platform = p.platform || {};
     p.platform.auto_implement_issue = on("plat_auto_impl");

@@ -76,7 +76,9 @@ def test_migrates_all_databases_and_deletes_copied_code(tmp_path: Path) -> None:
 
     cfg = json.loads((storage / "configuration.json").read_text(encoding="utf-8"))
     assert "version" not in cfg
-    assert cfg["dev_branch"] == "custom"
+    # 0.12.0 hop renamed dev_branch -> specseed_primary_branch
+    assert "dev_branch" not in cfg
+    assert cfg["specseed_primary_branch"] == "custom"
 
 
 def test_second_migration_is_idempotent(tmp_path: Path) -> None:

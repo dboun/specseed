@@ -13,7 +13,7 @@ from unittest import mock
 from specseed_runtime.configuring import configure
 
 
-def _local_answers(*, specseed="seedmeta", dev_branch="", write=""):
+def _local_answers(*, specseed="seedmeta", primary_branch="", write=""):
     """Answer sequence for the local-only interactive flow (all defaults)."""
     answers = [
         specseed,    # specseed dir
@@ -24,8 +24,8 @@ def _local_answers(*, specseed="seedmeta", dev_branch="", write=""):
     # "add a fallback?" (defaults no) = 5 prompts, all accept-default.
     answers += [""] * (5 * len(configure.RUNNER_FUNCTIONS))
     answers += [
-        dev_branch,  # dev branch
-        "",          # merge_to_dev_branch off (git is mandatory: no enable prompt)
+        primary_branch,  # primary branch
+        "",          # merge_to_primary off (git is mandatory: no enable prompt)
         "",          # auto_implement_issue (yes)
         "",          # auto_proceed_to_next_sprint (no)
     ]
@@ -79,11 +79,11 @@ class ConfigureSpecseedDirTest(unittest.TestCase):
 
 
 class ConfigureDevBranchTest(unittest.TestCase):
-    def test_dev_branch_is_saved(self) -> None:
+    def test_primary_branch_is_saved(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             storage_hint = root / "bootstrap" / "storage"
-            answers = _local_answers(dev_branch="develop")
+            answers = _local_answers(primary_branch="develop")
 
             old_cwd = Path.cwd()
             try:
@@ -95,16 +95,19 @@ class ConfigureDevBranchTest(unittest.TestCase):
 
             self.assertEqual(rc, 0)
             cfg = json.loads((root / "seedmeta" / "storage" / "configuration.json").read_text("utf-8"))
-            self.assertEqual(cfg["dev_branch"], "develop")
+            self.assertEqual(cfg["specseed_primary_branch"], "develop")
 
-    def test_default_config_has_dev_branch(self) -> None:
-        self.assertEqual(configure.default_config()["dev_branch"], configure.DEFAULT_DEV_BRANCH)
+    def test_default_config_has_primary_branch(self) -> None:
+        self.assertEqual(
+            configure.default_config()["specseed_primary_branch"],
+            configure.DEFAULT_PRIMARY_BRANCH,
+        )
 
     def test_detect_prefers_main_then_master(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             # non-git dir -> default.
-            self.assertEqual(configure.detect_default_branch(root), configure.DEFAULT_DEV_BRANCH)
+            self.assertEqual(configure.detect_default_branch(root), configure.DEFAULT_PRIMARY_BRANCH)
 
 
 class ConfigurePermissionsShapeTest(unittest.TestCase):
@@ -129,10 +132,10 @@ class ConfigurePermissionsShapeTest(unittest.TestCase):
             self.assertNotIn("backend", cfg)
             perms = cfg["permissions"]
             self.assertEqual(set(perms), {"git", "remote", "platform", "agents"})
-            self.assertEqual(perms["git"], {"merge_to_dev_branch": False})
+            self.assertEqual(perms["git"], {"merge_to_primary": False})
             self.assertEqual(perms["remote"], {
                 "post_control": False, "push_branches": False,
-                "push_dev_branch": False, "make_prs": False,
+                "push_primary": False, "make_prs": False,
             })
             self.assertEqual(perms["platform"], {
                 "auto_implement_issue": True,
@@ -210,7 +213,9 @@ class ConfigureRunnerChainsTest(unittest.TestCase):
             )
             cfg = configure.load_config(storage)
             self.assertNotIn("version", cfg)
-            self.assertEqual(cfg["dev_branch"], "custom")
+            # legacy dev_branch translated to specseed_primary_branch
+            self.assertNotIn("dev_branch", cfg)
+            self.assertEqual(cfg["specseed_primary_branch"], "custom")
 
     def test_main_migrates_storage_before_show(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -226,7 +231,9 @@ class ConfigureRunnerChainsTest(unittest.TestCase):
             self.assertEqual(rc, 0)
             on_disk = json.loads((storage / "configuration.json").read_text("utf-8"))
             self.assertNotIn("version", on_disk)
-            self.assertEqual(on_disk["dev_branch"], "custom")
+            # the 0.12.0 hop renamed dev_branch on disk
+            self.assertNotIn("dev_branch", on_disk)
+            self.assertEqual(on_disk["specseed_primary_branch"], "custom")
             # marker fast-forwarded to the running code's version
             marker = (storage / "version.txt").read_text("utf-8").strip()
             self.assertRegex(marker, r"^\d+\.\d+\.\d+$")

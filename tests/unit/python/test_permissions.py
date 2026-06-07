@@ -41,12 +41,12 @@ class GitTest(unittest.TestCase):
         self.assertTrue(Permissions({}).git_enabled())
         self.assertTrue(Permissions(_cfg({"git": {"enabled": False}})).git_enabled())
 
-    def test_merge_to_dev_branch_only_needs_its_switch(self) -> None:
-        on = _cfg({"git": {"merge_to_dev_branch": True}})
-        off = _cfg({"git": {"merge_to_dev_branch": False}})
-        self.assertTrue(Permissions(on).can_merge_to_dev_branch())
-        self.assertFalse(Permissions(off).can_merge_to_dev_branch())
-        self.assertFalse(Permissions({}).can_merge_to_dev_branch())
+    def test_merge_to_primary_only_needs_its_switch(self) -> None:
+        on = _cfg({"git": {"merge_to_primary": True}})
+        off = _cfg({"git": {"merge_to_primary": False}})
+        self.assertTrue(Permissions(on).can_merge_to_primary())
+        self.assertFalse(Permissions(off).can_merge_to_primary())
+        self.assertFalse(Permissions({}).can_merge_to_primary())
 
 
 class RemoteSwitchesTest(unittest.TestCase):
@@ -58,19 +58,19 @@ class RemoteSwitchesTest(unittest.TestCase):
 
     def test_switches_open_when_remote_disabled(self) -> None:
         # local stand-in: writes have no external effect.
-        p = Permissions(_cfg({"remote": {"post_control": False, "push_dev_branch": False}}))
+        p = Permissions(_cfg({"remote": {"post_control": False, "push_primary": False}}))
         self.assertTrue(p.can_post_control())
-        self.assertTrue(p.can_push_dev_branch())
+        self.assertTrue(p.can_push_primary())
         self.assertTrue(p.can_push_branches())
         self.assertTrue(p.can_make_prs())
 
     def test_switches_bite_when_remote_enabled(self) -> None:
         state = {"enabled": True, "provider": "github"}
         p = Permissions(_cfg({"remote": {"post_control": False, "push_branches": True,
-                                         "push_dev_branch": False, "make_prs": False}}), state)
+                                         "push_primary": False, "make_prs": False}}), state)
         self.assertFalse(p.can_post_control())
         self.assertTrue(p.can_push_branches())
-        self.assertFalse(p.can_push_dev_branch())
+        self.assertFalse(p.can_push_primary())
         self.assertFalse(p.can_make_prs())
 
 
@@ -142,29 +142,29 @@ class _GitCtx:
 
 
 class RenderGitPolicyTest(unittest.TestCase):
-    def test_uses_dev_branch_and_forbids_direct_commit(self) -> None:
-        text = render_git_policy(_GitCtx({"dev_branch": "develop", "permissions": {}}))
+    def test_uses_primary_branch_and_forbids_direct_commit(self) -> None:
+        text = render_git_policy(_GitCtx({"specseed_primary_branch": "develop", "permissions": {}}))
         self.assertIn("`develop`", text)
         self.assertIn("Never commit", text)
 
     def test_merge_allowed_adds_refresh_rule(self) -> None:
-        cfg = {"dev_branch": "main", "permissions": {"git": {"enabled": True, "merge_to_dev_branch": True}}}
+        cfg = {"specseed_primary_branch": "main", "permissions": {"git": {"merge_to_primary": True}}}
         text = render_git_policy(_GitCtx(cfg))
         self.assertIn("merge your branch into `main`", text)
         self.assertIn("Refresh", text)
 
     def test_merge_disallowed_says_leave_for_human(self) -> None:
-        text = render_git_policy(_GitCtx({"dev_branch": "main", "permissions": {}}))
+        text = render_git_policy(_GitCtx({"specseed_primary_branch": "main", "permissions": {}}))
         self.assertIn("Do NOT merge", text)
 
     def test_local_only_forbids_push_and_pr(self) -> None:
-        text = render_git_policy(_GitCtx({"dev_branch": "main", "permissions": {}}))
+        text = render_git_policy(_GitCtx({"specseed_primary_branch": "main", "permissions": {}}))
         self.assertIn("No remote is configured", text)
 
     def test_remote_on_honours_push_and_pr_switches(self) -> None:
         cfg = {
-            "dev_branch": "main",
-            "permissions": {"remote": {"push_branches": True, "push_dev_branch": False, "make_prs": False}},
+            "specseed_primary_branch": "main",
+            "permissions": {"remote": {"push_branches": True, "push_primary": False, "make_prs": False}},
         }
         text = render_git_policy(_GitCtx(cfg, {"enabled": True, "provider": "github"}))
         self.assertIn("push your issue branch", text)

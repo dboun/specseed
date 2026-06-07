@@ -148,8 +148,8 @@ def _ensure_target_ready(repo_root: Path, config: dict) -> None:
         from specseed_runtime.configuring import scaffold
 
         specseed_dir = config.get("specseed_dir") or ".specseed"
-        dev_branch = config.get("dev_branch") or "main"
-        result = scaffold.scaffold_target(repo_root, specseed_dir, dev_branch)
+        primary_branch = config.get("specseed_primary_branch") or "main"
+        result = scaffold.scaffold_target(repo_root, specseed_dir, primary_branch)
         if result.get("git"):
             platform_log.log_event(
                 "target_git_initialized", repo_root=str(repo_root), actions=result["git"]

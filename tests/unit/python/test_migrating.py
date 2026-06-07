@@ -71,7 +71,8 @@ class RunMigrationsTest(unittest.TestCase):
             self.assertEqual(
                 applied,
                 ["m_0_3_0__0_3_1", "m_0_3_1__0_4_0", "m_0_4_0__0_5_0",
-                 "m_0_5_0__0_7_0", "m_0_7_0__0_9_0", "m_0_9_0__0_11_0"],
+                 "m_0_5_0__0_7_0", "m_0_7_0__0_9_0", "m_0_9_0__0_11_0",
+                 "m_0_11_0__0_12_0"],
             )
             self.assertEqual(migrate.storage_version(storage), migrate.code_version())
 
@@ -411,6 +412,75 @@ class Hop090To0110Test(unittest.TestCase):
             storage.mkdir(parents=True, exist_ok=True)
             self.assertEqual(m_0_9_0__0_11_0.run(storage, specseed_dir), [])
             self.assertEqual(m_0_9_0__0_11_0.run(storage, specseed_dir), [])
+
+
+class Hop0110To0120Test(unittest.TestCase):
+    """0.12.0: rename the dev-branch config keys to "primary"."""
+
+    def _cfg(self, storage, cfg):
+        storage.mkdir(parents=True, exist_ok=True)
+        (storage / "configuration.json").write_text(
+            json.dumps(cfg) + "\n", encoding="utf-8"
+        )
+
+    def test_renames_all_three_keys_preserving_values(self) -> None:
+        from specseed_runtime.migrating import m_0_11_0__0_12_0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            specseed_dir, storage = _fixture_tree(Path(tmp), version="0.11.0")
+            self._cfg(storage, {
+                "dev_branch": "develop",
+                "permissions": {
+                    "git": {"merge_to_dev_branch": True},
+                    "remote": {"push_dev_branch": True, "make_prs": False},
+                },
+            })
+
+            changed = m_0_11_0__0_12_0.run(storage, specseed_dir)
+
+            self.assertEqual([p.name for p in changed], ["configuration.json"])
+            out = json.loads((storage / "configuration.json").read_text(encoding="utf-8"))
+            self.assertNotIn("dev_branch", out)
+            self.assertEqual(out["specseed_primary_branch"], "develop")
+            git = out["permissions"]["git"]
+            self.assertNotIn("merge_to_dev_branch", git)
+            self.assertTrue(git["merge_to_primary"])
+            rem = out["permissions"]["remote"]
+            self.assertNotIn("push_dev_branch", rem)
+            self.assertTrue(rem["push_primary"])
+
+    def test_does_not_clobber_existing_new_keys(self) -> None:
+        from specseed_runtime.migrating import m_0_11_0__0_12_0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            specseed_dir, storage = _fixture_tree(Path(tmp), version="0.11.0")
+            self._cfg(storage, {
+                "dev_branch": "old",
+                "specseed_primary_branch": "kept",
+            })
+
+            m_0_11_0__0_12_0.run(storage, specseed_dir)
+
+            out = json.loads((storage / "configuration.json").read_text(encoding="utf-8"))
+            self.assertEqual(out["specseed_primary_branch"], "kept")
+            self.assertNotIn("dev_branch", out)
+
+    def test_idempotent_and_noop_when_clean(self) -> None:
+        from specseed_runtime.migrating import m_0_11_0__0_12_0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            specseed_dir, storage = _fixture_tree(Path(tmp), version="0.11.0")
+            self._cfg(storage, {"specseed_primary_branch": "main", "permissions": {}})
+
+            self.assertEqual(m_0_11_0__0_12_0.run(storage, specseed_dir), [])
+
+    def test_missing_config_is_noop(self) -> None:
+        from specseed_runtime.migrating import m_0_11_0__0_12_0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            specseed_dir, storage = _fixture_tree(Path(tmp), version="0.11.0")
+            storage.mkdir(parents=True, exist_ok=True)
+            self.assertEqual(m_0_11_0__0_12_0.run(storage, specseed_dir), [])
 
 
 if __name__ == "__main__":

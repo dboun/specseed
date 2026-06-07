@@ -74,7 +74,7 @@ from specseed_runtime.executing.agent_runner import (  # noqa: E402
 
 DEFAULT_POLL_INTERVAL = 45
 DEFAULT_SPECSEED_DIR = ".specseed"
-DEFAULT_DEV_BRANCH = "main"
+DEFAULT_PRIMARY_BRANCH = "main"
 
 RUNNER_PROVIDERS = ("claude", "codex")
 
@@ -128,7 +128,7 @@ def repo_root_from_cwd():
 
 
 def detect_default_branch(repo_root):
-    """Best-effort dev branch: prefer `main`, fall back to `master`, else `main`.
+    """Best-effort primary branch: prefer `main`, fall back to `master`, else `main`.
 
     Reads local branches via git. A repo that already lives on `master` keeps it;
     everything else defaults to `main`.
@@ -148,7 +148,7 @@ def detect_default_branch(repo_root):
                 return "master"
     except Exception:
         pass
-    return DEFAULT_DEV_BRANCH
+    return DEFAULT_PRIMARY_BRANCH
 
 
 def storage_for_specseed_dir(specseed_dir):
@@ -278,9 +278,9 @@ def default_agent_gates():
 def default_config():
     return {
         "specseed_dir": DEFAULT_SPECSEED_DIR,
-        # The integration branch work merges into. "dev branch" = where changes go;
-        # default main (or master if that is the repo's branch).
-        "dev_branch": DEFAULT_DEV_BRANCH,
+        # The integration branch work merges into. "primary branch" = where changes
+        # go; default main (or master if that is the repo's branch).
+        "specseed_primary_branch": DEFAULT_PRIMARY_BRANCH,
         "poll_interval_seconds": DEFAULT_POLL_INTERVAL,
         # The account the platform posts as on the tracker. Lets the runtime skip
         # its own comments (loop guard). Blank = rely on the "specseed: " body
@@ -316,9 +316,9 @@ def default_config():
         "permissions": {
             # local git is MANDATORY (always on - the target is git-initialized at
             # configure time). Creating branches is always allowed; only merging into
-            # the dev branch gets a switch.
+            # the primary branch gets a switch.
             "git": {
-                "merge_to_dev_branch": False,
+                "merge_to_primary": False,
             },
             # remote actions. only meaningful once the remote is enabled (remote.json).
             # posting issues/tickets/epics is ALWAYS allowed (the tracker lives on the
@@ -326,7 +326,7 @@ def default_config():
             "remote": {
                 "post_control": False,     # the CONTROL channel post
                 "push_branches": False,
-                "push_dev_branch": False,  # push to the dev branch on the remote
+                "push_primary": False,  # push to the primary branch on the remote
                 "make_prs": False,
             },
             # platform-level autos. off = a human approves first.
@@ -416,8 +416,15 @@ def coerce_config(existing):
     for key, value in existing.items():
         # legacy "backend" lived here before it moved to remote.json; legacy
         # "version" before storage/version.txt became the marker. Drop both.
-        if key not in ("backend", "version", "approvals", "permissions", "runner", "review"):
+        # legacy "dev_branch" renamed -> specseed_primary_branch (handled below).
+        if key not in ("backend", "version", "dev_branch", "approvals",
+                       "permissions", "runner", "review"):
             cfg[key] = value
+
+    # legacy "dev_branch" -> "specseed_primary_branch" (0.12.0 rename). A real
+    # migration hop does this on disk; translate here too so a bypassed config loads.
+    if "specseed_primary_branch" not in existing and existing.get("dev_branch"):
+        cfg["specseed_primary_branch"] = existing["dev_branch"]
 
     coerced = _coerce_runner(existing.get("runner"))
     if coerced:
@@ -433,6 +440,16 @@ def coerce_config(existing):
             if isinstance(permissions.get(block), dict):
                 cfg["permissions"][block].update(permissions[block])
         cfg["permissions"]["git"].pop("enabled", None)  # legacy switch: git is mandatory
+        # legacy permission keys renamed in 0.12.0 (dev_branch -> primary). Translate
+        # only when the new key was not already supplied.
+        git_block = cfg["permissions"]["git"]
+        if "merge_to_dev_branch" in git_block:
+            git_block.setdefault("merge_to_primary", git_block["merge_to_dev_branch"])
+            git_block.pop("merge_to_dev_branch", None)
+        remote_block = cfg["permissions"]["remote"]
+        if "push_dev_branch" in remote_block:
+            remote_block.setdefault("push_primary", remote_block["push_dev_branch"])
+            remote_block.pop("push_dev_branch", None)
     return cfg
 
 
@@ -484,13 +501,13 @@ def write_config_files(
         written["token"] = write_token(storage, token)
         written["storage_gitignore"] = ensure_gitignored(storage)
     # Git is mandatory + the engine is off-limits: init a non-git target, give the
-    # dev branch a root commit, and drop the identity guardrails (idempotent).
+    # primary branch a root commit, and drop the identity guardrails (idempotent).
     if repo_root is not None:
         specseed_dir = cfg.get("specseed_dir") or (
             specseed_rel.as_posix() if specseed_rel is not None else DEFAULT_SPECSEED_DIR
         )
-        dev_branch = cfg.get("dev_branch") or DEFAULT_DEV_BRANCH
-        written["scaffold"] = scaffold.scaffold_target(repo_root, specseed_dir, dev_branch)
+        primary_branch = cfg.get("specseed_primary_branch") or DEFAULT_PRIMARY_BRANCH
+        written["scaffold"] = scaffold.scaffold_target(repo_root, specseed_dir, primary_branch)
     return written
 
 
@@ -525,8 +542,8 @@ def run_defaults(
     )
     specseed_value, specseed_rel = _specseed_config_value(storage, repo_root)
     cfg["specseed_dir"] = specseed_value
-    if not cfg.get("dev_branch") or cfg.get("dev_branch") == DEFAULT_DEV_BRANCH:
-        cfg["dev_branch"] = detect_default_branch(repo_root)
+    if not cfg.get("specseed_primary_branch") or cfg.get("specseed_primary_branch") == DEFAULT_PRIMARY_BRANCH:
+        cfg["specseed_primary_branch"] = detect_default_branch(repo_root)
     apply_identity_defaults(cfg, remote)
 
     written = write_config_files(
@@ -745,28 +762,28 @@ def section_backend(cfg, remote, storage):
 def section_git_permissions(cfg):
     git = cfg["permissions"]["git"]
     git.pop("enabled", None)  # legacy switch: git is mandatory now
-    dev_branch = cfg.get("dev_branch") or DEFAULT_DEV_BRANCH
+    primary_branch = cfg.get("specseed_primary_branch") or DEFAULT_PRIMARY_BRANCH
     print("\n--- local git ---")
     print("  (git is mandatory; the target is git-initialized and branching is always allowed.)")
-    git["merge_to_dev_branch"] = ask_yn(
-        f"  Allow merging into the dev branch ({dev_branch})?",
-        default=git.get("merge_to_dev_branch", False),
+    git["merge_to_primary"] = ask_yn(
+        f"  Allow merging into the primary branch ({primary_branch})?",
+        default=git.get("merge_to_primary", False),
     )
 
 
-def section_dev_branch(cfg):
-    print("\n--- dev branch ---")
-    cfg["dev_branch"] = ask_str(
-        "Dev branch (where work merges to; main/master)",
-        cfg.get("dev_branch") or DEFAULT_DEV_BRANCH,
-    ) or DEFAULT_DEV_BRANCH
+def section_primary_branch(cfg):
+    print("\n--- primary branch ---")
+    cfg["specseed_primary_branch"] = ask_str(
+        "Primary branch (where work merges to; main/master)",
+        cfg.get("specseed_primary_branch") or DEFAULT_PRIMARY_BRANCH,
+    ) or DEFAULT_PRIMARY_BRANCH
 
 
 def section_remote_permissions(cfg, remote):
     if not remote.get("enabled"):
         return
     rem = cfg["permissions"]["remote"]
-    dev_branch = cfg.get("dev_branch") or DEFAULT_DEV_BRANCH
+    primary_branch = cfg.get("specseed_primary_branch") or DEFAULT_PRIMARY_BRANCH
     print("\n--- remote actions ---")
     print("  (posting issues/tickets/epics is always allowed — the tracker lives on the remote.)")
     rem["post_control"] = ask_yn(
@@ -777,9 +794,9 @@ def section_remote_permissions(cfg, remote):
         "Allow pushing branches to the remote?",
         default=rem.get("push_branches", False),
     )
-    rem["push_dev_branch"] = ask_yn(
-        f"Allow pushing to the dev branch ({dev_branch}) on the remote?",
-        default=rem.get("push_dev_branch", False),
+    rem["push_primary"] = ask_yn(
+        f"Allow pushing to the primary branch ({primary_branch}) on the remote?",
+        default=rem.get("push_primary", False),
     )
     rem["make_prs"] = ask_yn(
         "Allow opening pull/merge requests?",
@@ -897,7 +914,7 @@ def section_interval(cfg):
 def summary_lines(cfg, remote, token):
     L = []
     L.append(f"specseed dir: {cfg.get('specseed_dir') or DEFAULT_SPECSEED_DIR}")
-    dev_branch = cfg.get("dev_branch") or DEFAULT_DEV_BRANCH
+    primary_branch = cfg.get("specseed_primary_branch") or DEFAULT_PRIMARY_BRANCH
     if remote.get("enabled"):
         L.append(f"remote: {remote.get('provider')} mirror — repo={remote.get('repo') or '?'}, "
                  f"token={'set' if token else 'MISSING'}")
@@ -913,19 +930,19 @@ def summary_lines(cfg, remote, token):
             for s in chain
         )
         L.append(f"agent[{function}]: {specs}")
-    L.append(f"dev branch: {dev_branch}")
+    L.append(f"primary branch: {primary_branch}")
     L.append(f"poll interval: {cfg['poll_interval_seconds']}s")
     approvers = cfg.get("approvals", {}).get("approver_usernames", [])
     L.append("approvers: " + (", ".join(approvers) if approvers else "none configured"))
     git = cfg["permissions"]["git"]
-    L.append(f"git: mandatory — branches=always, merge_to_dev_branch={git.get('merge_to_dev_branch', False)}")
+    L.append(f"git: mandatory — branches=always, merge_to_primary={git.get('merge_to_primary', False)}")
     plat = cfg["permissions"].get("platform", {})
     L.append(f"platform: auto_implement_issue={plat.get('auto_implement_issue', True)}, "
              f"auto_proceed_to_next_sprint={plat.get('auto_proceed_to_next_sprint_if_available', False)}")
     if remote.get("enabled"):
         r = cfg["permissions"]["remote"]
         L.append(f"remote actions: post_control={r['post_control']}, "
-                 f"push_branches={r['push_branches']}, push_dev_branch={r['push_dev_branch']}, "
+                 f"push_branches={r['push_branches']}, push_primary={r['push_primary']}, "
                  f"make_prs={r['make_prs']}")
     gates = cfg["permissions"].get("agents", {})
     blocked = sorted(k for k, v in gates.items() if v == "block")
@@ -957,7 +974,7 @@ def run_interactive(storage, explicit_storage=False):
     else:
         cfg = default_config()
         cfg["specseed_dir"] = specseed_rel.as_posix()
-        cfg["dev_branch"] = detect_default_branch(repo_root)
+        cfg["specseed_primary_branch"] = detect_default_branch(repo_root)
         print(f"Configuring a fresh repo (storage at {Path(storage).resolve()}).")
 
     remote = load_remote_state(storage)
@@ -966,7 +983,7 @@ def run_interactive(storage, explicit_storage=False):
     token = section_backend(cfg, remote, storage)
     apply_identity_defaults(cfg, remote)  # seed user/platform names before prompting
     section_runner(cfg)
-    section_dev_branch(cfg)
+    section_primary_branch(cfg)
     section_git_permissions(cfg)
     section_remote_permissions(cfg, remote)
     section_platform(cfg)

@@ -24,7 +24,7 @@ class GitEnforceTest(unittest.TestCase):
         self.root = Path(self.tmp.name)
 
     @unittest.skipUnless(_HAS_GIT, "git not available")
-    def test_inits_non_git_target_with_dev_branch_and_head(self) -> None:
+    def test_inits_non_git_target_with_primary_branch_and_head(self) -> None:
         actions = scaffold.ensure_git_repo(self.root, "develop")
         self.assertTrue(scaffold.is_git_repo(self.root))
         self.assertIn("git init", actions)
