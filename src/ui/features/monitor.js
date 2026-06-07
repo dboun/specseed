@@ -274,7 +274,6 @@ export function createMonitor({ repo, ctx, refreshTopbar }) {
         <h1>Monitor</h1>
         <div class="tab-head-actions">
           <span class="auto-dot" title="auto-refreshing"></span>
-          <button class="btn btn-ghost" data-monitor-refresh>Refresh</button>
         </div>
       </div>
       <div data-monitor-body>${body()}</div>`;
@@ -365,7 +364,6 @@ export function createMonitor({ repo, ctx, refreshTopbar }) {
       return;
     }
     if (event.target.closest("[data-close]")) return closeModal();
-    if (event.target.closest("[data-monitor-refresh]")) refresh();
   }
 
   function dispose() {

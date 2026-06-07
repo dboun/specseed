@@ -167,12 +167,15 @@ function runnerPill(repo) {
   const st = repo.runner.alive ? repo.runner.state : "stopped";
   const others = state.repos.filter((r) => r.id !== repo.id && isRunning(r)).length;
   let label = st;
+  let compact = ""; // mobile: dot color alone covers the plain running/stopped case
   if (isRunning(repo)) {
     label = others > 0 ? `running (${others + 1})` : "running"; // never "(1)"
+    if (others > 0) compact = `(${others + 1})`;
   } else if (others > 0) {
     label = `${st} (${others} other running)`;
+    compact = `(${others} other)`;
   }
-  return `<span class="pill pill-${st}" data-runner-pill><span class="dot dot-${st}"></span>${escapeHtml(label)}</span>`;
+  return `<span class="pill pill-${st}" data-runner-pill><span class="dot dot-${st}"></span><span class="pill-label">${escapeHtml(label)}</span>${compact ? `<span class="pill-label-sm">${escapeHtml(compact)}</span>` : ""}</span>`;
 }
 
 function tabButton(tab, repo) {

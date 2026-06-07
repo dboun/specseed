@@ -151,6 +151,7 @@ a { color: var(--accent-2); }
 .pill-running { color: var(--ok); border-color: #1f5040; }
 .pill-paused { color: var(--warn); border-color: #5a4424; }
 .pill-stopped { color: var(--ink-dim); }
+.pill-label-sm { display: none; } /* compact mobile label, swapped in by the 520px media query */
 
 /* tabs */
 .tabbar {
@@ -469,10 +470,12 @@ textarea { resize: vertical; min-height: 70px; }
   .label-filter > summary { text-align: center; }
   .label-filter-menu { width: 100%; left: 0; }
   .runner-head { flex-direction: column; align-items: stretch; }
-  /* top bar: the runner state already shows on the Monitor + switcher dot */
+  /* top bar pill goes compact: dot color says running/stopped; text only for counts */
   .topbar { gap: 8px; padding: 10px 12px; }
   .topbar-left { gap: 8px; }
-  .topbar-right .pill { display: none; }
+  .topbar-right .pill { padding: 6px 8px; }
+  .pill-label { display: none; }
+  .pill-label-sm { display: inline; }
   .topbar .brand-mark { font-size: 14px; }
   .switcher-current { max-width: 120px; }
   .tab { padding: 13px 12px; }

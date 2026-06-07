@@ -81,8 +81,8 @@ export function createTracker({ repo, ctx }) {
       <div class="tab-head">
         <h1>Tracker</h1>
         <div class="tab-head-actions">
+          <span class="auto-dot" title="auto-refreshing"></span>
           <button class="btn btn-primary" data-new-post>+ New post</button>
-          <button class="btn btn-ghost" data-tracker-refresh>Refresh</button>
         </div>
       </div>
       ${quickToggles()}
@@ -406,11 +406,6 @@ export function createTracker({ repo, ctx }) {
     const t = event.target;
     const open = t.closest("[data-open-post]");
     if (open) return openPost(open.dataset.openPost);
-    if (t.closest("[data-tracker-refresh]")) {
-      await reloadPosts();
-      repaintList();
-      return;
-    }
     if (t.closest("[data-new-post]")) return openNewPost();
     if (t.closest("[data-close-drawer]")) {
       state.selectedId = null;
