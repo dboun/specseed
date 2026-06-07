@@ -218,12 +218,21 @@ export function createTracker({ repo, ctx }) {
       <div class="post-meta">by ${escapeHtml(post.author || "unknown")} · updated ${escapeHtml(formatTime(post.updated_at))}</div>`;
   }
 
+  // A post under code review is talking to the REVIEW agent, not a human: a comment
+  // there re-runs the reviewer, never the implementer, so the box is locked until
+  // review ends. (Bounce work back by approving/commenting once it parks.)
+  const inReview = (post) =>
+    (post.labels || []).some((l) => /(^|:)status:in_review$/.test(l.name));
+
   function commentsBlock(post, composer) {
     const comments = post.comments || [];
+    const locked = composer && inReview(post);
     return `
       <div class="section-title">comments</div>
       ${comments.map((c) => commentHtml(c, post)).join("") || `<div class="muted">No comments.</div>`}
-      ${composer
+      ${locked
+        ? `<div class="muted comment-locked">Comments are locked while this issue is in code review. They reopen once it finishes.</div>`
+        : composer
         ? `<form data-comment-form><textarea name="body" placeholder="add a comment…" required></textarea><button class="btn btn-primary">Comment</button></form>`
         : ""}`;
   }

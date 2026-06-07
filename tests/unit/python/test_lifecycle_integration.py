@@ -52,12 +52,15 @@ class LifecycleTest(unittest.TestCase):
 
         def side_effect(call):
             if "reviewing completed work" in call["prompt"]:
-                v, c = review_script[min(state["i"], len(review_script) - 1)]
+                entry = review_script[min(state["i"], len(review_script) - 1)]
+                v, c = entry[0], entry[1]
+                recommend = entry[2] if len(entry) > 2 else False
                 state["i"] += 1
                 return AgentResult(
                     ok=True, returncode=0,
                     stdout=f"review\nSPECSEED_REVIEW verdict={v} confidence={c}",
-                    report={"verdict": v, "confidence": c, "summary": "review findings"},
+                    report={"verdict": v, "confidence": c, "summary": "review findings",
+                            "recommend_spec_change": recommend},
                 )
             return AgentResult(
                 ok=True, returncode=0,
@@ -93,7 +96,21 @@ class LifecycleTest(unittest.TestCase):
         self.assertFalse(is_open)
         self.assertEqual(self._drafts(remote), [])
 
-    def test_persistent_failure_escalates_to_single_draft(self) -> None:
+    def test_persistent_failure_with_recommend_escalates_to_single_draft(self) -> None:
+        # Reviewer recommends a spec change -> exhausting the loop opens ONE draft
+        # adapt, despite many duplicate queued events for the same entity.
+        sched, remote, eid = self._build(
+            self._runner([("changes", 0.1, True)]),
+            {"enabled": True, "confidence_threshold": 0.75, "max_attempts": 2},
+        )
+        for _ in range(8):
+            sched.run_once()
+        st, _ = self._status(remote, eid)
+        self.assertEqual(st, "blocked")
+        self.assertEqual(len(self._drafts(remote)), 1)
+
+    def test_persistent_failure_without_recommend_blocks_no_draft(self) -> None:
+        # No reviewer recommendation -> blocked for a human, but NO draft adapt.
         sched, remote, eid = self._build(
             self._runner([("changes", 0.1)]),
             {"enabled": True, "confidence_threshold": 0.75, "max_attempts": 2},
@@ -102,8 +119,7 @@ class LifecycleTest(unittest.TestCase):
             sched.run_once()
         st, _ = self._status(remote, eid)
         self.assertEqual(st, "blocked")
-        # exactly one draft adapt post, despite many duplicate queued events
-        self.assertEqual(len(self._drafts(remote)), 1)
+        self.assertEqual(len(self._drafts(remote)), 0)
 
 
 if __name__ == "__main__":

@@ -17,15 +17,18 @@ Scenario (every approval step covered):
 1. configure a fresh target repo; start the listener (it seeds labels + posts).
 2. fill the seeded draft adapt post with a bootstrap prompt, drop ``draft``.
 3. two discussion rounds (worker parks ``awaiting_input``; answers wake it).
-4. sprint-1 breakdown: 2 epics, 4 tickets, 4 gated issues + APR-0001; spec docs.
-5. approve the request (settles spec docs, request -> done).
-6. approve each sprint-1 issue (thumbs-up and ``approve APR-0001``); each runs
+4. sprint-1 breakdown is PROPOSED (plan-first): the runtime posts the plan summary
+   + APR-0001 and parks the request ``awaiting_approval`` - NO work posts yet.
+5. approve the request (settles spec docs, request -> done); only now does the
+   deferred apply.py create the 2 epics, 4 tickets, 4 sprint-1 issues (born todo).
+6. each sprint-1 issue parks for implement approval (``auto_implement_issue`` off);
+   approve each by its own id (thumbs-up and ``approve <id>``); each runs
    implement -> review -> done; one issue fails review once first; roll-up
    closes tickets + epic.
-7. a manual ``todo`` hotfix issue parks for implement approval
-   (``auto_implement_issue`` off), is approved by id comment, completes.
-8. ``spec-change:plan-next-sprint`` post: sprint-2 issues + APR-0002, approve,
-   complete; second epic rolls up; SCHEDULE shows sprint 2 ongoing.
+7. a manual ``todo`` hotfix issue parks for implement approval, approved by id.
+8. ``spec-change:plan-next-sprint`` post: propose + APR-0002, approve the request
+   (apply creates sprint-2 issues todo), approve each issue; second epic rolls up;
+   SCHEDULE shows sprint 2 ongoing.
 9. CONTROL: STATUS gets a reply; STOP shuts the listener down cleanly.
 """
 
@@ -208,12 +211,13 @@ def _ticket_titles(sprint: int) -> list[str]:
     return [ticket["title"] for ticket in SCRIPT["tickets"] if ticket["sprint"] == sprint]
 
 
-def _approve_issue_batch(harness: Greenfield, boss, titles: list[str], apr_id: str) -> dict[str, object]:
-    """Approve a gated issue batch: half by thumbs-up, half by APR comment.
+def _approve_issue_batch(harness: Greenfield, boss, titles: list[str]) -> dict[str, object]:
+    """Approve a batch of issues at the implement-approval gate, then await done.
 
-    Returns {title: post_id}. Waits for the gated state first so the approval
-    lands on an `awaiting_approval` issue, then for every issue to finish
-    (implement -> review -> done, closed).
+    Plan-first: issues are created `todo` and the runtime parks each
+    `awaiting_approval` because `auto_implement_issue` is off. The human approves by
+    the issue's own id - half by thumbs-up, half by `approve <id>` - then each runs
+    implement -> review -> done (closed). Returns {title: post_id}.
     """
     ids: dict[str, object] = {}
     for title in titles:
@@ -221,18 +225,18 @@ def _approve_issue_batch(harness: Greenfield, boss, titles: list[str], apr_id: s
         ids[title] = post.id
         harness.wait_for(
             lambda pid=post.id: "issue:status:awaiting_approval" in labels_of(boss, pid),
-            f"issue {title!r} born awaiting_approval",
+            f"issue {title!r} parked awaiting implement approval",
         )
         harness.wait_for(
-            lambda pid=post.id: comment_with(boss, pid, apr_id),
-            f"issue {title!r} carries the {apr_id} gate comment",
+            lambda pid=post.id: comment_with(boss, pid, "requires human approval"),
+            f"issue {title!r} carries the implement-approval note",
         )
 
     for index, title in enumerate(titles):
         if index % 2 == 0:
             _ok(boss.add_entry_reaction(ids[title], "thumbs_up"), f"thumbs up {title!r}")
         else:
-            _ok(boss.add_entry_comment(ids[title], f"approve {apr_id}"), f"approve {title!r}")
+            _ok(boss.add_entry_comment(ids[title], f"approve {ids[title]}"), f"approve {title!r}")
 
     for title in titles:
         harness.wait_for(
@@ -251,6 +255,9 @@ def test_greenfield_full_lifecycle(harness):
     assert config["approvals"]["approver_usernames"] == ["boss"]
     assert config["review"]["enabled"] is True
     assert config["permissions"]["platform"]["auto_implement_issue"] is False
+    # The runtime authors its tracker comments as the configured platform username
+    # (configure defaults it to "specseed" when none is given).
+    platform_user = config.get("platform_username") or "remote"
 
     harness.start()
     boss = harness.boss()
@@ -281,22 +288,19 @@ def test_greenfield_full_lifecycle(harness):
     harness.wait_for(lambda: comment_with(boss, request_id, "Round 2"), "round 2 question")
     _ok(boss.add_entry_comment(request_id, "OK"), "answer round 2")
 
-    # ---- 5. sprint-1 breakdown lands ------------------------------------ #
+    # ---- 5. sprint-1 breakdown is PROPOSED (plan-first: nothing created yet) #
     harness.wait_for(lambda: comment_with(boss, request_id, "APR-0001"), "APR-0001 request")
-    for title in [epic["title"] for epic in SCRIPT["epics"]] + _ticket_titles(1) + _ticket_titles(2):
-        harness.wait_for(lambda t=title: find_post(boss, t), f"work post {title!r}")
-    epic1_id = find_post(boss, SCRIPT["epics"][0]["title"]).id
-    epic2_id = find_post(boss, SCRIPT["epics"][1]["title"]).id
-    assert "epic:status:todo" in labels_of(boss, epic1_id)
+    harness.wait_for(
+        lambda: "spec-change:status:awaiting_approval" in labels_of(boss, request_id),
+        "request parked awaiting_approval after breakdown",
+    )
+    # The plan only proposes work; the epics/tickets/issues do NOT exist until the
+    # human approves the request below.
+    assert find_post(boss, SCRIPT["epics"][0]["title"]) is None, "no work created before approval"
     spec_dir = harness.target / ".specseed" / "spec"
     assert (spec_dir / "vision.md").is_file() and (spec_dir / "srs.md").is_file()
-    schedule_id = find_post(boss, "SCHEDULE").id
-    harness.wait_for(
-        lambda: "Core sprint  (ongoing)" in (details_of(boss, schedule_id).body or ""),
-        "SCHEDULE lists sprint 1 as ongoing",
-    )
 
-    # ---- 6. approve the request: spec settles, request -> done ----------- #
+    # ---- 6. approve the request: spec settles, apply creates the work ----- #
     _ok(boss.add_entry_reaction(request_id, "thumbs_up"), "approve spec-change request")
     harness.wait_for(
         lambda: "spec-change:status:done" in labels_of(boss, request_id),
@@ -306,9 +310,20 @@ def test_greenfield_full_lifecycle(harness):
                      "settle note on the request")
     vision = (spec_dir / "vision.md").read_text(encoding="utf-8")
     assert "settled: true" in vision and "settled_at:" in vision
+    # Now the deferred apply.py has created the breakdown.
+    for title in [epic["title"] for epic in SCRIPT["epics"]] + _ticket_titles(1) + _ticket_titles(2):
+        harness.wait_for(lambda t=title: find_post(boss, t), f"work post {title!r}")
+    epic1_id = find_post(boss, SCRIPT["epics"][0]["title"]).id
+    epic2_id = find_post(boss, SCRIPT["epics"][1]["title"]).id
+    assert "epic:status:todo" in labels_of(boss, epic1_id)
+    schedule_id = find_post(boss, "SCHEDULE").id
+    harness.wait_for(
+        lambda: "Core sprint  (ongoing)" in (details_of(boss, schedule_id).body or ""),
+        "SCHEDULE lists sprint 1 as ongoing",
+    )
 
     # ---- 7. approve + complete the four sprint-1 issues ------------------ #
-    sprint1_ids = _approve_issue_batch(harness, boss, _issue_titles(1), "APR-0001")
+    sprint1_ids = _approve_issue_batch(harness, boss, _issue_titles(1))
 
     # the flaky issue went changes -> reimplement -> approve (two reviews)
     flaky_id = sprint1_ids[SCRIPT["review"]["flaky_title"]]
@@ -366,7 +381,7 @@ def test_greenfield_full_lifecycle(harness):
         "SCHEDULE flips sprint 2 to ongoing",
     )
 
-    _approve_issue_batch(harness, boss, _issue_titles(2), "APR-0002")
+    _approve_issue_batch(harness, boss, _issue_titles(2))
     for title in _ticket_titles(2):
         ticket_id = find_post(boss, title).id
         harness.wait_for(lambda pid=ticket_id: entry_done(boss, pid, "ticket"),
@@ -389,7 +404,7 @@ def test_greenfield_full_lifecycle(harness):
     control_id = find_post(boss, "CONTROL").id
     _ok(boss.add_entry_comment(control_id, "STATUS"), "ask STATUS")
     harness.wait_for(
-        lambda: comment_with(boss, control_id, "specseed scheduler STATUS", author="remote"),
+        lambda: comment_with(boss, control_id, "specseed scheduler STATUS", author=platform_user),
         "STATUS reply on CONTROL",
     )
     _ok(boss.add_entry_comment(control_id, "STOP"), "STOP the listener")

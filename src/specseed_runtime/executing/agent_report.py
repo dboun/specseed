@@ -63,6 +63,21 @@ def parse_result_file(path: str | Path, intent: str) -> Tuple[Optional[dict], Op
     return _validate(data, intent)
 
 
+def _as_bool(value: Any) -> bool:
+    """Coerce a JSON-ish flag to bool. Accepts real bools and "true"/"false"/1/0.
+
+    Agents sometimes emit the value as a string. Anything not clearly truthy is
+    False - the safe default (no spec-change recommended).
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "yes", "1")
+    return False
+
+
 def _validate(data: dict, intent: str) -> Tuple[Optional[dict], Optional[str]]:
     if intent == REVIEW:
         verdict = str(data.get("verdict") or "").strip().lower()
@@ -77,6 +92,9 @@ def _validate(data: dict, intent: str) -> Tuple[Optional[dict], Optional[str]]:
             "verdict": verdict,
             "confidence": confidence,
             "summary": str(data.get("summary") or "").strip(),
+            # Reviewer's recommendation that repeated failure is a SPEC problem, not
+            # a coding miss. Only consulted once the review loop is exhausted.
+            "recommend_spec_change": _as_bool(data.get("recommend_spec_change")),
         }, None
     if intent == IMPLEMENT:
         status = str(data.get("status") or "").strip().lower()
@@ -88,6 +106,9 @@ def _validate(data: dict, intent: str) -> Tuple[Optional[dict], Optional[str]]:
             "status": status,
             "summary": str(data.get("summary") or "").strip(),
             "files_changed": files,
+            # Implementer's up-front "I can't satisfy this; the spec is wrong" flag.
+            # When set, the runtime blocks + drafts an adapt instead of reviewing.
+            "recommend_spec_change": _as_bool(data.get("recommend_spec_change")),
         }, None
     # Loose schema for spec_change / platform_error and anything else: a summary
     # is handy but nothing is hard-gated on it.
@@ -100,16 +121,23 @@ def _validate(data: dict, intent: str) -> Tuple[Optional[dict], Optional[str]]:
 _SCHEMA_BLOCK = {
     IMPLEMENT: (
         '  {"status": "done"|"blocked"|"needs_input", "summary": "<one paragraph: '
-        'what you did, or why you are blocked>", "files_changed": ["<path>", ...]}\n'
+        'what you did, or why you are blocked>", "files_changed": ["<path>", ...], '
+        '"recommend_spec_change": false}\n'
         "  Use status=done ONLY if you actually edited the repo to satisfy the issue and "
         "left it building/test-passing. Use status=blocked if you could not make the "
-        "change (say why in summary); status=needs_input if you need a human decision."
+        "change (say why in summary); status=needs_input if you need a human decision. "
+        "Set recommend_spec_change=true ONLY when the issue cannot be done as written "
+        "because the SPEC itself is wrong/unclear (not a coding obstacle) - it blocks the "
+        "issue and opens a draft spec-adapt for a human instead of reviewing."
     ),
     REVIEW: (
         '  {"verdict": "approve"|"changes", "confidence": <0.0-1.0>, "summary": '
-        '"<concise findings: what is right/wrong vs the acceptance criteria>"}\n'
+        '"<concise findings: what is right/wrong vs the acceptance criteria>", '
+        '"recommend_spec_change": false}\n'
         "  The summary is posted to the tracker for the next implementer - make it the "
-        "actionable findings, not a transcript."
+        "actionable findings, not a transcript. Set recommend_spec_change=true only if "
+        "the work keeps missing because the SPEC/issue scope is wrong rather than the "
+        "code; it is consulted only after the review loop is exhausted."
     ),
     SPEC_CHANGE: (
         '  {"status": "<short status>", "summary": "<what the run decided>"}'

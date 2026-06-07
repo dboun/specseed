@@ -301,10 +301,11 @@ def default_config():
             "max_retries": 5,
         },
         # Code-review loop. enabled also gates the in_review state on every issue.
-        # A passing review (verdict approve + confidence >= threshold) closes the
-        # issue. The review step itself is not human-gated; pass/fail is the
-        # confidence threshold. A failing review reimplements until max_attempts,
-        # then opens a draft spec-change:adapt post for the human to discuss.
+        # approve + confidence >= threshold closes the issue; approve BELOW the bar
+        # parks awaiting_approval for human sign-off (no reimplement). A changes
+        # verdict reimplements until max_attempts; when exhausted the issue parks
+        # blocked - opening a draft spec-change:adapt only if the reviewer set
+        # recommend_spec_change, else it waits for a human decision.
         "review": {
             "enabled": False,
             "confidence_threshold": 0.75,

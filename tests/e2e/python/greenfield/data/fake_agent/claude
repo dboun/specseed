@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -39,13 +40,11 @@ for _parent in HERE.parents:
         break
 
 from specseed_runtime.db.database import Database  # noqa: E402
+from specseed_runtime.executing import agent_report  # noqa: E402
 from specseed_runtime.executing.advance import REVIEW_MARKER  # noqa: E402
-from specseed_runtime.executing.approvals import (  # noqa: E402
-    APPROVAL_REQUEST_MARKER,
-    approval_request_comment,
-    next_apr_id,
-)
+from specseed_runtime.executing.approvals import next_apr_id  # noqa: E402
 from specseed_runtime.scheduling.spec_change import (  # noqa: E402
+    enqueue_spec_change_propose,
     enqueue_spec_change_run,
 )
 from specseed_runtime.tracking.resolve_remote import resolve_local  # noqa: E402
@@ -54,6 +53,18 @@ SCRIPT = json.loads((HERE / "script.json").read_text(encoding="utf-8"))
 
 BOT_AUTHORS = {"remote", "local"}
 COMMAND_PREFIXES = ("approve", "reject", "status", "start", "pause", "stop")
+
+
+def _write_result(obj: dict) -> None:
+    """Write the structured result the runtime gates implement/review on.
+
+    The runtime sets $SPECSEED_RESULT_FILE per run; a missing/invalid file makes
+    the runtime treat the run as failed and retry forever. A real agent writes
+    this; the stand-in must too.
+    """
+    path = os.environ.get(agent_report.RESULT_FILE_ENV)
+    if path:
+        Path(path).write_text(json.dumps(obj), encoding="utf-8")
 
 
 def _log(storage: Path, **fields) -> None:
@@ -170,8 +181,14 @@ if __name__ == "__main__":
 '''
 
 
-def _emit(storage: Path, request_id: str, route: str, plan: dict) -> None:
-    """Write plan.json + apply.py into the request dir and enqueue the run."""
+def _emit(storage: Path, request_id: str, route: str, plan: dict, propose: bool = False) -> None:
+    """Write plan.json + apply.py into the request dir and enqueue work.
+
+    Plan-first (``propose=True``): a work-creating / spec-settling breakdown emits
+    the files and enqueues a PROPOSAL - the runtime posts the plan summary + APR and
+    parks the request; ``apply.py`` runs only after a human approves. A mechanical
+    run (a clarification round) enqueues ``apply.py`` directly to post its comment.
+    """
     request_dir = storage / "spec-change" / str(request_id)
     request_dir.mkdir(parents=True, exist_ok=True)
     plan["request_id"] = str(request_id)
@@ -181,13 +198,13 @@ def _emit(storage: Path, request_id: str, route: str, plan: dict) -> None:
     )
     apply_path = request_dir / "apply.py"
     apply_path.write_text(APPLY_SOURCE, encoding="utf-8")
-    enqueue_spec_change_run(
-        apply_path,
-        request_id=str(request_id),
-        route=route,
-        db=Database(storage / "specseed.db"),
-        storage=storage,
-    )
+    db = Database(storage / "specseed.db")
+    if propose:
+        enqueue_spec_change_propose(request_id=str(request_id), route=route, db=db)
+    else:
+        enqueue_spec_change_run(
+            apply_path, request_id=str(request_id), route=route, db=db, storage=storage,
+        )
 
 
 def _park_labels(request_id: str, status: str = "awaiting_approval") -> list[dict]:
@@ -202,15 +219,6 @@ def _park_labels(request_id: str, status: str = "awaiting_approval") -> list[dic
             "add": [target],
         }
     ]
-
-
-def _issue_marker_comment(apr_id: str) -> str:
-    return (
-        "Approval gate `{0}` covers this issue. Approve with `approve {0}` or a "
-        "thumbs up reaction on this post.\n\n<!-- {1} {0} -->".format(
-            apr_id, APPROVAL_REQUEST_MARKER
-        )
-    )
 
 
 def _work_creates(sprint: int) -> tuple[list[dict], list[str]]:
@@ -246,8 +254,10 @@ def _work_creates(sprint: int) -> tuple[list[dict], list[str]]:
                 "key": issue["key"],
                 "title": issue["title"],
                 "body": issue["body"],
-                # Born awaiting_approval, never todo: the APR gate.
-                "labels": ["issue", "issue:status:awaiting_approval"]
+                # Plan-first: issues are born `todo`. The per-issue human gate is the
+                # runtime's implement-approval (auto_implement_issue off), not a
+                # breakdown-time APR marker.
+                "labels": ["issue", "issue:status:todo"]
                 + list(issue.get("labels_extra") or []),
             }
         )
@@ -351,25 +361,23 @@ def run_spec_change(prompt: str) -> int:
             edits.append({"post": ticket_key, "body": body + "\n" + line})
 
     edits.append({"post": "SCHEDULE_POST", "body": cfg["schedule_body"]})
-    comments = [
-        {"post": request_id, "body": approval_request_comment(apr_id, cfg["apr_summary"])}
-    ]
-    comments += [
-        {"post": key, "body": _issue_marker_comment(apr_id)} for key in issue_keys
-    ]
 
+    # Plan-first: NO comments/labels touch the request here. The runtime's propose
+    # step posts the plan summary + APR and parks the request awaiting_approval; the
+    # creates/edits below run from apply.py only after a human approves.
     plan.update(
         creates=creates,
         edits=edits,
         id_map=id_map,
-        labels=_park_labels(request_id),
-        comments=comments,
+        labels=[],
+        comments=[],
+        plan_summary="Sprint-{0} plan: {1}".format(sprint, cfg["apr_summary"]),
         apr={"id": apr_id, "summary": cfg["apr_summary"]},
         settle_docs=list(SCRIPT["adapt"]["settle_docs"]) if sprint == 1 else [],
         breakdown_done=True,
     )
-    _emit(storage, request_id, route, plan)
-    print(f"fake agent: emitted sprint-{sprint} breakdown for request {request_id} ({apr_id})")
+    _emit(storage, request_id, route, plan, propose=True)
+    print(f"fake agent: proposed sprint-{sprint} breakdown for request {request_id} ({apr_id})")
     return 0
 
 
@@ -378,8 +386,10 @@ def run_implement(prompt: str) -> int:
     post_id, title = match.groups()
     storage = _storage_from(prompt)
     _log(storage, kind="implement", post_id=post_id, title=title)
-    print(f"Implemented issue #{post_id} ({title}). No code changes were needed "
-          "for this e2e scenario; the tree builds and tests pass.")
+    summary = (f"Implemented issue #{post_id} ({title}). No code changes were needed "
+               "for this e2e scenario; the tree builds and tests pass.")
+    print(summary)
+    _write_result({"status": "done", "summary": summary, "files_changed": []})
     return 0
 
 
@@ -401,9 +411,13 @@ def run_review(prompt: str) -> int:
     if flaky_first:
         print(review_cfg["changes_summary"])
         print("SPECSEED_REVIEW verdict=changes confidence=0.40")
+        _write_result({"verdict": "changes", "confidence": 0.40,
+                       "summary": review_cfg["changes_summary"]})
     else:
         print(review_cfg["approve_summary"])
         print("SPECSEED_REVIEW verdict=approve confidence=0.92")
+        _write_result({"verdict": "approve", "confidence": 0.92,
+                       "summary": review_cfg["approve_summary"]})
     return 0
 
 

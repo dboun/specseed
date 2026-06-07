@@ -38,6 +38,21 @@ class ImplementParseTest(_Base):
         self.assertEqual(report["status"], "blocked")
         self.assertEqual(report["files_changed"], [])
 
+    def test_recommend_spec_change_defaults_false(self) -> None:
+        self._write({"status": "done", "summary": "x"})
+        report, _ = ar.parse_result_file(self.path, ar.IMPLEMENT)
+        self.assertFalse(report["recommend_spec_change"])
+
+    def test_recommend_spec_change_true(self) -> None:
+        self._write({"status": "blocked", "summary": "spec wrong", "recommend_spec_change": True})
+        report, _ = ar.parse_result_file(self.path, ar.IMPLEMENT)
+        self.assertTrue(report["recommend_spec_change"])
+
+    def test_recommend_spec_change_string_coerced(self) -> None:
+        self._write({"status": "blocked", "summary": "x", "recommend_spec_change": "true"})
+        report, _ = ar.parse_result_file(self.path, ar.IMPLEMENT)
+        self.assertTrue(report["recommend_spec_change"])
+
     def test_bad_status_rejected(self) -> None:
         self._write({"status": "finished", "summary": "x"})
         report, err = ar.parse_result_file(self.path, ar.IMPLEMENT)
@@ -75,6 +90,17 @@ class ReviewParseTest(_Base):
         self._write({"verdict": "changes", "confidence": 2.5, "summary": "no"})
         report, _ = ar.parse_result_file(self.path, ar.REVIEW)
         self.assertEqual(report["confidence"], 1.0)
+
+    def test_recommend_spec_change_defaults_false(self) -> None:
+        self._write({"verdict": "changes", "confidence": 0.3, "summary": "no"})
+        report, _ = ar.parse_result_file(self.path, ar.REVIEW)
+        self.assertFalse(report["recommend_spec_change"])
+
+    def test_recommend_spec_change_true(self) -> None:
+        self._write({"verdict": "changes", "confidence": 0.3, "summary": "spec wrong",
+                     "recommend_spec_change": True})
+        report, _ = ar.parse_result_file(self.path, ar.REVIEW)
+        self.assertTrue(report["recommend_spec_change"])
 
     def test_bad_verdict_rejected(self) -> None:
         self._write({"verdict": "meh", "confidence": 0.5})

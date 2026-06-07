@@ -11,18 +11,22 @@ Flow (driven from ``dispatch._run_work`` after a successful agent run):
 
 * IMPLEMENT success -> advance the issue off ``todo`` per the configured gates:
   ``in_review`` (review on), else ``awaiting_approval`` (HITL gate), else ``done``
-  (+ close the entry).
-* REVIEW success -> read the reviewer's self-reported verdict+confidence from the
-  agent output, post the review as a comment, then:
-  - pass (approve & confidence >= threshold) -> ``done`` (+ close). The review step
-    itself is not human-gated; a human bounces work back via a request-changes
-    comment (the ``in_review``/``awaiting_approval`` -> ``in_progress`` transition);
-  - fail (changes / low confidence) -> back to ``todo`` to reimplement, until
-    ``max_attempts`` review cycles, after which a draft ``spec-change:adapt`` post
-    is opened for the human and the issue is parked ``blocked``.
+  (+ close the entry). If the implementer set ``recommend_spec_change`` the issue is
+  parked ``blocked`` with a draft ``spec-change:adapt`` post and review is skipped.
+* REVIEW success -> read the reviewer's verdict+confidence (+ ``recommend_spec_change``)
+  from the result file, post the review as a comment, then:
+  - approve & confidence >= threshold -> ``done`` (+ close);
+  - approve but BELOW the bar -> ``awaiting_approval`` for human sign-off (NOT a
+    reimplement: reviewer likes it but isn't sure - that is a human call);
+  - changes -> back to ``todo`` to reimplement, until ``max_attempts`` cycles. When
+    exhausted, only a reviewer ``recommend_spec_change`` opens a draft adapt; otherwise
+    the issue parks ``blocked`` for a human decision (we don't presume the spec wrong).
 
-Separately, an ``awaiting_approval`` entity that a configured approver has approved
-is resolved here too (no agent): completion gates close, pre-work gates resume.
+Separately, human signals on a parked entity are resolved here (no agent):
+``resolve_approval`` handles ``awaiting_approval`` (approve -> done/resume; prose or
+``reject <prose>`` -> ``todo`` with guidance; ``retry`` -> ``todo`` blind; bare reject
+/ 👎 -> post the options prompt and wait) and ``resolve_blocked`` lets a human bypass
+a block (approve -> force done; guidance/retry -> ``todo``).
 
 Only Python stdlib is used.
 """
@@ -41,18 +45,36 @@ from specseed_runtime.entities.entity_base import (
 )
 from specseed_runtime.executing import platform_log
 from specseed_runtime.executing import relationships
-from specseed_runtime.platform_identity import platform_comment
+from specseed_runtime.platform_identity import (
+    is_platform_comment,
+    platform_comment,
+    platform_username,
+)
 from specseed_runtime.scheduling.spec_change import (
     DEFAULT_SCRIPT_NAME,
     enqueue_spec_change_run,
     spec_change_dir,
+)
+from specseed_runtime.state_machines.base import (
+    APPROVAL_COMMAND_RE,
+    ID_SPLIT_RE,
+    REJECT_COMMAND_RE,
 )
 
 
 # Hidden marker stamped on every review comment so attempts can be counted from
 # the conversation without a side channel.
 REVIEW_MARKER = "<!-- specseed:review-attempt -->"
+# Stamped on the "you rejected without guidance" prompt so it posts at most once.
+OPTIONS_MARKER = "<!-- specseed:reject-options -->"
 _STATUS_INFIX = ":" + STATUS_LABEL_PREFIX  # ":status:"
+
+# Comment-bearing sync actions: only these may carry a human directive (prose /
+# retry). A bare label/reaction event must not redirect off a STALE comment.
+_COMMENT_ACTIONS = ("handle_comment_added", "handle_comment_updated")
+
+_RETRY_RE = re.compile(r"^\s*retry\b", re.IGNORECASE)
+_ID_TOKEN_RE = re.compile(r"^(?:APR-?\d+|#?\d+)$", re.IGNORECASE)
 
 # A parent (ticket/epic) is closed once every child is in one of these.
 TERMINAL_TIER_STATUSES = {"done", "wont_do", "deprecated"}
@@ -168,6 +190,98 @@ def _review_config(ctx: Any) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# human directives on a parked post (guidance / retry / bare reject)
+# --------------------------------------------------------------------------- #
+def _comment_field(item: Any, field: str) -> Any:
+    return item.get(field) if isinstance(item, dict) else getattr(item, field, None)
+
+
+def _latest_human_comment(conversation: Any, config: Any) -> tuple[Optional[str], Optional[str]]:
+    """The most recent non-platform comment's (author, body), or (None, None).
+
+    Platform-authored comments (our own gate notes, review summaries) are skipped
+    so a directive is always read from the human, never from our own words.
+    """
+    username = platform_username(config or {})
+    for item in reversed(list(conversation or [])):
+        body = str(_comment_field(item, "body") or "")
+        if not body.strip():
+            continue
+        author = _comment_field(item, "author")
+        if is_platform_comment(author=author, body=body, username=username):
+            continue
+        return author, body
+    return None, None
+
+
+def _reject_prose(body: str) -> Optional[str]:
+    """If ``body`` is a ``reject`` command, return any prose after the ids.
+
+    ``reject`` / ``reject APR-1`` -> "" (bare, no guidance). ``reject do X
+    instead`` -> "do X instead". Not a reject command -> None.
+    """
+    match = REJECT_COMMAND_RE.match(body.strip())
+    if match is None:
+        return None
+    tail = match.group("ids").strip()
+    if not tail:
+        return ""
+    prose = [tok for tok in ID_SPLIT_RE.split(tail) if tok and not _ID_TOKEN_RE.match(tok)]
+    return " ".join(prose).strip()
+
+
+def _human_directive(conversation: Any, config: Any) -> tuple[Optional[str], Optional[str]]:
+    """Classify the latest human comment on a parked post.
+
+    Returns one of:
+      ("retry", None)         - re-run with no new feedback
+      ("guidance", <text>)    - free prose (or ``reject <prose>``): revise per it
+      ("reject_bare", None)   - ``reject`` with no prose: needs the options prompt
+      (None, None)            - approve command (handled via approved_by) or nothing
+    """
+    _author, body = _latest_human_comment(conversation, config)
+    if body is None:
+        return None, None
+    stripped = body.strip()
+    if _RETRY_RE.match(stripped):
+        return "retry", None
+    prose = _reject_prose(stripped)
+    if prose is not None:  # it WAS a reject command
+        return ("guidance", prose) if prose else ("reject_bare", None)
+    if APPROVAL_COMMAND_RE.match(stripped):
+        return None, None  # an approve command is handled by approved_by
+    return "guidance", stripped
+
+
+def _options_already_posted(ctx: Any, post_id: Any) -> bool:
+    """True if the reject-options prompt is already on the post (remote = truth).
+
+    Reading the remote (not the local snapshot, which lags a poll) keeps a 👎 then a
+    second event before the next sync from posting the prompt twice.
+    """
+    try:
+        res = ctx.remote.get_entry(post_id)
+    except Exception:
+        return False
+    data = getattr(res, "data", None)
+    for item in getattr(data, "comments", None) or []:
+        if OPTIONS_MARKER in str(_comment_field(item, "body") or ""):
+            return True
+    return False
+
+
+def _post_reject_options(ctx: Any, entity: Any) -> None:
+    _comment(
+        ctx, entity.post_id,
+        "Rejected, but no guidance was given. Pick one:\n"
+        "- **reply** with what to change - the implementation agent revises using "
+        "your notes.\n"
+        "- comment **`retry`** - the agent re-runs with no new feedback.\n\n"
+        "Nothing runs until you reply.\n\n" + OPTIONS_MARKER,
+    )
+
+
+# --------------------------------------------------------------------------- #
 # entry points
 # --------------------------------------------------------------------------- #
 def apply_post_work_transition(
@@ -198,6 +312,29 @@ def _advance_after_implement(ctx: Any, entity: Any, state_result: Any, result: A
     # The agent's structured report decides whether work really happened. rc==0
     # alone used to advance a "Blocked: cannot make changes" run to review.
     report = getattr(result, "report", None) or {}
+    # The implementer can say up front "this can't be done as written; the SPEC is
+    # wrong" - block + draft an adapt for a human and skip review entirely (no point
+    # reviewing code the agent declined to write).
+    if bool(report.get("recommend_spec_change")):
+        summary = report.get("summary") or "(no detail provided)"
+        new_id = _draft_adapt_post(
+            ctx, entity,
+            title="Spec adapt needed: issue {0} - implementer flagged the spec".format(entity.post_id),
+            reason=(
+                "The implementation agent could not satisfy issue **{0}** ({1!r}) as "
+                "written and flagged the SPEC/issue scope as the problem, not a coding "
+                "obstacle.".format(entity.post_id, getattr(entity, "title", None) or "(untitled)")
+            ),
+            summary=summary,
+        )
+        _set_status(ctx, entity, "blocked")
+        _comment(
+            ctx, entity.post_id,
+            "Implementer recommends a spec change; opened draft spec-adapt post{0} for "
+            "discussion. Parked `blocked` (review skipped). Approve to accept anyway, or "
+            "comment guidance to retry.".format(" #{0}".format(new_id) if new_id is not None else ""),
+        )
+        return "implement recommends spec-change -> blocked + draft adapt"
     status = str(report.get("status") or "").lower()
     if status in ("blocked", "needs_input"):
         detail = report.get("summary") or "(no detail provided)"
@@ -237,70 +374,105 @@ def _advance_after_review(ctx: Any, entity: Any, result: Any, conversation: Any)
         verdict = str(report["verdict"]).lower()
         confidence = float(report.get("confidence") or 0.0)
         summary = report.get("summary") or "(no review summary)"
+        recommend = bool(report.get("recommend_spec_change"))
     else:
         verdict, confidence = parse_review(getattr(result, "stdout", "") or "")
         summary = _review_summary(getattr(result, "stdout", "") or "")
+        recommend = False
     attempts_before = _count_review_attempts(conversation)
     attempt = attempts_before + 1
 
-    passed = verdict == "approve" and confidence >= threshold
     header = "**Code review** (attempt {0}/{1}) — verdict `{2}`, confidence {3:.2f}".format(
         attempt, max_attempts, verdict, confidence
     )
     _comment(ctx, entity.post_id, "{0}\n\n{1}\n\n{2}".format(header, summary, REVIEW_MARKER))
 
-    if passed:
+    # approve + confident -> done.
+    if verdict == "approve" and confidence >= threshold:
         _set_status(ctx, entity, "done")
         _close(ctx, entity.post_id)
         rolled = roll_up(ctx, entity)
         return "review passed -> done (closed)" + ("; " + rolled if rolled else "")
 
-    # changes requested / low confidence
+    # approve but UNDER the confidence bar -> a human looks, NOT a reimplement and
+    # NOT a spec change. "Reviewer thinks it's fine but isn't sure" is the textbook
+    # case for human sign-off; reimplementing fine code just burns cycles.
+    if verdict == "approve":
+        _set_status(ctx, entity, "awaiting_approval")
+        _comment(
+            ctx, entity.post_id,
+            "Review approved but confidence {0:.2f} is below the {1:.2f} bar. Parked for "
+            "human sign-off: comment `approve {2}` (or 👍) to complete, reply with what to "
+            "change to revise, or comment `retry` to re-review.".format(
+                confidence, threshold, entity.post_id
+            ),
+        )
+        return "review approve below confidence bar -> awaiting_approval"
+
+    # verdict == changes: reimplement until the loop is exhausted.
     if attempt < max_attempts:
         _set_status(ctx, entity, "todo")
         return "review requested changes -> todo (reimplement, attempt {0})".format(attempt)
 
-    _escalate(ctx, entity, attempt, max_attempts, summary)
+    # Loop exhausted. Only escalate to a spec change when the REVIEWER recommended
+    # it; otherwise park for a human decision (don't presume the spec is wrong).
     _set_status(ctx, entity, "blocked")
-    return "review exhausted {0} attempts -> blocked + draft adapt post".format(max_attempts)
+    if recommend:
+        new_id = _draft_adapt_post(
+            ctx, entity,
+            title="Spec adapt needed: issue {0} failed review {1}x".format(entity.post_id, attempt),
+            reason=(
+                "Automated code review could not get issue **{0}** ({1!r}) past its "
+                "acceptance criteria after {2} attempts (limit {3}), and the reviewer "
+                "flagged the SPEC/issue scope as the cause rather than a coding "
+                "miss.".format(
+                    entity.post_id, getattr(entity, "title", None) or "(untitled)",
+                    attempt, max_attempts,
+                )
+            ),
+            summary=summary,
+        )
+        _comment(
+            ctx, entity.post_id,
+            "Review failed {0} times and recommends a spec change; opened draft "
+            "spec-adapt post{1}. Parked `blocked`. Approve to accept anyway, or comment "
+            "guidance to retry.".format(
+                max_attempts, " #{0}".format(new_id) if new_id is not None else ""
+            ),
+        )
+        return "review exhausted + recommend_spec_change -> blocked + draft adapt"
+    _comment(
+        ctx, entity.post_id,
+        "Review still requesting changes after {0} attempts. Parked `blocked` for a human "
+        "decision: comment `approve {1}` to accept as-is, reply with guidance to retry, or "
+        "open a `spec-change:adapt` if the spec itself is wrong.".format(
+            max_attempts, entity.post_id
+        ),
+    )
+    return "review exhausted -> blocked (human decision; no adapt)"
 
 
-def _escalate(ctx: Any, entity: Any, attempt: int, max_attempts: int, summary: str) -> str:
-    """Open a draft spec-change:adapt post asking the human to discuss."""
-    title = "Spec adapt needed: issue {0} failed review {1}x".format(entity.post_id, attempt)
+def _draft_adapt_post(ctx: Any, entity: Any, title: str, reason: str, summary: str) -> Any:
+    """Open a draft spec-change:adapt post for the human. Returns the new post id (or None).
+
+    The caller sets the issue's status and posts the cross-link note; this only
+    creates the discussion post so review-exhaust and implement-recommend share one
+    shape.
+    """
     body = (
-        "Automated code review could not get issue **{0}** ({1!r}) past its "
-        "acceptance criteria after {2} attempts (limit {3}). The work keeps coming "
-        "back with requested changes, which usually means the spec or the issue's "
-        "scope is unclear or wrong rather than a simple coding miss.\n\n"
-        "Latest review summary:\n\n{4}\n\n"
+        "{0}\n\n"
+        "Latest agent summary:\n\n{1}\n\n"
         "This post is a **draft** `spec-change:adapt` request. Discuss what should "
         "change, then drop the `draft` label to let the spec-change worker adapt the "
-        "spec. The issue is parked `blocked` until then.".format(
-            entity.post_id,
-            getattr(entity, "title", None) or "(untitled)",
-            attempt,
-            max_attempts,
-            summary,
-        )
+        "spec. The issue is parked `blocked` until then.".format(reason, summary)
     )
     res = ctx.remote.add_entry(
         title=title,
         body=body,
         labels=["spec-change:adapt", "draft", "management"],
     )
-    new_id = None
     data = getattr(res, "data", None)
-    if data is not None:
-        new_id = getattr(data, "id", None)
-    _comment(
-        ctx, entity.post_id,
-        "Review failed {0} times; opened draft spec-adapt post{1} for discussion. "
-        "Parked `blocked`.".format(
-            max_attempts, " #{0}".format(new_id) if new_id is not None else ""
-        ),
-    )
-    return "escalated"
+    return getattr(data, "id", None) if data is not None else None
 
 
 def park_for_implement_approval(ctx: Any, entity: Any) -> str:
@@ -323,18 +495,28 @@ def park_for_implement_approval(ctx: Any, entity: Any) -> str:
     return "todo -> awaiting_approval (implement approval required)"
 
 
-def resolve_approval(ctx: Any, entity: Any, state_result: Any, conversation: Any = None) -> Optional[str]:
-    """Resolve an ``awaiting_approval`` entity when a configured approver approved.
+def resolve_approval(
+    ctx: Any, entity: Any, state_result: Any, conversation: Any = None, action: Any = None
+) -> Optional[str]:
+    """Resolve an ``awaiting_approval`` entity from a human's signal.
 
-    Returns a detail string if a transition was applied, else None (still waiting).
-    A completion gate (work already reviewed) closes the entry; a pre-work HITL
-    gate resumes the issue to ``todo``.
+    Returns a detail string if anything was applied, else None (still waiting).
+
+    * approve (👍 / ``approve <id>``) -> a completion gate (work reviewed) closes the
+      entry; a pre-work HITL gate resumes the issue to ``todo``.
+    * prose comment, or ``reject <prose>`` -> ``todo`` so the implementer revises with
+      that guidance (the comment is already on the thread for it to read).
+    * ``retry`` -> ``todo`` to re-run with no new feedback.
+    * bare ``reject`` / 👎 with no guidance -> post the options prompt once and wait;
+      nothing is run until the human says what to do.
     """
     if entity.status != "awaiting_approval":
         return None
     approved = getattr(state_result, "approved_by", None)
     rejected = getattr(state_result, "rejected_by", None)
-    if not approved and not rejected:
+    is_comment = action in _COMMENT_ACTIONS
+    # Nothing to act on (a bare label re-sync, say): bow out before any remote read.
+    if not approved and not rejected and not is_comment:
         return None
     if not _can_write(ctx):
         return None
@@ -352,14 +534,70 @@ def resolve_approval(ctx: Any, entity: Any, state_result: Any, conversation: Any
         _set_status(ctx, entity, "todo")
         _comment(ctx, entity.post_id, "Approved by {0}; work may proceed.".format(approver))
         return "approval gate -> todo (resume work)"
-    rejecter = rejected[0]
-    _set_status(ctx, entity, "blocked")
-    _comment(
-        ctx, entity.post_id,
-        "Rejected by {0}; parked `blocked`. Re-approve to resume or cancel "
-        "explicitly.".format(rejecter),
-    )
-    return "approval gate -> blocked (rejected)"
+
+    # Not approved. A directive only counts off a fresh comment, never a stale one
+    # surfaced by a label/reaction event.
+    kind, _text = (None, None)
+    if is_comment:
+        kind, _text = _human_directive(conversation, getattr(ctx, "config", {}))
+    if kind == "retry":
+        _set_status(ctx, entity, "todo")
+        _comment(ctx, entity.post_id, "Retrying implementation with no new feedback.")
+        return "approval gate -> todo (retry, no feedback)"
+    if kind == "guidance":
+        _set_status(ctx, entity, "todo")
+        _comment(
+            ctx, entity.post_id,
+            "Taking your comment as change guidance; re-running implementation.",
+        )
+        return "approval gate -> todo (revise with guidance)"
+
+    # Bare reject / 👎 with no guidance: ask what to do (once), then wait.
+    if (kind == "reject_bare" or rejected) and not _options_already_posted(ctx, entity.post_id):
+        _post_reject_options(ctx, entity)
+        return "approval gate: rejected without guidance -> options prompt posted"
+    return None
+
+
+def resolve_blocked(
+    ctx: Any, entity: Any, state_result: Any, conversation: Any = None, action: Any = None
+) -> Optional[str]:
+    """Human bypass for a ``blocked`` issue (e.g. parked by a spec-change recommend).
+
+    The recommendation is a suggestion, never a forced path: a human can still
+    approve the work (force done) or hand the implementer guidance (re-run). Returns
+    a detail string if a transition was applied, else None.
+    """
+    if getattr(entity, "status", None) != "blocked":
+        return None
+    approved = getattr(state_result, "approved_by", None)
+    is_comment = action in _COMMENT_ACTIONS
+    # Only a human approval or a fresh comment can move a block; skip otherwise.
+    if not approved and not is_comment:
+        return None
+    if not _can_write(ctx):
+        return None
+    if _is_stale(ctx, entity):
+        return "stale event; remote already advanced past blocked"
+    if approved:
+        _set_status(ctx, entity, "done")
+        _close(ctx, entity.post_id)
+        _comment(ctx, entity.post_id, "Approved by {0} over the block; completing.".format(approved[0]))
+        rolled = roll_up(ctx, entity)
+        return "blocked -> done (human override)" + ("; " + rolled if rolled else "")
+    kind, _text = (None, None)
+    if is_comment:
+        kind, _text = _human_directive(conversation, getattr(ctx, "config", {}))
+    if kind in ("retry", "guidance"):
+        _set_status(ctx, entity, "todo")
+        note = (
+            "Retrying implementation with no new feedback."
+            if kind == "retry"
+            else "Taking your comment as change guidance; re-running implementation."
+        )
+        _comment(ctx, entity.post_id, note)
+        return "blocked -> todo ({0})".format("retry" if kind == "retry" else "revise with guidance")
+    return None
 
 
 # --------------------------------------------------------------------------- #

@@ -252,7 +252,9 @@ class DispatchReactionApprovalTest(_Base):
         self.assertIn("issue:status:todo", self._remote_labels(eid))
         self.assertNotIn("issue:status:awaiting_approval", self._remote_labels(eid))
 
-    def test_thumbs_down_entry_reaction_blocks_gate(self) -> None:
+    def test_thumbs_down_entry_reaction_posts_options(self) -> None:
+        # 👎 with no guidance no longer hard-blocks; it asks what to do and waits.
+        from specseed_runtime.executing.advance import OPTIONS_MARKER
         eid = self._seed_awaiting()
         human = TrackingLocal(db_path=self.root / "local.db", author="human")
         human.add_entry_reaction(eid, "thumbs_down")
@@ -263,7 +265,9 @@ class DispatchReactionApprovalTest(_Base):
             {"action": "handle_entry_reaction_added", "post_id": str(eid), "payload": {}},
         )
         self.assertTrue(out.success)
-        self.assertIn("issue:status:blocked", self._remote_labels(eid))
+        self.assertIn("issue:status:awaiting_approval", self._remote_labels(eid))
+        bodies = "\n".join(c.body for c in self.remote.get_entry(eid).data.comments)
+        self.assertIn(OPTIONS_MARKER, bodies)
 
     def test_no_reaction_stays_parked(self) -> None:
         eid = self._seed_awaiting()

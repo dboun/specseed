@@ -34,11 +34,14 @@ from specseed_runtime.tracking.tracking_remote_local import (
 )
 
 
-def _impl_ok(status="done", summary="implemented", files=None):
+def _impl_ok(status="done", summary="implemented", files=None, recommend=False):
     """An implement AgentResult carrying a valid structured report."""
     return AgentResult(
         ok=True, returncode=0,
-        report={"status": status, "summary": summary, "files_changed": files or []},
+        report={
+            "status": status, "summary": summary, "files_changed": files or [],
+            "recommend_spec_change": recommend,
+        },
     )
 
 
@@ -169,13 +172,35 @@ class ImplementTransitionTest(_Base):
         bodies = [c.body for c in self._remote_details(eid).comments]
         self.assertTrue(any("sandbox blocked the write" in b for b in bodies))
 
+    def test_implement_recommends_spec_change_blocks_and_drafts(self) -> None:
+        # Implementer flags the spec up front: block, draft adapt, skip review.
+        eid = self._seed("Do it", ["issue", "issue:status:todo"])
+        ctx = self._ctx(
+            self._config(review={"enabled": True}),
+            FakeAgentRunner(_impl_ok(status="blocked", summary="spec contradicts itself",
+                                     recommend=True)),
+        )
+        out = dispatch(ctx, {"action": "handle_label_added", "post_id": str(eid), "payload": {}})
+        self.assertTrue(out.success)
+        labels = self._remote_labels(eid)
+        self.assertIn("issue:status:blocked", labels)
+        self.assertNotIn("issue:status:in_review", labels)
+        drafts = [
+            d for d in (self.remote.get_entry(s.id).data for s in self.remote.list_entries().data)
+            if "spec-change:adapt" in {l.name for l in d.labels} and "draft" in {l.name for l in d.labels}
+        ]
+        self.assertEqual(len(drafts), 1)
+
 
 class ReviewTransitionTest(_Base):
-    def _review_runner(self, verdict, confidence):
+    def _review_runner(self, verdict, confidence, recommend=False):
         stdout = "Detailed review.\nSPECSEED_REVIEW verdict={0} confidence={1}".format(verdict, confidence)
         return FakeAgentRunner(AgentResult(
             ok=True, returncode=0, stdout=stdout,
-            report={"verdict": verdict, "confidence": confidence, "summary": "Detailed review."},
+            report={
+                "verdict": verdict, "confidence": confidence, "summary": "Detailed review.",
+                "recommend_spec_change": recommend,
+            },
         ))
 
     def test_review_pass_closes_done(self) -> None:
@@ -189,13 +214,17 @@ class ReviewTransitionTest(_Base):
         bodies = [c.body for c in self._remote_details(eid).comments]
         self.assertTrue(any(REVIEW_MARKER in b for b in bodies))
 
-    def test_review_pass_low_confidence_loops_back(self) -> None:
+    def test_review_approve_low_confidence_awaits_human(self) -> None:
+        # approve but under the bar -> human sign-off, NOT a reimplement loop.
         eid = self._seed("Review me", ["issue", "issue:status:in_review"])
         ctx = self._ctx(self._config(review={"enabled": True, "confidence_threshold": 0.75, "max_attempts": 3}),
                         self._review_runner("approve", 0.4))
         out = dispatch(ctx, {"action": "handle_comment_added", "post_id": str(eid), "payload": {}})
         self.assertTrue(out.success)
-        self.assertIn("issue:status:todo", self._remote_labels(eid))
+        labels = self._remote_labels(eid)
+        self.assertIn("issue:status:awaiting_approval", labels)
+        self.assertNotIn("issue:status:todo", labels)
+        self.assertTrue(self._remote_details(eid).is_open)
 
     def test_review_pass_ignores_legacy_human_gate_key(self) -> None:
         # require_human_approval is gone; a stale key in config changes nothing.
@@ -209,37 +238,49 @@ class ReviewTransitionTest(_Base):
         self.assertIn("issue:status:done", self._remote_labels(eid))
         self.assertFalse(self._remote_details(eid).is_open)
 
-    def test_review_exhausts_attempts_escalates(self) -> None:
-        # two prior review attempts already recorded; max_attempts=3 -> this is #3
+    def _drafts(self):
+        return [
+            d for d in self._all_remote_entries()
+            if "spec-change:adapt" in {l.name for l in d.labels} and "draft" in {l.name for l in d.labels}
+        ]
+
+    def test_review_exhausts_with_recommend_drafts_adapt(self) -> None:
+        # two prior review attempts already recorded; max_attempts=3 -> this is #3.
+        # reviewer recommends a spec change -> draft adapt + blocked.
         prior = ["review one\n" + REVIEW_MARKER, "review two\n" + REVIEW_MARKER]
         eid = self._seed("Review me", ["issue", "issue:status:in_review"], comments=prior)
         ctx = self._ctx(self._config(review={"enabled": True, "max_attempts": 3}),
-                        self._review_runner("changes", 0.2))
+                        self._review_runner("changes", 0.2, recommend=True))
         out = dispatch(ctx, {"action": "handle_comment_added", "post_id": str(eid), "payload": {}})
         self.assertTrue(out.success)
         self.assertIn("issue:status:blocked", self._remote_labels(eid))
-        # a draft spec-change:adapt post was created on the remote
-        drafts = [
-            d for d in self._all_remote_entries()
-            if "spec-change:adapt" in {l.name for l in d.labels} and "draft" in {l.name for l in d.labels}
-        ]
-        self.assertEqual(len(drafts), 1)
+        self.assertEqual(len(self._drafts()), 1)
+
+    def test_review_exhausts_without_recommend_blocks_no_adapt(self) -> None:
+        # Same exhaustion, but reviewer did NOT recommend a spec change -> blocked
+        # for a human decision, and NO draft adapt post is opened.
+        prior = ["review one\n" + REVIEW_MARKER, "review two\n" + REVIEW_MARKER]
+        eid = self._seed("Review me", ["issue", "issue:status:in_review"], comments=prior)
+        ctx = self._ctx(self._config(review={"enabled": True, "max_attempts": 3}),
+                        self._review_runner("changes", 0.2, recommend=False))
+        out = dispatch(ctx, {"action": "handle_comment_added", "post_id": str(eid), "payload": {}})
+        self.assertTrue(out.success)
+        self.assertIn("issue:status:blocked", self._remote_labels(eid))
+        self.assertEqual(len(self._drafts()), 0)
+        bodies = [c.body for c in self._remote_details(eid).comments]
+        self.assertTrue(any("human" in (b or "").lower() for b in bodies))
 
     def test_review_max_attempts_defaults_to_two(self) -> None:
         # No max_attempts in config -> default 2. One prior attempt recorded, so
-        # this failing review is #2 == the limit -> escalate, not loop back.
+        # this failing review is #2 == the limit -> exhausted (blocked), not a loop.
         prior = ["review one\n" + REVIEW_MARKER]
         eid = self._seed("Review me", ["issue", "issue:status:in_review"], comments=prior)
         ctx = self._ctx(self._config(review={"enabled": True}),
-                        self._review_runner("changes", 0.2))
+                        self._review_runner("changes", 0.2, recommend=True))
         out = dispatch(ctx, {"action": "handle_comment_added", "post_id": str(eid), "payload": {}})
         self.assertTrue(out.success)
         self.assertIn("issue:status:blocked", self._remote_labels(eid))
-        drafts = [
-            d for d in self._all_remote_entries()
-            if "spec-change:adapt" in {l.name for l in d.labels} and "draft" in {l.name for l in d.labels}
-        ]
-        self.assertEqual(len(drafts), 1)
+        self.assertEqual(len(self._drafts()), 1)
 
     def _all_remote_entries(self):
         listing = self.remote.list_entries()
@@ -291,10 +332,15 @@ class ImplementApprovalGateTest(_Base):
 
 
 class _SR:
-    """Minimal state-result stub for resolve_approval."""
+    """Minimal state-result stub for resolve_approval / resolve_blocked."""
 
-    def __init__(self, approved_by):
-        self.approved_by = approved_by
+    def __init__(self, approved_by=(), rejected_by=()):
+        self.approved_by = list(approved_by)
+        self.rejected_by = list(rejected_by)
+
+
+_COMMENT = "handle_comment_added"
+_REACT = "handle_reaction_added"
 
 
 class ApprovalGateTest(_Base):
@@ -322,6 +368,100 @@ class ApprovalGateTest(_Base):
         entity, conversation = _load(ctx, eid)
         self.assertIsNone(advance.resolve_approval(ctx, entity, _SR([]), conversation))
         self.assertIn("issue:status:awaiting_approval", self._remote_labels(eid))
+
+    def test_prose_comment_redirects_to_todo_with_guidance(self) -> None:
+        # A free-text comment is taken as change guidance: resume the implementer.
+        eid = self._seed("Gate", ["issue", "issue:status:awaiting_approval"],
+                         comments=["please rename the function to run()"])
+        ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
+        entity, conversation = _load(ctx, eid)
+        detail = advance.resolve_approval(ctx, entity, _SR([]), conversation, _COMMENT)
+        self.assertIn("guidance", detail)
+        self.assertIn("issue:status:todo", self._remote_labels(eid))
+
+    def test_retry_comment_redirects_to_todo_blind(self) -> None:
+        eid = self._seed("Gate", ["issue", "issue:status:awaiting_approval"],
+                         comments=["retry"])
+        ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
+        entity, conversation = _load(ctx, eid)
+        detail = advance.resolve_approval(ctx, entity, _SR([]), conversation, _COMMENT)
+        self.assertIn("retry", detail)
+        self.assertIn("issue:status:todo", self._remote_labels(eid))
+
+    def test_bare_reject_reaction_posts_options_once(self) -> None:
+        # 👎 with no guidance (a reaction event, not a comment): post the options
+        # prompt and wait; the issue stays parked. A second pass posts nothing more.
+        eid = self._seed("Gate", ["issue", "issue:status:awaiting_approval"])
+        ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
+        entity, conversation = _load(ctx, eid)
+        detail = advance.resolve_approval(ctx, entity, _SR(rejected_by=["alice"]), conversation, _REACT)
+        self.assertIn("options", detail)
+        self.assertIn("issue:status:awaiting_approval", self._remote_labels(eid))
+        self.assertIn(advance.OPTIONS_MARKER,
+                      "\n".join(c.body for c in self._remote_details(eid).comments))
+        # second pass: options already posted -> nothing applied.
+        entity, conversation = _load(ctx, eid)
+        again = advance.resolve_approval(ctx, entity, _SR(rejected_by=["alice"]), conversation, _REACT)
+        self.assertIsNone(again)
+        options = [c for c in self._remote_details(eid).comments if advance.OPTIONS_MARKER in (c.body or "")]
+        self.assertEqual(len(options), 1)
+
+    def test_bare_reject_command_posts_options(self) -> None:
+        eid = self._seed("Gate", ["issue", "issue:status:awaiting_approval"],
+                         comments=["reject"])
+        ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
+        entity, conversation = _load(ctx, eid)
+        detail = advance.resolve_approval(ctx, entity, _SR(rejected_by=["alice"]), conversation, _COMMENT)
+        self.assertIn("options", detail)
+        self.assertIn("issue:status:awaiting_approval", self._remote_labels(eid))
+
+    def test_reject_with_prose_is_guidance(self) -> None:
+        eid = self._seed("Gate", ["issue", "issue:status:awaiting_approval"],
+                         comments=["reject use a dataclass instead"])
+        ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
+        entity, conversation = _load(ctx, eid)
+        detail = advance.resolve_approval(ctx, entity, _SR(rejected_by=["alice"]), conversation, _COMMENT)
+        self.assertIn("guidance", detail)
+        self.assertIn("issue:status:todo", self._remote_labels(eid))
+
+    def test_directive_ignored_on_non_comment_event(self) -> None:
+        # A stale prose comment must NOT redirect when the waking event is a label
+        # change (no fresh human directive).
+        eid = self._seed("Gate", ["issue", "issue:status:awaiting_approval"],
+                         comments=["do something"])
+        ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
+        entity, conversation = _load(ctx, eid)
+        self.assertIsNone(
+            advance.resolve_approval(ctx, entity, _SR([]), conversation, "handle_label_added")
+        )
+        self.assertIn("issue:status:awaiting_approval", self._remote_labels(eid))
+
+
+class BlockedBypassTest(_Base):
+    def test_approve_forces_done(self) -> None:
+        eid = self._seed("Stuck", ["issue", "issue:status:blocked"])
+        ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
+        entity, conversation = _load(ctx, eid)
+        detail = advance.resolve_blocked(ctx, entity, _SR(["alice"]), conversation, _REACT)
+        self.assertIn("done", detail)
+        self.assertIn("issue:status:done", self._remote_labels(eid))
+        self.assertFalse(self._remote_details(eid).is_open)
+
+    def test_guidance_comment_reopens_to_todo(self) -> None:
+        eid = self._seed("Stuck", ["issue", "issue:status:blocked"],
+                         comments=["try the other API"])
+        ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
+        entity, conversation = _load(ctx, eid)
+        detail = advance.resolve_blocked(ctx, entity, _SR([]), conversation, _COMMENT)
+        self.assertIn("todo", detail)
+        self.assertIn("issue:status:todo", self._remote_labels(eid))
+
+    def test_nothing_actionable_stays_blocked(self) -> None:
+        eid = self._seed("Stuck", ["issue", "issue:status:blocked"])
+        ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
+        entity, conversation = _load(ctx, eid)
+        self.assertIsNone(advance.resolve_blocked(ctx, entity, _SR([]), conversation, _REACT))
+        self.assertIn("issue:status:blocked", self._remote_labels(eid))
 
 
 def _load(ctx, eid):

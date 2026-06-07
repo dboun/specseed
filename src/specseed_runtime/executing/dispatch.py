@@ -595,8 +595,9 @@ def _run_work(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
     # label also reads as status "awaiting_approval" (the `:status:` infix), but their
     # approvals are resolved above, and a non-approval wake comment must fall through
     # to decide_intent so the worker re-runs with the human's answer.
+    action = task.get("action")
     if _spec_change_route(entity) is None and getattr(entity, "status", None) == "awaiting_approval":
-        resolved = advance.resolve_approval(ctx, entity, state_result, conversation)
+        resolved = advance.resolve_approval(ctx, entity, state_result, conversation, action)
         platform_log.log_event(
             "approval_resolved",
             task_id=task.get("task_id"),
@@ -607,6 +608,20 @@ def _run_work(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
             success=True,
             detail=resolved or "awaiting_approval; no approver yet",
         )
+
+    # A blocked issue is not dead: a human can approve it through (force done) or
+    # hand the implementer guidance to retry. Only fires when something was applied;
+    # otherwise fall through to the no-action path.
+    if _spec_change_route(entity) is None and getattr(entity, "status", None) == "blocked":
+        resolved = advance.resolve_blocked(ctx, entity, state_result, conversation, action)
+        if resolved is not None:
+            platform_log.log_event(
+                "blocked_resolved",
+                task_id=task.get("task_id"),
+                post_id=post_id,
+                detail=resolved,
+            )
+            return HandlerOutcome(success=True, detail=resolved)
 
     if intent == AgentIntent.NONE:
         platform_log.log_event(
