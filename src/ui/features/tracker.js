@@ -145,7 +145,7 @@ export function createTracker({ repo, ctx }) {
     return `
       <div class="filters">
         <form class="search" data-search-form>
-          <input name="q" placeholder="search posts…" value="${escapeHtml(state.search)}" />
+          <input type="search" enterkeyhint="search" name="q" placeholder="search posts…" value="${escapeHtml(state.search)}" />
         </form>
         <div class="seg" data-state-seg>
           ${Object.entries(STATE_TABS)
@@ -488,11 +488,26 @@ export function createTracker({ repo, ctx }) {
     }
   }
 
+  // Live search: filtering is client-side (no network), so fire as the user
+  // types — Enter/iOS Done key stop mattering. Small debounce avoids repaint churn.
+  let searchTimer = null;
+  function handleInput(event) {
+    const input = event.target.closest("[data-search-form] input");
+    if (!input) return;
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      state.search = input.value;
+      state.page = 0;
+      repaintList();
+    }, 150);
+  }
+
   async function handleSubmit(event) {
     const form = event.target;
     event.preventDefault();
     const data = Object.fromEntries(new FormData(form).entries());
     if (form.dataset.searchForm !== undefined) {
+      clearTimeout(searchTimer);
       state.search = String(data.q || "");
       state.page = 0;
       repaintList();
@@ -588,7 +603,8 @@ export function createTracker({ repo, ctx }) {
 
   function dispose() {
     if (timer) clearInterval(timer);
+    clearTimeout(searchTimer);
   }
 
-  return { load, html, afterRender, handleClick, handleSubmit, dispose };
+  return { load, html, afterRender, handleClick, handleSubmit, handleInput, dispose };
 }

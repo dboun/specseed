@@ -34,6 +34,32 @@ export function closeModal() {
   document.querySelector("[data-modal]")?.remove();
 }
 
+// Confirm sub-dialog stacked ON TOP of an open modal (doesn't remove it). Resolves true/false.
+export function confirmDialog(message, { confirmLabel = "OK", cancelLabel = "Cancel" } = {}) {
+  return new Promise((resolve) => {
+    document.querySelector("[data-submodal]")?.remove();
+    const node = document.createElement("div");
+    node.className = "modal-backdrop";
+    node.dataset.submodal = "true";
+    node.innerHTML = `<section class="modal-card">
+      <p>${escapeHtml(message)}</p>
+      <div class="button-row">
+        <button class="btn btn-primary" type="button" data-yes>${escapeHtml(confirmLabel)}</button>
+        <button class="btn btn-ghost" type="button" data-no>${escapeHtml(cancelLabel)}</button>
+      </div>
+    </section>`;
+    const done = (value) => {
+      node.remove();
+      resolve(value);
+    };
+    node.addEventListener("click", (e) => {
+      if (e.target.closest("[data-yes]")) done(true);
+      else if (e.target.closest("[data-no]") || e.target === node) done(false);
+    });
+    document.body.append(node);
+  });
+}
+
 export function relativeTime(value) {
   if (!value) return "never";
   const then = new Date(value).getTime();

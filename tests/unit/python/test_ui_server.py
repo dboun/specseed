@@ -317,5 +317,44 @@ class PageArgsTest(unittest.TestCase):
         self.assertEqual(server._page_args({"q_offset": ["nope"]}, "q", 50), (0, 50))
 
 
+class PrepareTargetTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_existing_dir_passes_through(self) -> None:
+        self.assertEqual(server._prepare_target(str(self.root)), self.root)
+
+    def test_tilde_expands_to_home(self) -> None:
+        import os
+
+        old_home = os.environ.get("HOME")
+        os.environ["HOME"] = str(self.root)
+        try:
+            (self.root / "repo").mkdir()
+            self.assertEqual(server._prepare_target("~/repo"), self.root / "repo")
+        finally:
+            if old_home is None:
+                os.environ.pop("HOME", None)
+            else:
+                os.environ["HOME"] = old_home
+
+    def test_missing_without_create_raises_target_missing(self) -> None:
+        with self.assertRaises(server.TargetMissing):
+            server._prepare_target(str(self.root / "nope"))
+
+    def test_missing_with_create_makes_dir(self) -> None:
+        path = self.root / "deep" / "new_repo"
+        self.assertEqual(server._prepare_target(str(path), create=True), path)
+        self.assertTrue(path.is_dir())
+
+    def test_empty_target_raises(self) -> None:
+        with self.assertRaises(RuntimeError):
+            server._prepare_target("")
+
+
 if __name__ == "__main__":
     unittest.main()

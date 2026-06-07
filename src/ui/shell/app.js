@@ -265,6 +265,10 @@ document.addEventListener("submit", (event) => {
   state.feature?.handleSubmit?.(event);
 });
 
+document.addEventListener("input", (event) => {
+  state.feature?.handleInput?.(event);
+});
+
 // Back/forward + manual hash edits navigate. replaceState (writeHash) does NOT
 // fire hashchange, so this never loops with our own updates.
 window.addEventListener("hashchange", () => {

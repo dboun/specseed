@@ -9,7 +9,11 @@ async function request(path, options = {}) {
   } catch {
     throw new Error(`bad response (${response.status})`);
   }
-  if (!payload.ok) throw new Error(payload.error || "request failed");
+  if (!payload.ok) {
+    const err = new Error(payload.error || "request failed");
+    if (payload.code) err.code = payload.code; // machine-readable error kind (e.g. target_missing)
+    throw err;
+  }
   return payload.data;
 }
 

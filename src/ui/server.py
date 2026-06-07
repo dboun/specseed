@@ -174,6 +174,22 @@ class ExternallyManaged(Exception):
     pass
 
 
+class TargetMissing(Exception):
+    pass
+
+
+def _prepare_target(target: str, create: bool = False) -> Path:
+    """Expand ~ in an add-repo target. Missing dir: mkdir when create, else TargetMissing."""
+    if not target:
+        raise RuntimeError("target must be a directory path")
+    path = Path(target).expanduser()
+    if not path.is_dir():
+        if not create:
+            raise TargetMissing(str(path))
+        path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def _repo(repo_id: str) -> dict:
     record = registry.get_repo(repo_id)
     if record is None:
@@ -551,11 +567,17 @@ class Handler(BaseHTTPRequestHandler):
                 body = self._body()
                 target = str(body.get("target") or "").strip()
                 provider = str(body.get("provider") or "local").strip()
-                if not target or not Path(target).expanduser().is_dir():
-                    raise RuntimeError("target must be an existing directory")
                 if provider not in registry.PROVIDERS:
                     raise RuntimeError(f"provider must be one of {registry.PROVIDERS}")
-                record = registry.add_repo(target, provider=provider, name=body.get("name") or None)
+                try:
+                    target_path = _prepare_target(target, create=bool(body.get("create")))
+                except TargetMissing:
+                    self._json(
+                        {"ok": False, "error": "target directory does not exist", "code": "target_missing"},
+                        status=404,
+                    )
+                    return
+                record = registry.add_repo(target_path, provider=provider, name=body.get("name") or None)
                 Path(record["storage"]).mkdir(parents=True, exist_ok=True)
                 # remote.json + token are written by the /setup step next.
                 self._json({"ok": True, "data": _repo_summary(record)}, status=201)

@@ -1,5 +1,5 @@
 import { api } from "./api.js";
-import { closeModal, escapeHtml, modal, toast } from "../ui/components.js";
+import { closeModal, confirmDialog, escapeHtml, modal, toast } from "../ui/components.js";
 
 const TOKEN_HELP = {
   github: {
@@ -49,7 +49,7 @@ export function openAddRepo(ctx) {
       <h2>Add repository</h2>
       <div class="field">
         <label>Repository path</label>
-        <input name="target" placeholder="/abs/path/to/repo" autocomplete="off" required autofocus />
+        <input name="target" placeholder="/abs/path/to/repo or ~/path/to/repo" autocomplete="off" required autofocus />
       </div>
       <div class="field">
         <label>Display name <span class="req">(optional)</span></label>
@@ -91,12 +91,26 @@ export function openAddRepo(ctx) {
     const data = Object.fromEntries(new FormData(e.target).entries());
     const submit = e.target.querySelector('[type="submit"]');
     submit.disabled = true;
+    const payload = {
+      target: String(data.target || "").trim(),
+      provider,
+      name: String(data.name || "").trim() || undefined,
+    };
     try {
-      const created = await api.addRepo({
-        target: String(data.target || "").trim(),
-        provider,
-        name: String(data.name || "").trim() || undefined,
-      });
+      let created;
+      try {
+        created = await api.addRepo(payload);
+      } catch (err) {
+        if (err.code !== "target_missing") throw err;
+        const make = await confirmDialog("The folder specified doesn't exist. Create new?", {
+          confirmLabel: "Create",
+        });
+        if (!make) {
+          submit.disabled = false;
+          return;
+        }
+        created = await api.addRepo({ ...payload, create: true });
+      }
       await api.setup(created.id, {
         repo: String(data.repo || "").trim(),
         token: String(data.token || "").trim(),

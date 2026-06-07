@@ -399,6 +399,7 @@ input, textarea, select {
   background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 9px; padding: 10px 12px;
 }
 input:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(56,225,192,0.12); }
+input[type="search"] { -webkit-appearance: none; appearance: none; } /* kill Safari's native search styling */
 textarea { resize: vertical; min-height: 70px; }
 
 .check-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
