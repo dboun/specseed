@@ -6,6 +6,7 @@ import unittest
 
 from specseed_runtime.platform_identity import (
     COMMENT_PREFIX,
+    infer_owner,
     is_platform_comment,
     platform_comment,
     platform_username,
@@ -56,6 +57,24 @@ class PlatformUsernameTest(unittest.TestCase):
         self.assertIsNone(platform_username({"platform_username": "  "}))
         self.assertIsNone(platform_username({}))
         self.assertIsNone(platform_username(None))
+
+
+class InferOwnerTest(unittest.TestCase):
+    def test_owner_name(self) -> None:
+        self.assertEqual(infer_owner("dboun/whatever"), "dboun")
+
+    def test_full_url_drops_host(self) -> None:
+        self.assertEqual(infer_owner("https://github.com/dboun/whatever"), "dboun")
+
+    def test_git_ssh_ref(self) -> None:
+        self.assertEqual(infer_owner("git@github.com:dboun/whatever.git"), "dboun")
+
+    def test_self_hosted_group(self) -> None:
+        self.assertEqual(infer_owner("gitlab.example.com/group/sub/proj"), "group")
+
+    def test_blank_is_none(self) -> None:
+        self.assertIsNone(infer_owner(""))
+        self.assertIsNone(infer_owner(None))
 
 
 if __name__ == "__main__":

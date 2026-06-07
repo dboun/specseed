@@ -39,19 +39,31 @@ export function createTracker({ repo, ctx }) {
   const isManaged = (post) => (state.meta.default_post_titles || []).includes(post?.title);
   const isControl = (post) => post?.title === "CONTROL";
 
+  // -- identity --------------------------------------------------------- #
+  // A post/comment is the platform's when it is authored by the configured
+  // platform account AND that account differs from the human (UI) user.
+  const isPlatformAuthored = (post) => {
+    const pu = state.meta.platform_username;
+    return !!pu && post?.author === pu && pu !== state.meta.ui_user;
+  };
+
   // -- filtering + pagination ------------------------------------------- #
   function filtered() {
     const q = state.search.trim().toLowerCase();
-    return state.posts.filter((p) => {
+    const list = state.posts.filter((p) => {
       if (state.stateFilter === "open" && !p.is_open) return false;
       if (state.stateFilter === "closed" && p.is_open) return false;
-      if (q && !(`#${p.id} ${p.title} ${p.body || ""}`.toLowerCase().includes(q))) return false;
+      if (state.stateFilter === "need_approval" && !p.needs_approval) return false;
+      if (q && !(`#${p.id} ${p.title} ${p.body || ""} ${p.comments_text || ""}`.toLowerCase().includes(q))) return false;
       if (state.labelFilter.size) {
         const names = new Set((p.labels || []).map((l) => l.name));
         for (const want of state.labelFilter) if (!names.has(want)) return false;
       }
       return true;
     });
+    // Newest activity first (entry edit OR latest comment), stamped server-side.
+    list.sort((a, b) => String(b.last_activity_at || "").localeCompare(String(a.last_activity_at || "")));
+    return list;
   }
 
   function pageSlice(list) {
@@ -106,28 +118,44 @@ export function createTracker({ repo, ctx }) {
       .join("")}</div>`;
   }
 
+  const STATE_TABS = { open: "open", need_approval: "need approval", closed: "closed", all: "all" };
+
+  // Split available label names into the human-facing "important" set (kept in the
+  // server's order) and the rest (alphabetical), so every picker leads with what a
+  // human actually reaches for and tucks the machinery under an "Others:" divider.
+  function splitImportant(names) {
+    const important = (state.meta.important_labels || []).filter((n) => names.includes(n));
+    const seen = new Set(important);
+    const others = names.filter((n) => !seen.has(n)).sort();
+    return { important, others };
+  }
+  function labelPicker(names, chip) {
+    if (!names.length) return "";
+    const { important, others } = splitImportant(names);
+    return (
+      important.map(chip).join("") +
+      (others.length ? `<div class="label-sep">Others:</div>` + others.map(chip).join("") : "")
+    );
+  }
+
   function filters() {
-    const labels = state.meta.labels || [];
+    const names = (state.meta.labels || []).map((l) => l.name);
+    const filterChip = (n) =>
+      `<button class="chip ${state.labelFilter.has(n) ? "on" : ""}" data-label-filter="${escapeHtml(n)}">${escapeHtml(n)}</button>`;
     return `
       <div class="filters">
         <form class="search" data-search-form>
           <input name="q" placeholder="search posts…" value="${escapeHtml(state.search)}" />
         </form>
         <div class="seg" data-state-seg>
-          ${["open", "closed", "all"]
-            .map((s) => `<button class="seg-btn ${state.stateFilter === s ? "active" : ""}" data-state="${s}">${s}</button>`)
+          ${Object.entries(STATE_TABS)
+            .map(([s, label]) => `<button class="seg-btn ${state.stateFilter === s ? "active" : ""}" data-state="${s}">${label}</button>`)
             .join("")}
         </div>
         <details class="label-filter">
           <summary>labels${state.labelFilter.size ? ` · ${state.labelFilter.size}` : ""}</summary>
           <div class="label-filter-menu">
-            ${labels
-              .map(
-                (l) => `<button class="chip ${state.labelFilter.has(l.name) ? "on" : ""}" data-label-filter="${escapeHtml(
-                  l.name
-                )}">${escapeHtml(l.name)}</button>`
-              )
-              .join("") || `<span class="muted">no labels</span>`}
+            ${labelPicker(names, filterChip) || `<span class="muted">no labels</span>`}
           </div>
         </details>
       </div>`;
@@ -149,8 +177,17 @@ export function createTracker({ repo, ctx }) {
 
   function postCard(post) {
     const labels = post.labels || [];
+    const isDraft = labels.some((l) => l.name === "draft");
+    const cls = [
+      "post-card",
+      String(post.id) === String(state.selectedId) ? "active" : "",
+      isDraft ? "draft" : "",
+      post.needs_approval ? "needs-approval" : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
     return `
-      <article class="post-card ${String(post.id) === String(state.selectedId) ? "active" : ""}" data-open-post="${escapeHtml(post.id)}">
+      <article class="${cls}" data-open-post="${escapeHtml(post.id)}">
         <div class="post-card-top">
           <span class="post-id">#${escapeHtml(post.id)}</span>
           <span class="state-dot ${post.is_open ? "open" : "closed"}"></span>
@@ -185,7 +222,7 @@ export function createTracker({ repo, ctx }) {
     const comments = post.comments || [];
     return `
       <div class="section-title">comments</div>
-      ${comments.map(commentHtml).join("") || `<div class="muted">No comments.</div>`}
+      ${comments.map((c) => commentHtml(c, post)).join("") || `<div class="muted">No comments.</div>`}
       ${composer
         ? `<form data-comment-form><textarea name="body" placeholder="add a comment…" required></textarea><button class="btn btn-primary">Comment</button></form>`
         : ""}`;
@@ -203,30 +240,48 @@ export function createTracker({ repo, ctx }) {
 
   function editableDrawer(post) {
     const labels = post.labels || [];
+    // Platform-authored posts are read-only: no title/body/label edits. Delete,
+    // close/reopen, reactions and comments stay open. Removing the `draft` label
+    // is the one allowed label change (the explicit "process this draft" action).
+    const readOnly = isPlatformAuthored(post);
+    const isDraft = labels.some((l) => l.name === "draft");
     return `
-      <div class="drawer">
+      <div class="drawer ${isDraft ? "draft" : ""}">
         ${drawerHead(post)}
         <div class="reaction-strip">${reactionButtons(post.reactions, "post")}</div>
-        ${state.editing ? editForm(post) : postView(post)}
+        ${state.editing && !readOnly ? editForm(post) : postView(post, readOnly)}
         <div class="section-title">labels</div>
         <div class="chip-row">
           ${labels
-            .map((l) => `<button class="chip removable" data-remove-label="${escapeHtml(l.name)}">${escapeHtml(l.name)} ✕</button>`)
+            .map((l) =>
+              readOnly
+                ? `<span class="chip">${escapeHtml(l.name)}</span>`
+                : `<button class="chip removable" data-remove-label="${escapeHtml(l.name)}">${escapeHtml(l.name)} ✕</button>`
+            )
             .join("") || `<span class="muted">none</span>`}
         </div>
-        ${addLabelDropdown(post)}
+        ${readOnly ? "" : addLabelDropdown(post)}
+        ${isDraft ? draftBox() : ""}
         ${commentsBlock(post, true)}
       </div>`;
   }
 
   // read view: title lives bold in the drawer head; body renders as markdown
-  function postView(post) {
+  function postView(post, readOnly) {
     return `
       <div class="post-body">${renderMarkdown(post.body || "")}</div>
       <div class="button-row">
-        <button type="button" class="btn btn-ghost" data-edit-post>Edit</button>
+        ${readOnly ? "" : `<button type="button" class="btn btn-ghost" data-edit-post>Edit</button>`}
         <button type="button" class="btn btn-ghost" data-toggle-post>${post.is_open ? "Close" : "Reopen"}</button>
         <button type="button" class="btn btn-danger" data-delete-post>Delete</button>
+      </div>`;
+  }
+
+  function draftBox() {
+    return `
+      <div class="draft-box">
+        <span class="draft-box-label">Draft.</span>
+        <button type="button" class="btn btn-ghost sm" data-remove-draft>Remove draft label to process</button>
       </div>`;
   }
 
@@ -247,18 +302,44 @@ export function createTracker({ repo, ctx }) {
   function addLabelDropdown(post) {
     const have = new Set((post.labels || []).map((l) => l.name));
     const avail = (state.meta.labels || []).map((l) => l.name).filter((n) => !have.has(n));
+    const addChip = (n) => `<button type="button" class="chip" data-add-label="${escapeHtml(n)}">${escapeHtml(n)}</button>`;
     return `
       <details class="label-filter add-label-dd" ${state.addLabelOpen ? "open" : ""} data-add-label-dd>
         <summary>+ add labels</summary>
         <div class="label-filter-menu">
-          ${avail
-            .map((n) => `<button type="button" class="chip" data-add-label="${escapeHtml(n)}">${escapeHtml(n)}</button>`)
-            .join("") || `<span class="muted">no labels left</span>`}
+          ${labelPicker(avail, addChip) || `<span class="muted">no labels left</span>`}
         </div>
       </details>`;
   }
 
-  function commentHtml(comment) {
+  // The approval request is a comment; surface it as a box with approve/reject
+  // (which resolve to 👍/👎 on the post) instead of a plain comment with reactions.
+  const isApprovalComment = (comment) => /Approval required:/i.test(comment.body || "");
+
+  function approvalResolution(post) {
+    const names = (post.labels || []).map((l) => l.name);
+    const reacted = (kind) => (post.reactions || []).some((r) => r.kind === kind && r.count > 0);
+    if (names.some((n) => n.endsWith(":status:approved") || n.endsWith(":status:done")) || reacted("thumbs_up")) return "approved";
+    if (names.some((n) => n.endsWith(":status:rejected")) || reacted("thumbs_down")) return "rejected";
+    return null;
+  }
+
+  function approvalBox(comment, post) {
+    const resolved = approvalResolution(post);
+    return `
+      <article class="approval-box ${resolved ? "resolved" : ""}">
+        <div class="approval-body">${renderMarkdown(comment.body || "")}</div>
+        ${resolved
+          ? `<div class="approval-status">${resolved === "approved" ? "✅ Approved" : "🚫 Rejected"}</div>`
+          : `<div class="button-row">
+              <button type="button" class="btn btn-primary" data-approve>Approve</button>
+              <button type="button" class="btn btn-danger" data-reject>Reject</button>
+            </div>`}
+      </article>`;
+  }
+
+  function commentHtml(comment, post) {
+    if (isApprovalComment(comment)) return approvalBox(comment, post);
     return `
       <article class="comment">
         <div class="comment-meta">${escapeHtml(comment.author || "unknown")} · ${escapeHtml(formatTime(comment.updated_at || comment.created_at))}</div>
@@ -357,6 +438,9 @@ export function createTracker({ repo, ctx }) {
     }
     const add = t.closest("[data-add-label]");
     if (add) return mutate(() => api.updateLabel(repo.id, state.selectedId, "add", add.dataset.addLabel));
+    if (t.closest("[data-remove-draft]")) return mutate(() => api.updateLabel(repo.id, state.selectedId, "remove", "draft"));
+    if (t.closest("[data-approve]")) return mutate(() => api.reactPost(repo.id, state.selectedId, "thumbs_up"));
+    if (t.closest("[data-reject]")) return mutate(() => api.reactPost(repo.id, state.selectedId, "thumbs_down"));
     const stateSeg = t.closest("[data-state]");
     if (stateSeg) {
       state.stateFilter = stateSeg.dataset.state;
@@ -442,8 +526,14 @@ export function createTracker({ repo, ctx }) {
   }
 
   function openNewPost() {
-    const human = state.meta.human_labels || [];
-    const advanced = (state.meta.labels || []).map((l) => l.name).filter((n) => !human.includes(n));
+    const names = (state.meta.labels || []).map((l) => l.name);
+    const human = (state.meta.important_labels || []).filter((n) => names.includes(n));
+    const humanSet = new Set(human);
+    // type:* and difficulty:* are platform-driven work classifiers, never set by a
+    // human at post-creation — keep them out of the new-post form entirely.
+    const advanced = names
+      .filter((n) => !humanSet.has(n) && !n.startsWith("type:") && !n.startsWith("difficulty:"))
+      .sort();
     const checkboxes = (names) =>
       names
         .map(

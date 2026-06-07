@@ -135,19 +135,12 @@ class Scheduler:
         self._current_task_id: Optional[int] = None
         self._next_poll_at = 0.0  # monotonic; 0 forces an immediate first sync
 
-        self._dashboards_enabled = self._dashboards_auto_refresh()
         self._last_work_sig: Optional[str] = None
 
         # Provider-quota circuit breaker. When a task reports every runner spec was
         # quota-blocked, we park sync+claim until this monotonic deadline (the loop
         # stays alive for heartbeat/control). 0 = closed.
         self._quota_paused_until = 0.0
-
-    def _dashboards_auto_refresh(self) -> bool:
-        dashboards_cfg = self.config.get("dashboards")
-        if isinstance(dashboards_cfg, dict):
-            return bool(dashboards_cfg.get("auto_refresh", True))
-        return True
 
     # ------------------------------------------------------------------ #
     # lifecycle
@@ -212,8 +205,8 @@ class Scheduler:
         """Re-read config and rebuild everything derived from it.
 
         No-op without a ``config_loader`` (tests, injected doubles). Rebuilds
-        permissions, runner chains, poll interval (unless CLI-overridden),
-        dashboards flag; trackers re-resolve lazily so remote.json edits land.
+        permissions, runner chains, poll interval (unless CLI-overridden);
+        trackers re-resolve lazily so remote.json edits land.
         A bad config file logs and keeps the old state - never kills the loop.
         """
         if self._config_loader is None:
@@ -229,7 +222,6 @@ class Scheduler:
         self.runner = build_runner_chains(self.config)
         if not self._poll_interval_override:
             self.poll_interval = float(self.config.get("poll_interval_seconds", DEFAULT_POLL_INTERVAL))
-        self._dashboards_enabled = self._dashboards_auto_refresh()
         self._remote = None
         self._local = None
         if self._control is not None:
@@ -492,9 +484,10 @@ class Scheduler:
         """Re-render ROADMAP / Current sprint when the work tree changed.
 
         Cheap signature gate first so the per-post body reads only happen after a
-        real change. Never lets a dashboard hiccup disturb the loop.
+        real change. Never lets a dashboard hiccup disturb the loop. Dashboards are
+        always kept in sync - a stale ROADMAP/Current sprint is worse than useless.
         """
-        if not self._dashboards_enabled or self._remote is None:
+        if self._remote is None:
             return
         try:
             signature = dashboards_mod.work_signature(self._remote)

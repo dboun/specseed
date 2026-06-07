@@ -157,10 +157,22 @@ function switcherHtml() {
     </details>`;
 }
 
+// One shared web UI fronts many SEPARATE runner processes. The chip reports the
+// foreground (selected) repo's runner, plus how many OTHER repos are running so a
+// background runner is never invisible. Liveness is computed server-side (pid +
+// fresh heartbeat) and refreshed on an interval.
 function runnerPill(repo) {
   if (!repo) return "";
+  const isRunning = (r) => r.runner.alive && r.runner.state === "running";
   const st = repo.runner.alive ? repo.runner.state : "stopped";
-  return `<span class="pill pill-${st}" data-runner-pill><span class="dot dot-${st}"></span>${escapeHtml(st)}</span>`;
+  const others = state.repos.filter((r) => r.id !== repo.id && isRunning(r)).length;
+  let label = st;
+  if (isRunning(repo)) {
+    label = others > 0 ? `running (${others + 1})` : "running"; // never "(1)"
+  } else if (others > 0) {
+    label = `${st} (${others} other running)`;
+  }
+  return `<span class="pill pill-${st}" data-runner-pill><span class="dot dot-${st}"></span>${escapeHtml(label)}</span>`;
 }
 
 function tabButton(tab, repo) {
@@ -261,6 +273,10 @@ window.addEventListener("hashchange", () => {
   applyHash();
   if (`${state.currentId}/${state.tab}` !== before) render();
 });
+
+// Keep the runner chip live across ALL repos' background processes, even when the
+// Monitor tab (which also polls) isn't open.
+setInterval(refreshTopbar, 5000);
 
 // restore last repo selection before first boot
 state.currentId = localStorage.getItem("ss.repo");

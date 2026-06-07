@@ -90,7 +90,7 @@ def approval_request_comment(apr_id: str, summary: str) -> str:
     """
     apr_id = apr_id.strip().upper()
     return platform_comment(
-        f"**Approval required — `{apr_id}`**\n\n"
+        f"**Approval required: `{apr_id}`**\n\n"
         f"{summary.strip()}\n\n"
         f"This work is **not started** until a human approves. To approve, either:\n"
         f"- comment `approve {apr_id}` on this post, or\n"

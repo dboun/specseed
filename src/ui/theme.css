@@ -345,6 +345,38 @@ button.chip { cursor: pointer; }
 .add-label-dd > summary { font-family: var(--mono); font-size: 12px; color: var(--ink-dim); }
 .add-label-dd .label-filter-menu { left: 0; right: auto; }
 
+/* "Others:" divider inside a label picker (important labels sort above it). */
+.label-sep {
+  width: 100%; color: var(--muted); font-size: 11px; font-family: var(--mono);
+  text-transform: uppercase; letter-spacing: 0.04em;
+  margin: 8px 0 2px; padding-top: 6px; border-top: 1px solid var(--line);
+}
+
+/* Draft posts (card + drawer): a blue outline so they read as "not yet live". */
+.post-card.draft { border-color: var(--accent-2); }
+.drawer.draft { border-color: var(--accent-2); box-shadow: 0 0 0 1px var(--accent-2) inset; }
+/* Posts awaiting a human gate: a warm outline. */
+.post-card.needs-approval { border-color: var(--warn); }
+
+/* Draft call-to-action box in the drawer. */
+.draft-box {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin: 12px 0; padding: 10px 12px;
+  border: 1px solid var(--accent-2); border-radius: 10px;
+  background: rgba(91,157,255,0.07);
+}
+.draft-box-label { font-weight: 700; color: var(--accent-2); }
+
+/* Approval request rendered as a box instead of a plain comment. */
+.approval-box {
+  margin: 10px 0; padding: 12px 14px;
+  border: 1px solid var(--warn); border-radius: 10px;
+  background: rgba(246,183,90,0.06);
+}
+.approval-box.resolved { border-color: var(--line-2); background: transparent; }
+.approval-box .approval-body { margin-bottom: 8px; }
+.approval-status { font-weight: 700; color: var(--muted); }
+
 .external { display: flex; align-items: center; gap: 18px; }
 .external-icon { font-size: 34px; color: var(--accent); }
 .external-title { font-size: 16px; font-weight: 700; }

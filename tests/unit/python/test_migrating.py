@@ -86,10 +86,12 @@ class RunMigrationsTest(unittest.TestCase):
     def test_newer_storage_never_rewritten_backwards(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             specseed_dir, storage = _fixture_tree(Path(tmp), version="0.3.1")
-            migrate.write_storage_version("0.9.9", storage)
+            # Sentinel must stay above the real engine version (code_version ignores
+            # the fixture tree and reads the repo's skills/specseed/version.txt).
+            migrate.write_storage_version("99.0.0", storage)
 
             self.assertEqual(migrate.run_migrations(storage=storage, specseed_dir=specseed_dir), [])
-            self.assertEqual(migrate.storage_version(storage), "0.9.9")
+            self.assertEqual(migrate.storage_version(storage), "99.0.0")
 
     def test_z_bump_without_hop_fast_forwards(self) -> None:
         # A z-bump beyond the last hop (no migration) just fast-forwards the marker.

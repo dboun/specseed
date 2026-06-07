@@ -140,7 +140,7 @@ class ReadLogTest(unittest.TestCase):
         self.assertEqual(out["items"], [{"raw": "not json"}])
 
 
-class CommentCountsTest(unittest.TestCase):
+class EnrichListTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -148,25 +148,61 @@ class CommentCountsTest(unittest.TestCase):
         self.record = {"storage": str(self.storage)}
 
     def _make_tracker_db(self, rows) -> None:
+        # rows: (entry_id, body, updated_at)
         conn = sqlite3.connect(self.storage / "tracking_remote_local.db")
-        conn.execute("CREATE TABLE comments (id INTEGER PRIMARY KEY, entry_id INTEGER, body TEXT)")
-        conn.executemany("INSERT INTO comments(entry_id, body) VALUES (?, ?)", rows)
+        conn.execute(
+            "CREATE TABLE comments (id INTEGER PRIMARY KEY, entry_id INTEGER, body TEXT, "
+            "created_at TEXT, updated_at TEXT)"
+        )
+        conn.executemany(
+            "INSERT INTO comments(entry_id, body, created_at, updated_at) VALUES (?, ?, ?, ?)",
+            [(e, b, u, u) for (e, b, u) in rows],
+        )
         conn.commit()
         conn.close()
 
-    def test_stamps_counts_per_post(self) -> None:
-        self._make_tracker_db([(1, "a"), (1, "b"), (3, "c")])
-        posts = [{"id": 1}, {"id": 2}, {"id": 3}]
-        out = server._with_comment_counts(self.record, posts)
+    def test_stamps_counts_text_and_activity(self) -> None:
+        self._make_tracker_db(
+            [(1, "hello", "2026-01-02T00:00:00Z"), (1, "world", "2026-01-03T00:00:00Z"), (3, "c", "2026-01-01T00:00:00Z")]
+        )
+        posts = [
+            {"id": 1, "updated_at": "2026-01-01T00:00:00Z"},
+            {"id": 2, "updated_at": "2026-02-01T00:00:00Z"},
+            {"id": 3, "updated_at": "2026-01-05T00:00:00Z"},
+        ]
+        out = server._enrich_list(self.record, posts)
         self.assertEqual([p["comment_count"] for p in out], [2, 0, 1])
+        # search blob carries both comment bodies for post 1
+        self.assertIn("hello", out[0]["comments_text"])
+        self.assertIn("world", out[0]["comments_text"])
+        # last_activity_at = newest of entry vs comments
+        self.assertEqual(out[0]["last_activity_at"], "2026-01-03T00:00:00Z")  # latest comment
+        self.assertEqual(out[1]["last_activity_at"], "2026-02-01T00:00:00Z")  # no comments -> entry
+        self.assertEqual(out[2]["last_activity_at"], "2026-01-05T00:00:00Z")  # entry newer than comment
+
+    def test_needs_approval_from_labels(self) -> None:
+        posts = [
+            {"id": 1, "labels": [{"name": "spec-change:status:awaiting_approval"}]},
+            {"id": 2, "labels": [{"name": "issue:status:awaiting_approval"}]},
+            {"id": 3, "labels": [{"name": "issue:status:todo"}]},
+            {"id": 4},
+        ]
+        out = server._enrich_list(self.record, posts)
+        self.assertEqual([p["needs_approval"] for p in out], [True, True, False, False])
 
     def test_missing_db_defaults_zero(self) -> None:
         posts = [{"id": 1}]
-        out = server._with_comment_counts(self.record, posts)
+        out = server._enrich_list(self.record, posts)
         self.assertEqual(out[0]["comment_count"], 0)
+        self.assertEqual(out[0]["comments_text"], "")
 
     def test_non_list_passthrough(self) -> None:
-        self.assertEqual(server._with_comment_counts(self.record, {"x": 1}), {"x": 1})
+        self.assertEqual(server._enrich_list(self.record, {"x": 1}), {"x": 1})
+
+    def test_important_labels_constant(self) -> None:
+        # Drives every label picker; draft present, type:/difficulty: absent.
+        self.assertIn("draft", server.IMPORTANT_LABELS)
+        self.assertTrue(all(not n.startswith(("type:", "difficulty:")) for n in server.IMPORTANT_LABELS))
 
 
 class InFutureTest(unittest.TestCase):

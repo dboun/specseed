@@ -28,6 +28,7 @@ import json
 from pathlib import Path
 from typing import Optional
 
+from specseed_runtime.platform_identity import platform_username
 from specseed_runtime.storage_paths import default_storage_dir, storage_db_path
 from specseed_runtime.tracking.tracking_base import TrackingBase
 from specseed_runtime.tracking.tracking_local import TrackingLocal
@@ -80,7 +81,14 @@ def resolve_remote(storage: Optional[str | Path] = None) -> TrackingBase:
     remote_state = load_remote_state(storage)
 
     if not remote_state.get("enabled"):
-        return TrackingRemoteLocal(db_path=storage_db_path("tracking_remote_local.db", storage))
+        # The local stand-in shares one db with the UI's human writes. Author the
+        # platform's writes as platform_username so the UI can tell them apart (and
+        # mark them non-editable). Falls back to "remote" for older blank configs.
+        author = platform_username(load_config(storage)) or "remote"
+        return TrackingRemoteLocal(
+            db_path=storage_db_path("tracking_remote_local.db", storage),
+            author=author,
+        )
 
     provider = remote_state.get("provider")
     repo = remote_state.get("repo")

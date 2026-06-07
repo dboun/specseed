@@ -260,5 +260,35 @@ class RunnerVocabularySingleSourceTest(unittest.TestCase):
         )
 
 
+class IdentityDefaultsTest(unittest.TestCase):
+    def test_local_defaults_user_and_specseed(self) -> None:
+        cfg = configure.default_config()
+        configure.apply_identity_defaults(cfg, {"enabled": False})
+        self.assertEqual(cfg["approvals"]["approver_usernames"], ["user"])
+        self.assertEqual(cfg["platform_username"], "specseed")
+
+    def test_remote_infers_owner_for_both(self) -> None:
+        cfg = configure.default_config()
+        configure.apply_identity_defaults(
+            cfg, {"enabled": True, "provider": "github", "repo": "https://github.com/dboun/x"}
+        )
+        self.assertEqual(cfg["approvals"]["approver_usernames"], ["dboun"])
+        self.assertEqual(cfg["platform_username"], "dboun")
+
+    def test_remote_uninferrable_stays_blank(self) -> None:
+        cfg = configure.default_config()
+        configure.apply_identity_defaults(cfg, {"enabled": True, "provider": "github", "repo": ""})
+        self.assertEqual(cfg["approvals"]["approver_usernames"], [])
+        self.assertEqual(cfg["platform_username"], "")
+
+    def test_never_clobbers_existing(self) -> None:
+        cfg = configure.default_config()
+        cfg["approvals"]["approver_usernames"] = ["alice"]
+        cfg["platform_username"] = "bot"
+        configure.apply_identity_defaults(cfg, {"enabled": False})
+        self.assertEqual(cfg["approvals"]["approver_usernames"], ["alice"])
+        self.assertEqual(cfg["platform_username"], "bot")
+
+
 if __name__ == "__main__":
     unittest.main()

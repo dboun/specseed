@@ -57,6 +57,7 @@ def _add_package_parent_to_path():
 _add_package_parent_to_path()
 
 from specseed_runtime.migrating.migrate import run_migrations
+from specseed_runtime.platform_identity import infer_owner
 from specseed_runtime.storage_paths import default_storage_dir as _dev_default_storage_dir
 from specseed_runtime.configuring import scaffold  # noqa: E402
 
@@ -380,6 +381,29 @@ def _coerce_runner(existing):
     return out or None
 
 
+def apply_identity_defaults(cfg, remote):
+    """Fill blank approver/platform usernames from the provider, in place.
+
+    local: human ``user``, platform ``specseed``. github/gitlab: both default to
+    the repo owner when inferrable (``github.com/dboun/x`` -> ``dboun``). Never
+    overwrites a value the human already set; leaves blanks blank if nothing parses.
+    """
+    approvals = cfg.setdefault("approvals", {})
+    if remote.get("enabled"):
+        owner = infer_owner(remote.get("repo"))
+        if owner:
+            if not approvals.get("approver_usernames"):
+                approvals["approver_usernames"] = [owner]
+            if not cfg.get("platform_username"):
+                cfg["platform_username"] = owner
+    else:
+        if not approvals.get("approver_usernames"):
+            approvals["approver_usernames"] = ["user"]
+        if not cfg.get("platform_username"):
+            cfg["platform_username"] = "specseed"
+    return cfg
+
+
 def coerce_config(existing):
     """Return a config object with defaults backfilled."""
     cfg = default_config()
@@ -500,6 +524,7 @@ def run_defaults(
     cfg["specseed_dir"] = specseed_value
     if not cfg.get("dev_branch") or cfg.get("dev_branch") == DEFAULT_DEV_BRANCH:
         cfg["dev_branch"] = detect_default_branch(repo_root)
+    apply_identity_defaults(cfg, remote)
 
     written = write_config_files(
         storage,
@@ -920,6 +945,7 @@ def run_interactive(storage, explicit_storage=False):
     print("Press Enter to accept the shown default at any prompt.")
 
     token = section_backend(cfg, remote, storage)
+    apply_identity_defaults(cfg, remote)  # seed user/platform names before prompting
     section_runner(cfg)
     section_dev_branch(cfg)
     section_git_permissions(cfg)

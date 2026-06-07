@@ -22,9 +22,34 @@ Only Python stdlib is used.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Optional
 
 COMMENT_PREFIX = "specseed: "
+
+
+def infer_owner(repo: Optional[str]) -> Optional[str]:
+    """Best-effort tracker username from a repo reference.
+
+    ``dboun/whatever`` -> ``dboun``; a full URL or ``git@`` ref drops the host
+    (``https://github.com/dboun/x`` -> ``dboun``); self-hosted ``host/group/proj``
+    drops the leading host segment. Returns None when nothing parses.
+    """
+    if not repo:
+        return None
+    ref = str(repo).strip()
+    if ref.startswith("git@"):
+        ref = ref.split(":", 1)[-1]
+    ref = re.sub(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", "", ref)  # strip scheme
+    parts = [p for p in ref.rstrip("/").split("/") if p]
+    if not parts:
+        return None
+    if "." in parts[0] and len(parts) >= 2:  # leading host (github.com, gitlab.x)
+        parts = parts[1:]
+    owner = parts[0]
+    if owner.endswith(".git"):
+        owner = owner[:-4]
+    return owner or None
 
 
 def platform_username(config: Optional[dict[str, Any]]) -> Optional[str]:

@@ -43,7 +43,7 @@ from specseed_runtime import registry
 from specseed_runtime.configuring import configure
 from specseed_runtime.executing import runner_control
 from specseed_runtime.tracking import populate_defaults
-from specseed_runtime.tracking.resolve_remote import resolve_remote
+from specseed_runtime.tracking.tracking_remote_local import TrackingRemoteLocal
 from specseed_runtime.tracking.supported_values import (
     DIFFICULTY_LABELS,
     SUPPORTED_REACTIONS,
@@ -58,6 +58,24 @@ ROOT = Path(__file__).resolve().parent
 DEFAULT_POST_TITLES = {
     title for title, _body, labels, _pin in populate_defaults.DEFAULT_POSTS if "management" in labels
 }
+
+# Labels a human actually reaches for, surfaced first in every label picker
+# (filter menu, add-label dropdown, new-post form). Ordered alphabetically; the
+# rest fall under an "Others:" group. Kept here so the UI never re-derives it.
+IMPORTANT_LABELS = [
+    "current_sprint",
+    "draft",
+    "epic",
+    "issue",
+    "platform_error",
+    "question",
+    "spec-change:adapt",
+    "spec-change:adopt",
+    "spec-change:inject",
+    "spec-change:plan-next-sprint",
+    "spec-change:tweak",
+    "ticket",
+]
 
 
 # Set by serve(); lets env_payload report the real bind address for the copy chip.
@@ -171,10 +189,24 @@ def _queue_db(storage: str | Path) -> Path:
     return Path(storage) / "specseed.db"
 
 
+def _ui_user(storage: str | Path) -> str:
+    """The human identity for UI/CLI writes: the first approver, or 'user'."""
+    approvers = (configure.load_config(storage).get("approvals") or {}).get("approver_usernames") or []
+    return approvers[0] if approvers else "user"
+
+
+def _platform_user(storage: str | Path) -> str:
+    """The tracker account the platform posts as (blank -> 'specseed' fallback)."""
+    return configure.load_config(storage).get("platform_username") or ""
+
+
 def _tracker_for(record: dict):
     if record.get("provider") != "local":
         raise ExternallyManaged(record.get("provider"))
-    return resolve_remote(record["storage"])
+    # The UI's human writes share the local db with the runtime's platform writes;
+    # author them as the human so platform-authored posts stay distinguishable
+    # (and read-only). NOT resolve_remote() - that authors as the platform.
+    return TrackingRemoteLocal(db_path=_tracker_db(record["storage"]), author=_ui_user(record["storage"]))
 
 
 def _external_link(record: dict) -> str | None:
@@ -393,23 +425,45 @@ def _touch_entry(db: Path, entry_id) -> None:
         conn.execute("UPDATE entries SET updated_at = ? WHERE id = ?", (_now(), entry_id))
 
 
-def _with_comment_counts(record: dict, posts: object) -> object:
-    """Stamp comment_count on listed posts (the summary shape lacks it)."""
+def _needs_approval(post: dict) -> bool:
+    """A post awaits a human gate when any of its labels end ``:status:awaiting_approval``
+    (the request post's ``spec-change:status:awaiting_approval`` or a work post's
+    ``<tier>:status:awaiting_approval``)."""
+    for label in post.get("labels") or []:
+        name = label.get("name") if isinstance(label, dict) else None
+        if name and name.endswith(":status:awaiting_approval"):
+            return True
+    return False
+
+
+def _enrich_list(record: dict, posts: object) -> object:
+    """Stamp list-only fields the summary shape lacks: comment_count, the newest
+    activity timestamp (entry vs latest comment, for sorting), a search blob of
+    comment bodies, and the needs_approval flag."""
     if not isinstance(posts, list):
         return posts
-    counts: dict[str, int] = {}
+    agg: dict[str, tuple[int, str | None, str]] = {}
     try:
         conn = sqlite3.connect(f"file:{_tracker_db(record['storage'])}?mode=ro", uri=True, timeout=5.0)
-        counts = {
-            str(row[0]): row[1]
-            for row in conn.execute("SELECT entry_id, COUNT(*) FROM comments GROUP BY entry_id")
+        agg = {
+            str(row[0]): (row[1], row[2], row[3] or "")
+            for row in conn.execute(
+                "SELECT entry_id, COUNT(*), MAX(updated_at), GROUP_CONCAT(body, ' ') "
+                "FROM comments GROUP BY entry_id"
+            )
         }
         conn.close()
     except sqlite3.Error:
-        pass  # count chip degrades to 0; the list itself still renders
+        pass  # chips degrade gracefully; the list itself still renders
     for post in posts:
-        if isinstance(post, dict):
-            post["comment_count"] = counts.get(str(post.get("id")), 0)
+        if not isinstance(post, dict):
+            continue
+        count, last_comment_at, bodies = agg.get(str(post.get("id")), (0, None, ""))
+        post["comment_count"] = count
+        post["comments_text"] = bodies
+        post["needs_approval"] = _needs_approval(post)
+        stamps = [s for s in (post.get("updated_at"), last_comment_at) if s]
+        post["last_activity_at"] = max(stamps) if stamps else post.get("updated_at")
     return posts
 
 
@@ -557,6 +611,7 @@ class Handler(BaseHTTPRequestHandler):
         if provider == "local":
             remote["enabled"] = False
             remote["provider"] = None
+            configure.apply_identity_defaults(cfg, remote)  # human=user, platform=specseed
             configure.write_config_files(storage, cfg, remote)
         else:
             repo = str(body.get("repo") or "").strip()
@@ -566,6 +621,7 @@ class Handler(BaseHTTPRequestHandler):
             remote["enabled"] = True
             remote["provider"] = provider
             remote["repo"] = repo
+            configure.apply_identity_defaults(cfg, remote)  # both default to repo owner
             configure.write_config_files(storage, cfg, remote, token=token)
         self._json({"ok": True, "data": _repo_summary(record)})
 
@@ -575,9 +631,12 @@ class Handler(BaseHTTPRequestHandler):
             "external_link": _external_link(record),
             "reactions": sorted(SUPPORTED_REACTIONS),
             "human_labels": _human_labels(),
+            "important_labels": list(IMPORTANT_LABELS),
             "default_post_titles": sorted(DEFAULT_POST_TITLES),
         }
         if record["provider"] == "local":
+            data["ui_user"] = _ui_user(record["storage"])
+            data["platform_username"] = _platform_user(record["storage"])
             tracker = _tracker_for(record)
             labels = _ok(tracker.list_labels())
             data["labels"] = labels.get("labels", []) if isinstance(labels, dict) else []
@@ -671,7 +730,7 @@ class Handler(BaseHTTPRequestHandler):
             if self.command == "GET":
                 state = query.get("state", ["open"])[0]
                 data = _ok(tracker.list_entries(is_open=_state(state)))
-                self._json({"ok": True, "data": _with_comment_counts(record, data)})
+                self._json({"ok": True, "data": _enrich_list(record, data)})
                 return
             if self.command == "POST":
                 body = self._body()

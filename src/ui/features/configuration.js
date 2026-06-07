@@ -43,8 +43,6 @@ export function createConfiguration({ repo, ctx }) {
     for (const cat of Object.keys(schema.agent_categories)) {
       if (!(cat in p.agents)) p.agents[cat] = dc.permissions?.agents?.[cat] || "block";
     }
-    cfg.dashboards = cfg.dashboards || {};
-    if (cfg.dashboards.auto_refresh === undefined) cfg.dashboards.auto_refresh = true;
   }
 
   // -- field helpers ---------------------------------------------------- #
@@ -80,13 +78,12 @@ export function createConfiguration({ repo, ctx }) {
     return `
       <section class="panel">
         <div class="panel-title">General</div>
-        <div class="field"><label>poll interval (seconds)</label>${num("poll_interval_seconds", cfg.poll_interval_seconds)}</div>
-        <div class="field"><label>dev branch</label>${text("dev_branch", cfg.dev_branch)}</div>
+        <div class="field"><label>poll interval seconds <span class="req">(how often to check remote for changes)</span></label>${num("poll_interval_seconds", cfg.poll_interval_seconds)}</div>
+        <div class="field"><label>dev branch <span class="req">(what specseed considers primary; recommended 'dev' or similar, but it could be main/master)</span></label>${text("dev_branch", cfg.dev_branch)}</div>
         <div class="field"><label>approver usernames <span class="req">(comma separated)</span></label>
           ${text("approver_usernames", (cfg.approvals?.approver_usernames || []).join(", "))}</div>
         <div class="field"><label>platform username <span class="req">(tracker account the platform posts as; blank = detect by "specseed: " prefix)</span></label>
           ${text("platform_username", cfg.platform_username || "")}</div>
-        ${toggle("dashboards_auto", cfg.dashboards?.auto_refresh, "auto-refresh ROADMAP / sprint dashboards")}
       </section>`;
   }
 
@@ -135,8 +132,8 @@ export function createConfiguration({ repo, ctx }) {
       <section class="panel">
         <div class="panel-title">Code review</div>
         ${toggle("review_enabled", cfg.review?.enabled, "enable review loop (gates in_review on every issue)")}
-        <div class="field"><label>confidence threshold</label>${num("review_confidence", cfg.review?.confidence_threshold)}</div>
-        <div class="field"><label>max attempts</label>${num("review_attempts", cfg.review?.max_attempts)}</div>
+        <div class="field"><label>confidence threshold <span class="req">(to consider review passed)</span></label>${num("review_confidence", cfg.review?.confidence_threshold)}</div>
+        <div class="field"><label>max attempts <span class="req">(for review loop with implementation agent)</span></label>${num("review_attempts", cfg.review?.max_attempts)}</div>
       </section>`;
   }
 
@@ -147,7 +144,7 @@ export function createConfiguration({ repo, ctx }) {
         <div class="panel-title">Permissions — git &amp; remote</div>
         <div class="muted">git is mandatory (branching always allowed)</div>
         ${toggle("git_merge", p.git?.merge_to_dev_branch, "git: merge into dev branch")}
-        ${toggle("remote_post_control", p.remote?.post_control, "remote: post to CONTROL")}
+        ${repo.provider === "local" ? "" : toggle("remote_post_control", p.remote?.post_control, "remote: create CONTROL post")}
         ${toggle("remote_push_branches", p.remote?.push_branches, "remote: push branches")}
         ${toggle("remote_push_dev", p.remote?.push_dev_branch, "remote: push dev branch")}
         ${toggle("remote_make_prs", p.remote?.make_prs, "remote: make PRs")}
@@ -216,8 +213,6 @@ export function createConfiguration({ repo, ctx }) {
       .map((s) => s.trim())
       .filter(Boolean);
     cfg.platform_username = String(val("platform_username") || "").trim();
-    cfg.dashboards = cfg.dashboards || {};
-    cfg.dashboards.auto_refresh = on("dashboards_auto");
 
     cfg.review = cfg.review || {};
     cfg.review.enabled = on("review_enabled");

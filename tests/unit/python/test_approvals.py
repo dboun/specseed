@@ -64,6 +64,9 @@ class TokenVocabularyTest(unittest.TestCase):
         self.assertIn("APR-0005", body)
         self.assertIn("approve APR-0005", body)
         self.assertIn("specseed:approval-request APR-0005", body)
+        # Colon, not an em-dash (UI keys the approval box off this exact phrase).
+        self.assertIn("Approval required: `APR-0005`", body)
+        self.assertNotIn("—", body)
 
 
 class AllocatorTest(unittest.TestCase):
