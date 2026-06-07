@@ -308,7 +308,7 @@ def default_config():
         "review": {
             "enabled": False,
             "confidence_threshold": 0.75,
-            "max_attempts": 3,
+            "max_attempts": 2,
         },
         "permissions": {
             # local git is MANDATORY (always on - the target is git-initialized at

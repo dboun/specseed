@@ -62,7 +62,21 @@ class EnqueueSpecChangeTest(unittest.TestCase):
             self.assertEqual(task["payload"]["dir"], str(script.parent.resolve()))
             self.assertEqual(task["payload"]["route"], "adapt")
             self.assertEqual(task["payload"]["request_id"], "7")
+            self.assertFalse(task["payload"]["close_request"])  # off by default
             self.assertEqual(db.pending_count(), 1)
+
+    def test_enqueue_close_request_flag_is_recorded(self) -> None:
+        # The approval-path apply is tagged so the executor closes the request post.
+        db = self._db()
+        with tempfile.TemporaryDirectory() as storage:
+            script = spec_change_dir("8", storage) / DEFAULT_SCRIPT_NAME
+            script.parent.mkdir(parents=True)
+            script.write_text("# apply\n", encoding="utf-8")
+            task_id = enqueue_spec_change_run(
+                script, request_id="8", route="adapt", db=db, storage=storage,
+                close_request=True,
+            )
+            self.assertTrue(db.get_task(task_id)["payload"]["close_request"])
 
     def _write_script(self, storage: str, request_id: str) -> Path:
         script = spec_change_dir(request_id, storage) / DEFAULT_SCRIPT_NAME

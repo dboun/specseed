@@ -105,11 +105,12 @@ abort on the first failure so a half-applied run is obvious.
 **apply.py runs ONLY after a human approves the plan** (the runtime enqueues it
 then — see the approval gate). So it is the DOER that actually creates the posts.
 It must NOT touch the request's `spec-change:status` to `awaiting_approval` (the
-propose step already parked it). Its job: create the work, then **finalize the
-request** — put `REQUEST_ID` in `plan.json.closes` so apply.py closes it after the
-work exists (the runtime already swapped the request to `spec-change:status:done`
-on approval). A re-trigger before approval REWRITES this script; only the approved
-copy ever runs.
+propose step already parked it). Its job: create the work. The **request closes
+itself** — the runtime swaps it to `spec-change:status:done` on approval and closes
+the request post in code after this apply succeeds. Do NOT put `REQUEST_ID` in
+`plan.json.closes`; that list is only for OTHER posts the change retires (e.g. a
+superseded ticket). A re-trigger before approval REWRITES this script; only the
+approved copy ever runs.
 
 Canonical header (resolves the dev import root by walking up to the package):
 
@@ -261,9 +262,11 @@ Consequences for what you write:
   You do NOT hand-write or post the approval comment — the runtime builds it from
   `apr` (verbatim `approval_request_comment`, hidden marker + how-to-approve text)
   and posts it. `STORAGE_DIR` = `<specseed_dir>/storage`.
-- **apply.py finalizes the request:** put `REQUEST_ID` in `plan.json.closes` so the
-  doer closes it after the work exists. Do NOT set the request `awaiting_approval`
-  in apply.py — the propose step did that.
+- **The runtime finalizes the request, not you:** on approval it swaps the request
+  to `spec-change:status:done` and closes the request post in code once apply.py
+  succeeds. Do NOT put `REQUEST_ID` in `plan.json.closes` (that list is for OTHER
+  posts the change retires) and do NOT set the request `awaiting_approval` in
+  apply.py — the propose step did that.
 
 **Settling on approval.** Approving the plan is also what **settles the spec**: the
 runtime stamps `settled: true` + `settled_at` on every `plan.json.settle_docs` path

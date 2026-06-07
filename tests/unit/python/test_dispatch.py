@@ -551,5 +551,60 @@ class RetryGateTest(DispatchTestBase):
         self.assertIn("payload missing", out.error)
 
 
+class RunSpecChangeScriptFinalizeTest(DispatchTestBase):
+    """The approval-path apply (close_request flag) closes the request post on a
+    successful run; a mechanical run (no flag) or a failed run leaves it open. The
+    request's close is the runtime's job, not the agent-emitted plan.json.closes."""
+
+    def _apply_dir(self, rid, script="print('noop')\n"):
+        d = Path(self.ctx.storage) / "spec-change" / str(rid)
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "apply.py").write_text(script, encoding="utf-8")
+        return d
+
+    def _request(self):
+        return self.remote.add_entry("adapt request", labels=[]).data.id
+
+    def _task(self, rid, d, close_request):
+        return {
+            "task_id": 1,
+            "action": "run_spec_change_script",
+            "post_id": str(rid),
+            "payload": {
+                "dir": str(d), "script": "apply.py", "route": "adapt",
+                "request_id": str(rid), "close_request": close_request,
+            },
+        }
+
+    def test_finalizing_apply_closes_request(self) -> None:
+        rid = self._request()
+        d = self._apply_dir(rid)
+        out = dispatch_mod.run_spec_change_script(self.ctx, self._task(rid, d, True))
+        self.assertTrue(out.success)
+        self.assertFalse(self.remote.get_entry(rid).data.is_open)
+
+    def test_mechanical_run_leaves_request_open(self) -> None:
+        rid = self._request()
+        d = self._apply_dir(rid)
+        out = dispatch_mod.run_spec_change_script(self.ctx, self._task(rid, d, False))
+        self.assertTrue(out.success)
+        self.assertTrue(self.remote.get_entry(rid).data.is_open)
+
+    def test_already_closed_request_is_noop(self) -> None:
+        rid = self._request()
+        self.remote.set_entry_closed(rid)
+        d = self._apply_dir(rid)
+        out = dispatch_mod.run_spec_change_script(self.ctx, self._task(rid, d, True))
+        self.assertTrue(out.success)
+        self.assertFalse(self.remote.get_entry(rid).data.is_open)
+
+    def test_failed_apply_does_not_close_request(self) -> None:
+        rid = self._request()
+        d = self._apply_dir(rid, script="import sys; sys.exit(1)\n")
+        out = dispatch_mod.run_spec_change_script(self.ctx, self._task(rid, d, True))
+        self.assertFalse(out.success)
+        self.assertTrue(self.remote.get_entry(rid).data.is_open)
+
+
 if __name__ == "__main__":
     unittest.main()

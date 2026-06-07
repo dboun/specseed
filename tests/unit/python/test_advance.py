@@ -225,6 +225,22 @@ class ReviewTransitionTest(_Base):
         ]
         self.assertEqual(len(drafts), 1)
 
+    def test_review_max_attempts_defaults_to_two(self) -> None:
+        # No max_attempts in config -> default 2. One prior attempt recorded, so
+        # this failing review is #2 == the limit -> escalate, not loop back.
+        prior = ["review one\n" + REVIEW_MARKER]
+        eid = self._seed("Review me", ["issue", "issue:status:in_review"], comments=prior)
+        ctx = self._ctx(self._config(review={"enabled": True}),
+                        self._review_runner("changes", 0.2))
+        out = dispatch(ctx, {"action": "handle_comment_added", "post_id": str(eid), "payload": {}})
+        self.assertTrue(out.success)
+        self.assertIn("issue:status:blocked", self._remote_labels(eid))
+        drafts = [
+            d for d in self._all_remote_entries()
+            if "spec-change:adapt" in {l.name for l in d.labels} and "draft" in {l.name for l in d.labels}
+        ]
+        self.assertEqual(len(drafts), 1)
+
     def _all_remote_entries(self):
         listing = self.remote.list_entries()
         out = []
@@ -466,9 +482,10 @@ class SpecChangeRequestSettleTest(_Base):
         detail = advance.resolve_spec_change_request(ctx, entity, _SR2(approved_by=["alice"]))
         self.assertIn("apply enqueued", detail)
         self.assertIn("spec-change:status:done", self._remote_labels(rid))
-        self.assertTrue(self._remote_details(rid).is_open)  # apply.py will close it
-        actions = [t["action"] for t in self.db.tasks_for(rid)]
-        self.assertIn("run_spec_change_script", actions)
+        self.assertTrue(self._remote_details(rid).is_open)  # the runtime closes it after apply
+        apply_task = next(t for t in self.db.tasks_for(rid) if t["action"] == "run_spec_change_script")
+        # the approval-path apply is tagged so the executor closes the request on success
+        self.assertTrue(apply_task["payload"].get("close_request"))
 
     def test_double_approval_does_not_enqueue_apply_twice(self) -> None:
         # Two stale approval events (👍 + comment in one drain) must not duplicate

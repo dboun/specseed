@@ -78,12 +78,19 @@ def enqueue_spec_change_run(
     route: Optional[str] = None,
     db: Optional[Database] = None,
     storage: Optional[str | Path] = None,
+    close_request: bool = False,
 ) -> int:
     """Enqueue a generated spec-change script for the executor to run.
 
     ``script_path`` is the script the skill just wrote (absolute, or relative).
     ``request_id`` is the triggering remote post id (also the spec-change dir
     name); ``route`` is the spec-change route name. Returns the queued ``task_id``.
+
+    ``close_request`` marks THIS run as the one that ends the request: the
+    approval-path ``apply.py`` (enqueued once, on approval). The executor closes
+    the request post itself after a successful run rather than trusting the
+    agent-emitted ``plan.json.closes`` to list it. Mechanical runs (clarification
+    rounds, sprint shuffles) leave it ``False`` so they never close the request.
 
     With a ``request_id`` the script's home is ALWAYS ``spec_change_dir(request_id)``;
     only the basename of ``script_path`` is trusted. Agents pass repo-root-relative
@@ -124,6 +131,7 @@ def enqueue_spec_change_run(
         "script": script.name,
         "route": route,
         "request_id": None if request_id is None else str(request_id),
+        "close_request": bool(close_request),
     }
     db = db or Database.instance()
     return db.enqueue(

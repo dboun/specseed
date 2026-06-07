@@ -123,8 +123,10 @@ tests/integration/python/            # opt-in integration tests (marker: integra
   the runtime posts `plan.json.plan_summary` + the `APR-NNNN` request and parks the REQUEST
   `spec-change:status:awaiting_approval` (creates no posts). On 👍/`approve` the runtime stamps
   `settled: true`+`settled_at` on `plan.json.settle_docs`, moves the request to `done`, and ENQUEUES the worker's
-  deferred `apply.py` (`run_spec_change_script`) which now creates the epics/tickets/issues (issues born `todo`);
-  apply.py closes the request (`plan.json.closes`). A spec-only run with nothing to apply closes in resolve.
+  deferred `apply.py` (`run_spec_change_script`, tagged `close_request`) which now creates the
+  epics/tickets/issues (issues born `todo`); the RUNTIME closes the request in code after that apply
+  succeeds (`dispatch._close_finalized_request`), NOT the agent's `plan.json.closes` (that list is only
+  for OTHER posts a change retires). A spec-only run with nothing to apply closes in resolve.
   Reject -> closed, nothing created. Deterministic, no agent. The skill never writes `settled`; adapt is the only
   route that reopens a settled doc. A mechanical run (clarification round, sprint label shuffle) skips propose and
   enqueues `run_spec_change_script` directly.

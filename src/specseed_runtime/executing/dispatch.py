@@ -386,6 +386,7 @@ def run_spec_change_script(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
             returncode=returncode,
             output=_truncate(output),
         )
+        _close_finalized_request(ctx, task)
         return HandlerOutcome(success=True, detail=output)
     output = _combine_output(stdout, stderr)
     platform_log.log_event(
@@ -401,6 +402,44 @@ def run_spec_change_script(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
             returncode, output
         ),
         retryable=True,
+    )
+
+
+def _close_finalized_request(ctx: ExecutionContext, task: dict) -> None:
+    """Close a spec-change request post after its approval-path apply succeeds.
+
+    Only the finalizing apply (enqueued on approval with ``close_request``) ends the
+    request; mechanical runs (clarification rounds, sprint shuffles) leave the flag
+    unset and never close it. The request's lifecycle is the runtime's job, not the
+    agent's, so we close in code here rather than trusting ``plan.json.closes`` to
+    list the request id (it routinely omits it). Idempotent: an already-closed
+    request is left alone. A close failure is logged but does not fail the run - the
+    work is created; closing is bookkeeping.
+    """
+    payload = task.get("payload") or {}
+    if not payload.get("close_request"):
+        return
+    request_id = payload.get("request_id") or task.get("post_id")
+    if request_id is None:
+        return
+    try:
+        res = ctx.remote.get_entry(request_id)
+        data = getattr(res, "data", None)
+        if data is not None and not getattr(data, "is_open", True):
+            return  # already closed; nothing to do
+        ctx.remote.set_entry_closed(request_id)
+    except Exception as exc:
+        platform_log.log_event(
+            "spec_change_request_close_failed",
+            task_id=task.get("task_id"),
+            post_id=request_id,
+            error=repr(exc),
+        )
+        return
+    platform_log.log_event(
+        "spec_change_request_closed",
+        task_id=task.get("task_id"),
+        post_id=request_id,
     )
 
 

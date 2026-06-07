@@ -228,7 +228,7 @@ def _advance_after_implement(ctx: Any, entity: Any, state_result: Any, result: A
 def _advance_after_review(ctx: Any, entity: Any, result: Any, conversation: Any) -> str:
     cfg = _review_config(ctx)
     threshold = float(cfg.get("confidence_threshold", 0.95))
-    max_attempts = int(cfg.get("max_attempts", 3))
+    max_attempts = int(cfg.get("max_attempts", 2))
 
     # The structured report is the contract; fall back to scraping stdout only if
     # it is somehow absent (dispatch hard-gates implement/review on a valid report).
@@ -463,7 +463,13 @@ def _enqueue_apply_on_approval(ctx: Any, request_id: Any, route: Optional[str]) 
         return False  # spec-only run: nothing to create/edit on the remote
     if not _can_write(ctx):
         return False
-    enqueue_spec_change_run(script, request_id=request_id, route=route, db=ctx.db)
+    # close_request: this approval-path apply is the run that ends the request, so
+    # the executor closes the request post on success - we don't trust the agent's
+    # plan.json.closes to list it. resolve_spec_change_request's remote-truth guard
+    # ensures only the first approval ever reaches here, so only ONE apply is tagged.
+    enqueue_spec_change_run(
+        script, request_id=request_id, route=route, db=ctx.db, close_request=True
+    )
     platform_log.log_event("spec_change_apply_enqueued", post_id=request_id, route=route)
     return True
 
