@@ -495,9 +495,13 @@ class RollUpTest(_Base):
 
     def _tree(self, *, issue_b_status="issue:status:todo"):
         # Create on both trackers in the same order so ids line up (1..4).
+        # Bodies carry ONLY upward links (Epic:/Ticket:) - exactly what plan-first
+        # creation emits, since a parent never knows its child ids at creation. The
+        # roll-up must discover children from these upward links, not a downward
+        # ``Issues:`` / ``## Tickets`` list (which is never populated in reality).
         specs = [
-            ("Epic", ["epic", "epic:status:todo"], "# Epic\n\n## Tickets\n#2\n"),
-            ("Ticket", ["ticket", "ticket:status:todo"], "Epic: #1\nIssues: #3, #4\n"),
+            ("Epic", ["epic", "epic:status:todo"], "# Epic\n"),
+            ("Ticket", ["ticket", "ticket:status:todo"], "Epic: #1\n"),
             ("Issue A", ["issue", "issue:status:done"], "Ticket: #2\n"),
             ("Issue B", ["issue", issue_b_status], "Ticket: #2\n"),
         ]

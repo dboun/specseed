@@ -30,14 +30,16 @@ export function createTracker({ repo, ctx }) {
   }
 
   async function reloadPosts() {
-    const all = await api.listPosts(repo.id, "all");
+    // CONTROL is a tracker-comment command channel for github/gitlab. The local
+    // provider drives the runner from the Monitor tab (control.json), so CONTROL
+    // is noise here - hide it from both the chips and the list entirely.
+    const all = (await api.listPosts(repo.id, "all")).filter((p) => p.title !== "CONTROL");
     const managed = new Set(state.meta.default_post_titles || []);
     state.defaults = all.filter((p) => managed.has(p.title));
     state.posts = all.filter((p) => !managed.has(p.title));
   }
 
   const isManaged = (post) => (state.meta.default_post_titles || []).includes(post?.title);
-  const isControl = (post) => post?.title === "CONTROL";
 
   // -- identity --------------------------------------------------------- #
   // A post/comment is the platform's when it is authored by the configured
@@ -241,9 +243,9 @@ export function createTracker({ repo, ctx }) {
     return `
       <div class="drawer">
         ${drawerHead(post)}
-        <div class="managed-note">Managed dashboard · read-only${isControl(post) ? " · operator comments allowed" : ""}</div>
+        <div class="managed-note">Managed dashboard · read-only</div>
         <div class="post-body">${renderMarkdown(post.body || "")}</div>
-        ${commentsBlock(post, isControl(post))}
+        ${commentsBlock(post, false)}
       </div>`;
   }
 

@@ -78,8 +78,10 @@ _ID_TOKEN_RE = re.compile(r"^(?:APR-?\d+|#?\d+)$", re.IGNORECASE)
 
 # A parent (ticket/epic) is closed once every child is in one of these.
 TERMINAL_TIER_STATUSES = {"done", "wont_do", "deprecated"}
-# child tier -> (parent tier, the body-link kind that lists the parent's children)
-_PARENT_OF = {"issue": ("ticket", "issues"), "ticket": ("epic", "tickets")}
+# child tier -> (parent tier, the upward-link field on each child node). Children
+# are found by THEIR link up, never by a downward list in the parent body: posts
+# are created parent-before-child, so a parent never knows its child ids.
+_PARENT_OF = {"issue": ("ticket", "ticket"), "ticket": ("epic", "epic")}
 
 _REVIEW_LINE_RE = re.compile(r"SPECSEED_REVIEW\b", re.IGNORECASE)
 _VERDICT_RE = re.compile(r"verdict\s*=\s*(approve|changes)", re.IGNORECASE)
@@ -808,68 +810,64 @@ def _review_summary(stdout: str, limit: int = 1500) -> str:
 def roll_up(ctx: Any, entity: Any) -> Optional[str]:
     """Close the parent chain above a just-finished entity, when complete.
 
-    Called after an issue (or ticket) reaches a terminal state. Walks up the
-    body-link graph: an issue's ticket closes once every issue under it is
-    terminal, then that ticket's epic closes once every ticket under it is
-    terminal. Idempotent and remote-truth checked, so re-running is safe and a
-    parent already terminal is left alone. Returns a short detail string, or
+    Called after an issue (or ticket) reaches a terminal state. Children are found
+    by THEIR upward body link (an issue's ``Ticket: #N``, a ticket's ``Epic: #N``):
+    a parent closes once every post that links up to it is terminal, walking issue
+    -> ticket -> epic. Upward links are the only ones that reliably exist - posts
+    are created parent-before-child, so a parent body never lists child ids it could
+    not know at creation. Idempotent and remote-truth checked, so re-running is safe
+    and a parent already terminal is left alone. Returns a short detail string, or
     ``None`` when nothing rolled up.
     """
     if not _can_write(ctx):
         return None
     try:
-        summaries = _entry_summaries(ctx)
+        nodes = _work_nodes(ctx)
     except Exception as exc:
         platform_log.log_event("rollup_error", post_id=getattr(entity, "post_id", None), error=repr(exc))
         return None
-    closed = _roll_up_from(ctx, str(entity.post_id), entity.tier, summaries)
+    closed = _roll_up_from(ctx, str(entity.post_id), entity.tier, nodes)
     return "rolled up: {0}".format(", ".join(closed)) if closed else None
 
 
-def _roll_up_from(ctx: Any, child_id: str, child_tier: Optional[str], summaries: dict) -> list[str]:
+def _roll_up_from(ctx: Any, child_id: str, child_tier: Optional[str], nodes: dict) -> list[str]:
     """Recursively close parents above ``child_id``; return ids closed (top-down)."""
     spec = _PARENT_OF.get(child_tier or "")
     if spec is None:
         return []
-    parent_tier, child_kind = spec
+    parent_tier, link_key = spec
 
-    child_details = _details(ctx, child_id)
-    parent_id = relationships.parent_id(getattr(child_details, "body", None), parent_tier)
+    child = nodes.get(str(child_id))
+    parent_id = child.get(link_key) if child else None
     if parent_id is None:
         return []
-    info = summaries.get(str(parent_id))
-    if info is None or not info.get("is_open", True) or info.get("status") in TERMINAL_TIER_STATUSES:
+    parent = nodes.get(str(parent_id))
+    if parent is None or not parent.get("is_open", True) or parent.get("status") in TERMINAL_TIER_STATUSES:
         return []
 
-    parent_details = _details(ctx, parent_id)
-    siblings = relationships.child_ids(getattr(parent_details, "body", None), child_kind)
+    # Siblings = every post of the child's tier that links up to this parent.
+    siblings = [
+        nid for nid, node in nodes.items()
+        if node.get("tier") == child_tier and str(node.get(link_key)) == str(parent_id)
+    ]
     if not siblings:
         return []
-
-    statuses = []
-    for sid in siblings:
-        sib = summaries.get(str(sid))
-        if sib is None:
-            return []  # a listed child is missing from the remote; do not close blindly
-        statuses.append(sib.get("status"))
+    statuses = [nodes[s].get("status") for s in siblings]
     if not all(s in TERMINAL_TIER_STATUSES for s in statuses):
         return []
 
     new_status = "done" if any(s == "done" for s in statuses) else "wont_do"
-    _close_parent(ctx, parent_id, parent_details, parent_tier, new_status, len(siblings))
+    _close_parent(ctx, parent_id, parent, parent_tier, new_status, len(siblings))
     # reflect locally so the recursion sees the parent as terminal, then go up.
-    summaries[str(parent_id)] = {"status": new_status, "tier": parent_tier, "is_open": False}
+    nodes[str(parent_id)] = {**parent, "status": new_status, "is_open": False}
     platform_log.log_event(
         "rollup_closed", post_id=str(parent_id), tier=parent_tier, status=new_status, children=len(siblings)
     )
-    return [str(parent_id)] + _roll_up_from(ctx, str(parent_id), parent_tier, summaries)
+    return [str(parent_id)] + _roll_up_from(ctx, str(parent_id), parent_tier, nodes)
 
 
-def _close_parent(ctx: Any, post_id: Any, details: Any, tier: str, new_status: str, n_children: int) -> None:
-    entity = Entity.for_labels(
-        post_id=str(post_id),
-        labels=[str(getattr(lbl, "name", lbl)) for lbl in getattr(details, "labels", []) or []],
-    )
+def _close_parent(ctx: Any, post_id: Any, node: dict, tier: str, new_status: str, n_children: int) -> None:
+    entity = Entity.for_labels(post_id=str(post_id), labels=list(node.get("labels") or []))
     _set_status(ctx, entity, new_status)
     _close(ctx, post_id)
     _comment(
@@ -880,16 +878,28 @@ def _close_parent(ctx: Any, post_id: Any, details: Any, tier: str, new_status: s
     )
 
 
-def _entry_summaries(ctx: Any) -> dict:
-    """One ``list_entries`` call -> ``{id: {status, tier, is_open}}`` for all posts."""
+def _work_nodes(ctx: Any) -> dict:
+    """``{id: {status, tier, is_open, labels, ticket, epic}}`` for every work post.
+
+    One ``list_entries`` plus a body read per post to resolve the upward parent
+    links. roll-up runs only when a post reaches terminal, so the extra reads stay
+    rare.
+    """
     res = ctx.remote.list_entries(is_open=None)
     out: dict[str, dict] = {}
     for summary in getattr(res, "data", None) or []:
         names = [str(getattr(lbl, "name", lbl)) for lbl in getattr(summary, "labels", []) or []]
+        tier = Entity.tier_from_labels(names)
+        if tier not in ("epic", "ticket", "issue"):
+            continue
+        body = getattr(_details(ctx, summary.id), "body", None)
         out[str(summary.id)] = {
             "status": Entity.status_from_labels(names),
-            "tier": Entity.tier_from_labels(names),
+            "tier": tier,
             "is_open": bool(getattr(summary, "is_open", True)),
+            "labels": names,
+            "ticket": relationships.parent_id(body, "ticket"),
+            "epic": relationships.parent_id(body, "epic"),
         }
     return out
 
