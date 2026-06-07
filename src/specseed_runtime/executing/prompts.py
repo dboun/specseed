@@ -67,63 +67,26 @@ def render_action_gates(ctx: Any) -> str:
     return "\n".join(lines)
 
 
-def _perms(ctx: Any) -> Permissions:
-    perms = getattr(ctx, "permissions", None)
-    if isinstance(perms, Permissions):
-        return perms
-    return Permissions(getattr(ctx, "config", {}) or {})
-
-
 def render_git_policy(ctx: Any) -> str:
-    """Git rules the implementation agent must follow.
+    """Git rules: the RUNTIME owns git, the agent does not touch it.
 
-    The runtime never runs git itself; the agent does. This block is the agent's
-    only source of truth for branch/merge/push/PR behaviour, derived from
-    ``specseed_primary_branch`` + the git/remote permissions. Refresh-on-merge and
-    the conflict-park rule are stated here because there is no runtime merge driver.
+    The runtime branches before the run, commits the result after, returns to the
+    primary branch, and drives merges (gated) itself. So the agent's only git rule
+    is: do not run git at all. Stated explicitly because agents historically tried
+    to branch/commit/merge and left work stranded.
     """
-    perms = _perms(ctx)
     config = getattr(ctx, "config", {}) or {}
     primary_branch = config.get("specseed_primary_branch") or "main"
-    remote_on = perms.remote_enabled()
-    lines = ["Git rules:"]
-    lines.append(
-        "- Work on a dedicated branch for this issue, forked from `{0}`. Never commit "
-        "straight onto `{0}`.".format(primary_branch)
-    )
-    if perms.can_merge_to_primary():
-        lines.append(
-            "- When the work is complete and tests pass, merge your branch into `{0}`.".format(primary_branch)
-        )
-        lines.append(
-            "- Refresh: after merging into `{0}`, and when you resume a parked branch, merge "
-            "the latest `{0}` into the other live issue branches. Resolve trivial conflicts "
-            "silently. Only a genuinely unsafe conflict you cannot settle should be left in "
-            "place and reported for a human.".format(primary_branch)
-        )
-    else:
-        lines.append(
-            "- Do NOT merge into `{0}` yourself; leave your branch for a human to merge.".format(primary_branch)
-        )
-    if remote_on:
-        lines.append(
-            "- You may push your issue branch to the remote."
-            if perms.can_push_branches()
-            else "- Do NOT push your issue branch to the remote."
-        )
-        lines.append(
-            "- You may push `{0}` to the remote.".format(primary_branch)
-            if perms.can_push_primary()
-            else "- Do NOT push `{0}` to the remote.".format(primary_branch)
-        )
-        lines.append(
-            "- You may open a pull/merge request for completed work."
-            if perms.can_make_prs()
-            else "- Do NOT open pull/merge requests."
-        )
-    else:
-        lines.append("- No remote is configured: keep everything local, do not push or open PRs.")
-    return "\n".join(lines)
+    return "\n".join([
+        "Git rules (the runtime owns git - you do NOT):",
+        "- Do NOT run any git command: no branch, add, commit, checkout, merge, rebase, "
+        "push, or pull/merge request. The runtime handles all of it.",
+        "- You are already on this issue's dedicated branch (forked from `{0}`). The "
+        "runtime commits your edits after the run, returns to `{0}`, and performs any "
+        "merge itself (gated by configuration).".format(primary_branch),
+        "- Your job is only to edit files. Leave the working tree in a building, "
+        "test-passing state; do not stage or commit it yourself.",
+    ])
 
 
 def _specseed_dir(ctx: Any) -> str:

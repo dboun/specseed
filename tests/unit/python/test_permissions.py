@@ -153,34 +153,27 @@ class _GitCtx:
 
 
 class RenderGitPolicyTest(unittest.TestCase):
-    def test_uses_primary_branch_and_forbids_direct_commit(self) -> None:
+    def test_names_primary_branch_and_forbids_git(self) -> None:
         text = render_git_policy(_GitCtx({"specseed_primary_branch": "develop", "permissions": {}}))
         self.assertIn("`develop`", text)
-        self.assertIn("Never commit", text)
+        self.assertIn("Do NOT run any git command", text)
 
-    def test_merge_allowed_adds_refresh_rule(self) -> None:
-        cfg = {"specseed_primary_branch": "main", "permissions": {"git": {"merge_to_primary": True}}}
-        text = render_git_policy(_GitCtx(cfg))
-        self.assertIn("merge your branch into `main`", text)
-        self.assertIn("Refresh", text)
-
-    def test_merge_disallowed_says_leave_for_human(self) -> None:
+    def test_tells_agent_runtime_owns_git_and_commits(self) -> None:
         text = render_git_policy(_GitCtx({"specseed_primary_branch": "main", "permissions": {}}))
-        self.assertIn("Do NOT merge", text)
+        self.assertIn("runtime owns git", text)
+        self.assertIn("commits your edits", text)
+        # the agent must not stage/commit/merge itself
+        self.assertIn("do not stage or commit", text)
+        self.assertNotIn("merge your branch into", text)
 
-    def test_local_only_forbids_push_and_pr(self) -> None:
-        text = render_git_policy(_GitCtx({"specseed_primary_branch": "main", "permissions": {}}))
-        self.assertIn("No remote is configured", text)
-
-    def test_remote_on_honours_push_and_pr_switches(self) -> None:
-        cfg = {
-            "specseed_primary_branch": "main",
-            "permissions": {"remote": {"push_branches": True, "push_primary": False, "make_prs": False}},
-        }
-        text = render_git_policy(_GitCtx(cfg, {"enabled": True, "provider": "github"}))
-        self.assertIn("push your issue branch", text)
-        self.assertIn("Do NOT push `main`", text)
-        self.assertIn("Do NOT open pull/merge requests", text)
+    def test_independent_of_permission_switches(self) -> None:
+        # git is runtime-driven now: the prohibition text does not change with perms.
+        bare = render_git_policy(_GitCtx({"specseed_primary_branch": "main", "permissions": {}}))
+        merge_on = render_git_policy(
+            _GitCtx({"specseed_primary_branch": "main",
+                     "permissions": {"git": {"merge_to_primary": True}}})
+        )
+        self.assertEqual(bare, merge_on)
 
     def test_implement_prompt_carries_git_policy(self) -> None:
         prompt = build_implement_prompt(_Entity(), _Ctx({"specseed_dir": ".specseed"}))

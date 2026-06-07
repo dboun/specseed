@@ -606,5 +606,71 @@ class RunSpecChangeScriptFinalizeTest(DispatchTestBase):
         self.assertTrue(self.remote.get_entry(rid).data.is_open)
 
 
+import shutil
+import subprocess
+from specseed_runtime.executing import git_ops as _git_ops
+
+_HAS_GIT = shutil.which("git") is not None
+
+
+class _FileWritingRunner(FakeAgentRunner):
+    """Fake runner that writes a file into cwd (simulating an agent's edits) then
+    returns the given result."""
+
+    def __init__(self, result, filename, content="x\n"):
+        super().__init__(result)
+        self._filename = filename
+        self._content = content
+
+    def run(self, prompt, *, cwd, **kwargs):
+        (Path(cwd) / self._filename).write_text(self._content, encoding="utf-8")
+        return super().run(prompt, cwd=cwd, **kwargs)
+
+
+@unittest.skipUnless(_HAS_GIT, "git not available")
+class RuntimeGitLifecycleTest(DispatchTestBase):
+    """C1: the runtime branches + commits an implement run, agent never runs git."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.config["specseed_primary_branch"] = "main"
+        # Real specseed gitignores storage; here keep the test's sqlite dbs out of
+        # git so checkouts don't fight open file handles.
+        (self.root / ".gitignore").write_text("*.db\n*.db-*\nstorage/\n", encoding="utf-8")
+        self._git("init")
+        self._git("symbolic-ref", "HEAD", "refs/heads/main")
+        self._git("-c", "user.email=t@t", "-c", "user.name=t",
+                  "commit", "--allow-empty", "-m", "root")
+
+    def _git(self, *args) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", *args], cwd=str(self.root),
+                              capture_output=True, text=True)
+
+    def test_implement_branches_commits_and_returns_to_primary(self) -> None:
+        self.ctx.runner = _FileWritingRunner(
+            AgentResult(ok=True, returncode=0,
+                        report={"status": "done", "summary": "did it", "files_changed": ["new.py"]}),
+            filename="new.py",
+        )
+        eid = self._seed_local_entry("FEAT-0001 Do the thing", ["tier:issue", "status:todo"])
+        out = dispatch(
+            self.ctx,
+            {"action": "handle_label_added", "post_id": str(eid), "payload": {"label": "status:todo"}},
+        )
+        self.assertTrue(out.success)
+        # returned to primary, and primary has no agent file
+        self.assertEqual(_git_ops.current_branch(self.root), "main")
+        self.assertFalse((self.root / "new.py").exists())
+        # the issue branch exists and carries the committed file
+        branch = "feat-0001-do-the-thing"
+        self.assertEqual(
+            self._git("rev-parse", "--verify", f"refs/heads/{branch}").returncode, 0
+        )
+        self._git("checkout", branch)
+        self.assertTrue((self.root / "new.py").exists())
+        log = self._git("log", "-1", "--pretty=%s").stdout.strip()
+        self.assertIn("FEAT-0001", log)
+
+
 if __name__ == "__main__":
     unittest.main()

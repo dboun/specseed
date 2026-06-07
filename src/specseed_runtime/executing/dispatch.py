@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from specseed_runtime.executing import advance
+from specseed_runtime.executing import git_ops
 from specseed_runtime.executing.agent_runner import stdout_tail
 from specseed_runtime.executing import context as context_mod
 from specseed_runtime.executing import inflight
@@ -535,6 +536,63 @@ def _entry_is_open(post: Any) -> bool:
     return bool(value)
 
 
+def _primary_branch(ctx: ExecutionContext) -> str:
+    return (getattr(ctx, "config", {}) or {}).get("specseed_primary_branch") or "main"
+
+
+def _prepare_git_branch(ctx: ExecutionContext, entity: Any, intent: str) -> Optional[str]:
+    """Runtime owns git: put the work on the issue's branch before the agent runs.
+
+    Returns the branch name (None for non-code intents). The branch is created off
+    the primary branch the first time and reused after (review bounce continues the
+    same branch). Best-effort + logged; a git hiccup never aborts the work.
+    """
+    if intent not in (AgentIntent.IMPLEMENT, AgentIntent.REVIEW):
+        return None
+    branch = git_ops.branch_name(entity)
+    res = git_ops.ensure_on_branch(ctx.repo_root, branch, _primary_branch(ctx))
+    platform_log.log_event(
+        "git_branch_prepared",
+        post_id=getattr(entity, "post_id", None),
+        intent=intent,
+        branch=branch,
+        ok=res.ok,
+        actions=res.actions,
+        error=res.error,
+    )
+    return branch
+
+
+def _finalize_git_branch(ctx: ExecutionContext, entity: Any, intent: str, branch: Optional[str]) -> None:
+    """Commit the agent's work (implement) and always return to the primary branch.
+
+    Commits even a partial WIP (interruption) so nothing is lost. Review runs do
+    not commit (the reviewer only reads). Best-effort + logged.
+    """
+    if branch is None:
+        return
+    if intent == AgentIntent.IMPLEMENT:
+        message = "specseed: {0}".format(getattr(entity, "title", None) or "work on issue {0}".format(
+            getattr(entity, "post_id", "?")))
+        commit = git_ops.commit_all(ctx.repo_root, message)
+        platform_log.log_event(
+            "git_commit",
+            post_id=getattr(entity, "post_id", None),
+            branch=branch,
+            ok=commit.ok,
+            detail=commit.detail,
+            error=commit.error,
+        )
+    back = git_ops.checkout(ctx.repo_root, _primary_branch(ctx))
+    platform_log.log_event(
+        "git_return_primary",
+        post_id=getattr(entity, "post_id", None),
+        branch=branch,
+        ok=back.ok,
+        error=back.error,
+    )
+
+
 def _run_work(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
     """Common path for every work handler: load entity, judge state, run agent."""
     post_id = task.get("post_id")
@@ -689,7 +747,12 @@ def _run_work(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
     else:  # REVIEW
         prompt = prompts.build_review_prompt(entity, ctx)
 
+    # Runtime owns git: branch before the agent edits anything.
+    branch = _prepare_git_branch(ctx, entity, intent)
     result = _run_agent(ctx, prompt, intent, task_id=task.get("task_id"))
+    # Commit the work (implement) and always return to the primary branch -
+    # regardless of how the run ended, so WIP is never stranded on a feature branch.
+    _finalize_git_branch(ctx, entity, intent, branch)
     platform_log.log_event(
         "agent_result",
         task_id=task.get("task_id"),
