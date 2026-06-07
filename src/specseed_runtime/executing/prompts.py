@@ -17,6 +17,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from specseed_runtime.executing import agent_report
 from specseed_runtime.executing.permissions import (
     AGENT_CATEGORIES,
     Permissions,
@@ -135,12 +136,42 @@ def _specseed_dir(ctx: Any) -> str:
     return "<specseed_dir>"
 
 
+# Per-route guardrail files scaffolded into the target's specseed_dir at configure
+# time (configuring/configure.py). The prompts point the agent at the right one.
+INSTRUCTIONS_FILES = {
+    "implement": "AGENTS_INSTRUCTIONS_IMPL.md",
+    "spec_change": "AGENTS_INSTRUCTIONS_SPEC.md",
+    "review": "AGENTS_INSTRUCTIONS_REVIEW.md",
+}
+
+
+def render_identity_rule(ctx: Any, intent: str) -> str:
+    """Hard rule keeping the agent inside the target and off the engine.
+
+    The run history showed agents concluding the "app" was specseed itself
+    (engine src on PYTHONPATH + ``specseed_runtime`` all over the prompts) and
+    editing the engine. This block, plus the scaffolded instruction file, makes
+    the boundary explicit.
+    """
+    specseed_dir = _specseed_dir(ctx)
+    fname = INSTRUCTIONS_FILES.get(intent, INSTRUCTIONS_FILES["implement"])
+    return (
+        "TARGET & ENGINE (hard rule): your work target is THIS repository (your current working "
+        "directory). The `specseed_runtime` package reachable on PYTHONPATH is the READ-ONLY "
+        "engine that drives you - NEVER create, edit, move, or delete anything under it, the "
+        "specseed engine checkout, or anywhere outside this repository. A near-empty target at "
+        "the start is normal; build what the spec describes HERE. Read "
+        f"{specseed_dir}/{fname} for the full rules before you start."
+    )
+
+
 def build_spec_change_prompt(route: str, request_id: Any, entity: Any, ctx: Any) -> str:
     """Prompt for the specseed spec-change worker (one route, one request)."""
     specseed_dir = _specseed_dir(ctx)
     skill_dir = _engine_skill_dir()
     return (
-        "You are the specseed spec-change worker. Read the skill documentation at "
+        render_identity_rule(ctx, agent_report.SPEC_CHANGE) + "\n\n"
+        + "You are the specseed spec-change worker. Read the skill documentation at "
         f"{skill_dir}/SKILL.md and the matching route under "
         f"{skill_dir}/routes/{route}.md, then run the '{route}' route "
         f"for spec-change request {request_id} (remote post titled {_title(entity)!r}).\n\n"
@@ -156,7 +187,8 @@ def build_spec_change_prompt(route: str, request_id: Any, entity: Any, ctx: Any)
         "A leftover plan.json/apply.py in the request dir is a PREVIOUS run's output (e.g. a "
         "clarification round the human has now answered). Re-enqueueing it unchanged is a no-op "
         "and the human gets silence. ALWAYS rewrite plan.json + apply.py for what THIS run "
-        "decided (carry forward plan.json bookkeeping like questions/apr), then enqueue."
+        "decided (carry forward plan.json bookkeeping like questions/apr), then enqueue.\n\n"
+        + agent_report.result_instructions(agent_report.SPEC_CHANGE)
     )
 
 
@@ -164,9 +196,12 @@ def build_implement_prompt(entity: Any, ctx: Any) -> str:
     """Prompt for implementing a ready issue."""
     specseed_dir = _specseed_dir(ctx)
     return (
-        "You are implementing a specseed work issue. The issue is remote post "
+        render_identity_rule(ctx, agent_report.IMPLEMENT) + "\n\n"
+        + "You are implementing a specseed work issue. The issue is remote post "
         f"{getattr(entity, 'post_id', '?')} titled {_title(entity)!r}. Read its body and "
         f"comments from the local tracker for context and read the spec under {specseed_dir}/spec/. "
+        "If this issue was reviewed before, the latest `Code review` comment lists the findings "
+        "that bounced it back - read it and address every point. "
         "Implement the change in this repository to satisfy the issue, keeping edits scoped "
         "to what the issue asks. Do not change the issue's workflow labels or approve "
         "anything yourself; the scheduler advances state programmatically. When finished, "
@@ -174,6 +209,8 @@ def build_implement_prompt(entity: Any, ctx: Any) -> str:
         + render_git_policy(ctx)
         + "\n\n"
         + render_action_gates(ctx)
+        + "\n\n"
+        + agent_report.result_instructions(agent_report.IMPLEMENT)
     )
 
 
@@ -269,15 +306,14 @@ PLATFORM_ERROR_REPORTED"""
 def build_review_prompt(entity: Any, ctx: Any) -> str:
     """Prompt for reviewing an issue that is in review."""
     return (
-        "You are reviewing completed work for specseed work issue "
+        render_identity_rule(ctx, agent_report.REVIEW) + "\n\n"
+        + "You are reviewing completed work for specseed work issue "
         f"{getattr(entity, 'post_id', '?')} titled {_title(entity)!r}. Read the issue body "
         "and comments from the local tracker and inspect the relevant changes in this "
-        "repository. Assess correctness, scope, and whether the issue's acceptance criteria "
-        "are met. Report findings as a concise review summary. Do not merge, do not change "
+        "repository (use the git diff against the dev branch to see what this work touched). "
+        "Assess correctness, scope, and whether the issue's acceptance criteria "
+        "are met. Do not merge, do not change "
         "workflow labels, and do not approve; the scheduler resolves the outcome "
-        "programmatically from your review and the configured gates.\n\n"
-        "End your output with EXACTLY ONE final line in this format (nothing after it):\n"
-        "SPECSEED_REVIEW verdict=<approve|changes> confidence=<0.0-1.0>\n"
-        "Use verdict=approve only if the work is correct and complete; otherwise "
-        "verdict=changes. confidence is your certainty in that verdict."
+        "programmatically from your verdict and the configured gates.\n\n"
+        + agent_report.result_instructions(agent_report.REVIEW)
     )

@@ -188,13 +188,26 @@ def apply_post_work_transition(
     if _is_stale(ctx, entity):
         return "stale event; remote already advanced past {0}, skipping".format(entity.status)
     if intent == "implement":
-        return _advance_after_implement(ctx, entity, state_result)
+        return _advance_after_implement(ctx, entity, state_result, result)
     if intent == "review":
         return _advance_after_review(ctx, entity, result, conversation)
     return "no transition for intent {0!r}".format(intent)
 
 
-def _advance_after_implement(ctx: Any, entity: Any, state_result: Any) -> str:
+def _advance_after_implement(ctx: Any, entity: Any, state_result: Any, result: Any = None) -> str:
+    # The agent's structured report decides whether work really happened. rc==0
+    # alone used to advance a "Blocked: cannot make changes" run to review.
+    report = getattr(result, "report", None) or {}
+    status = str(report.get("status") or "").lower()
+    if status in ("blocked", "needs_input"):
+        detail = report.get("summary") or "(no detail provided)"
+        word = "blocked" if status == "blocked" else "a human decision"
+        _comment(
+            ctx, entity.post_id,
+            "Implementation could not complete - reported {0}:\n\n{1}".format(word, detail),
+        )
+        _set_status(ctx, entity, "blocked")
+        return "implement reported {0} -> blocked".format(status)
     if getattr(state_result, "review_required", False):
         _set_status(ctx, entity, "in_review")
         return "implement done -> in_review"
@@ -214,11 +227,19 @@ def _advance_after_implement(ctx: Any, entity: Any, state_result: Any) -> str:
 
 def _advance_after_review(ctx: Any, entity: Any, result: Any, conversation: Any) -> str:
     cfg = _review_config(ctx)
-    threshold = float(cfg.get("confidence_threshold", 0.75))
+    threshold = float(cfg.get("confidence_threshold", 0.95))
     max_attempts = int(cfg.get("max_attempts", 3))
 
-    verdict, confidence = parse_review(getattr(result, "stdout", "") or "")
-    summary = _review_summary(getattr(result, "stdout", "") or "")
+    # The structured report is the contract; fall back to scraping stdout only if
+    # it is somehow absent (dispatch hard-gates implement/review on a valid report).
+    report = getattr(result, "report", None) or {}
+    if report.get("verdict"):
+        verdict = str(report["verdict"]).lower()
+        confidence = float(report.get("confidence") or 0.0)
+        summary = report.get("summary") or "(no review summary)"
+    else:
+        verdict, confidence = parse_review(getattr(result, "stdout", "") or "")
+        summary = _review_summary(getattr(result, "stdout", "") or "")
     attempts_before = _count_review_attempts(conversation)
     attempt = attempts_before + 1
 
@@ -524,11 +545,16 @@ def resolve_spec_change_request(ctx: Any, entity: Any, state_result: Any) -> Opt
 
 
 def _review_summary(stdout: str, limit: int = 1500) -> str:
-    """Strip the trailing SPECSEED_REVIEW line and cap length for the comment."""
+    """Strip the trailing SPECSEED_REVIEW line and cap length for the comment.
+
+    Fallback only (the structured report.summary is preferred). Keep the TAIL, not
+    the head: a CLI prints its banner + echoed prompt first and the actual findings
+    last, so head-truncation posted pure noise to the tracker.
+    """
     lines = [ln for ln in stdout.splitlines() if not _REVIEW_LINE_RE.search(ln)]
     text = "\n".join(lines).strip() or "(no review text)"
     if len(text) > limit:
-        text = text[:limit].rstrip() + "\n…(truncated)"
+        text = "…(truncated)\n" + text[-limit:].lstrip()
     return text
 
 

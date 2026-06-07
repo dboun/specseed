@@ -145,7 +145,7 @@ export function createConfiguration({ repo, ctx }) {
     return `
       <section class="panel">
         <div class="panel-title">Permissions — git &amp; remote</div>
-        ${toggle("git_enabled", p.git?.enabled, "git: enabled (create local branches)")}
+        <div class="muted">git is mandatory (branching always allowed)</div>
         ${toggle("git_merge", p.git?.merge_to_dev_branch, "git: merge into dev branch")}
         ${toggle("remote_post_control", p.remote?.post_control, "remote: post to CONTROL")}
         ${toggle("remote_push_branches", p.remote?.push_branches, "remote: push branches")}
@@ -226,7 +226,6 @@ export function createConfiguration({ repo, ctx }) {
 
     const p = (cfg.permissions = cfg.permissions || {});
     p.git = p.git || {};
-    p.git.enabled = on("git_enabled");
     p.git.merge_to_dev_branch = on("git_merge");
     p.remote = p.remote || {};
     p.remote.post_control = on("remote_post_control");

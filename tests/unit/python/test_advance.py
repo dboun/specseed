@@ -34,6 +34,14 @@ from specseed_runtime.tracking.tracking_remote_local import (
 )
 
 
+def _impl_ok(status="done", summary="implemented", files=None):
+    """An implement AgentResult carrying a valid structured report."""
+    return AgentResult(
+        ok=True, returncode=0,
+        report={"status": status, "summary": summary, "files_changed": files or []},
+    )
+
+
 class EntityParsingTest(unittest.TestCase):
     def test_canonical_tier_status_form(self) -> None:
         e = Entity.for_labels(post_id="1", labels=["issue", "issue:status:in_review"])
@@ -128,7 +136,7 @@ class _Base(unittest.TestCase):
 class ImplementTransitionTest(_Base):
     def test_implement_no_review_closes_done(self) -> None:
         eid = self._seed("Do it", ["issue", "issue:status:todo"])
-        ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True, returncode=0)))
+        ctx = self._ctx(self._config(), FakeAgentRunner(_impl_ok()))
         out = dispatch(ctx, {"action": "handle_label_added", "post_id": str(eid), "payload": {}})
         self.assertTrue(out.success)
         labels = self._remote_labels(eid)
@@ -139,18 +147,36 @@ class ImplementTransitionTest(_Base):
     def test_implement_with_review_goes_in_review(self) -> None:
         eid = self._seed("Do it", ["issue", "issue:status:todo"])
         ctx = self._ctx(self._config(review={"enabled": True}),
-                        FakeAgentRunner(AgentResult(ok=True, returncode=0)))
+                        FakeAgentRunner(_impl_ok()))
         out = dispatch(ctx, {"action": "handle_label_added", "post_id": str(eid), "payload": {}})
         self.assertTrue(out.success)
         labels = self._remote_labels(eid)
         self.assertIn("issue:status:in_review", labels)
         self.assertTrue(self._remote_details(eid).is_open)
 
+    def test_implement_reported_blocked_parks_blocked(self) -> None:
+        # Agent says it could not make the change (rc 0): must NOT advance to review.
+        eid = self._seed("Do it", ["issue", "issue:status:todo"])
+        ctx = self._ctx(
+            self._config(review={"enabled": True}),
+            FakeAgentRunner(_impl_ok(status="blocked", summary="sandbox blocked the write")),
+        )
+        out = dispatch(ctx, {"action": "handle_label_added", "post_id": str(eid), "payload": {}})
+        self.assertTrue(out.success)
+        labels = self._remote_labels(eid)
+        self.assertIn("issue:status:blocked", labels)
+        self.assertNotIn("issue:status:in_review", labels)
+        bodies = [c.body for c in self._remote_details(eid).comments]
+        self.assertTrue(any("sandbox blocked the write" in b for b in bodies))
+
 
 class ReviewTransitionTest(_Base):
     def _review_runner(self, verdict, confidence):
         stdout = "Detailed review.\nSPECSEED_REVIEW verdict={0} confidence={1}".format(verdict, confidence)
-        return FakeAgentRunner(AgentResult(ok=True, returncode=0, stdout=stdout))
+        return FakeAgentRunner(AgentResult(
+            ok=True, returncode=0, stdout=stdout,
+            report={"verdict": verdict, "confidence": confidence, "summary": "Detailed review."},
+        ))
 
     def test_review_pass_closes_done(self) -> None:
         eid = self._seed("Review me", ["issue", "issue:status:in_review"])
@@ -219,7 +245,7 @@ class ImplementApprovalGateTest(_Base):
 
     def test_todo_parks_awaiting_approval_when_auto_off(self) -> None:
         eid = self._seed("Do it", ["issue", "issue:status:todo"])
-        ctx = self._ctx(self._auto_off(), FakeAgentRunner(AgentResult(ok=True, returncode=0)))
+        ctx = self._ctx(self._auto_off(), FakeAgentRunner(_impl_ok()))
         out = dispatch(ctx, {"action": "handle_label_added", "post_id": str(eid), "payload": {}})
         self.assertTrue(out.success)
         labels = self._remote_labels(eid)
@@ -233,7 +259,7 @@ class ImplementApprovalGateTest(_Base):
         eid = self._seed("Do it", ["issue", "issue:status:todo"])
         self.local.add_entry_comment(eid, "approve {0}".format(eid))
         ctx = self._ctx(self._auto_off(approvers=["agent"]),
-                        FakeAgentRunner(AgentResult(ok=True, returncode=0)))
+                        FakeAgentRunner(_impl_ok()))
         out = dispatch(ctx, {"action": "handle_label_added", "post_id": str(eid), "payload": {}})
         self.assertTrue(out.success)
         self.assertIn("issue:status:done", self._remote_labels(eid))
@@ -242,7 +268,7 @@ class ImplementApprovalGateTest(_Base):
         eid = self._seed("Do it", ["issue", "issue:status:todo"])
         cfg = self._config()
         cfg["permissions"]["platform"] = {"auto_implement_issue": True}
-        ctx = self._ctx(cfg, FakeAgentRunner(AgentResult(ok=True, returncode=0)))
+        ctx = self._ctx(cfg, FakeAgentRunner(_impl_ok()))
         out = dispatch(ctx, {"action": "handle_label_added", "post_id": str(eid), "payload": {}})
         self.assertTrue(out.success)
         self.assertIn("issue:status:done", self._remote_labels(eid))
@@ -329,7 +355,7 @@ class RollUpTest(_Base):
 
     def test_finishing_last_issue_closes_ticket_and_epic(self) -> None:
         self._tree()
-        ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True, returncode=0)))
+        ctx = self._ctx(self._config(), FakeAgentRunner(_impl_ok()))
         out = dispatch(ctx, {"action": "handle_label_added", "post_id": "4", "payload": {}})
         self.assertTrue(out.success)
         self.assertIn("issue:status:done", self._remote_labels(4))
@@ -346,7 +372,7 @@ class RollUpTest(_Base):
         self.remote.set_entry_open(3)
         self.remote.remove_entry_label(3, "issue:status:done")
         self.remote.add_entry_label(3, "issue:status:in_progress")
-        ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True, returncode=0)))
+        ctx = self._ctx(self._config(), FakeAgentRunner(_impl_ok()))
         out = dispatch(ctx, {"action": "handle_label_added", "post_id": "4", "payload": {}})
         self.assertTrue(out.success)
         self.assertIn("issue:status:done", self._remote_labels(4))

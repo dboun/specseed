@@ -86,6 +86,11 @@ class HandlerOutcome:
     error: Optional[str] = None
     detail: str = ""
     retryable: bool = False
+    # Provider quota hit (every runner spec quota-blocked). The scheduler opens a
+    # circuit breaker: requeue this task, park the loop until ``quota_until``, and
+    # do NOT run failure recovery (no error post, no resolver - it shares the quota).
+    quota: bool = False
+    quota_until: Optional[str] = None
 
 
 class AgentIntent:
@@ -128,6 +133,7 @@ def _run_agent(
                 cancel=ctx.cancel,
                 timeout_s=ctx.agent_timeout_s,
                 on_start=on_start,
+                intent=intent,
             )
         return runner.run(
             prompt,
@@ -135,6 +141,7 @@ def _run_agent(
             cancel=ctx.cancel,
             timeout_s=ctx.agent_timeout_s,
             on_start=on_start,
+            intent=intent,
         )
     finally:
         if task_id is not None:
@@ -459,6 +466,17 @@ def _run_platform_error(
         returncode=getattr(agent_result, "returncode", None),
         duration_s=getattr(agent_result, "duration_s", None),
     )
+    if getattr(agent_result, "quota_exhausted", False):
+        # The resolver shares the provider quota. Don't burn it - requeue and let
+        # the scheduler park until reset (this was the "doctor has the disease" loop).
+        return HandlerOutcome(
+            success=False,
+            requeue=True,
+            quota=True,
+            quota_until=getattr(agent_result, "quota_reset_hint", None),
+            error=getattr(agent_result, "error", None) or "provider quota exhausted",
+            detail="resolve agent parked: provider quota",
+        )
     if getattr(agent_result, "ok", False):
         return HandlerOutcome(success=True, detail="resolve agent reported ({0})".format(reason))
     # NOT retryable: recovery never recovers itself (guarded there too).
@@ -630,7 +648,41 @@ def _run_work(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
         stdout_chars=len(getattr(result, "stdout", "") or ""),
     )
 
+    # Provider quota: every runner spec was quota-blocked. Not a task-local
+    # failure - requeue and let the scheduler park the loop. requeue (not
+    # complete-as-failed) means recovery never fires: no error post, no resolver.
+    if getattr(result, "quota_exhausted", False):
+        platform_log.log_event(
+            "work_quota_exhausted",
+            task_id=task.get("task_id"),
+            post_id=post_id,
+            intent=intent,
+            quota_until=getattr(result, "quota_reset_hint", None),
+        )
+        return HandlerOutcome(
+            success=False,
+            requeue=True,
+            quota=True,
+            quota_until=getattr(result, "quota_reset_hint", None),
+            error=getattr(result, "error", None) or "provider quota exhausted",
+            detail="intent {0} parked: provider quota".format(intent),
+        )
+
     if getattr(result, "ok", False):
+        # rc==0 is not enough: implement/review MUST have written a valid result
+        # file. A missing/invalid one means the run did not really finish - retry
+        # (a fresh run; agent runs are stateless, so re-asking for just the JSON
+        # is impossible). This catches the "Blocked: cannot make changes", exit 0
+        # case that used to advance straight to review.
+        if intent in (AgentIntent.IMPLEMENT, AgentIntent.REVIEW) and getattr(result, "report", None) is None:
+            return HandlerOutcome(
+                success=False,
+                error="agent finished but did not report a valid result file: {0}".format(
+                    getattr(result, "report_error", None) or "missing"
+                ),
+                detail="intent {0} missing result file".format(intent),
+                retryable=True,
+            )
         detail = "agent ran intent {0}".format(intent)
         if intent in (AgentIntent.IMPLEMENT, AgentIntent.REVIEW):
             try:

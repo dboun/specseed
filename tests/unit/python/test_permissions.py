@@ -36,12 +36,14 @@ class RemoteEnabledTest(unittest.TestCase):
 
 
 class GitTest(unittest.TestCase):
-    def test_git_enabled_defaults_true(self) -> None:
+    def test_git_always_on(self) -> None:
+        # git is mandatory now (no enabled switch); git_enabled is constant True.
         self.assertTrue(Permissions({}).git_enabled())
+        self.assertTrue(Permissions(_cfg({"git": {"enabled": False}})).git_enabled())
 
-    def test_merge_to_dev_branch_needs_git_on(self) -> None:
-        on = _cfg({"git": {"enabled": True, "merge_to_dev_branch": True}})
-        off = _cfg({"git": {"enabled": False, "merge_to_dev_branch": True}})
+    def test_merge_to_dev_branch_only_needs_its_switch(self) -> None:
+        on = _cfg({"git": {"merge_to_dev_branch": True}})
+        off = _cfg({"git": {"merge_to_dev_branch": False}})
         self.assertTrue(Permissions(on).can_merge_to_dev_branch())
         self.assertFalse(Permissions(off).can_merge_to_dev_branch())
         self.assertFalse(Permissions({}).can_merge_to_dev_branch())

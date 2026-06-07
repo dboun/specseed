@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -137,6 +137,11 @@ class Scheduler:
 
         self._dashboards_enabled = self._dashboards_auto_refresh()
         self._last_work_sig: Optional[str] = None
+
+        # Provider-quota circuit breaker. When a task reports every runner spec was
+        # quota-blocked, we park sync+claim until this monotonic deadline (the loop
+        # stays alive for heartbeat/control). 0 = closed.
+        self._quota_paused_until = 0.0
 
     def _dashboards_auto_refresh(self) -> bool:
         dashboards_cfg = self.config.get("dashboards")
@@ -284,7 +289,7 @@ class Scheduler:
                 break
 
             did_work = False
-            if self.state == RUNNING:
+            if self.state == RUNNING and not self._quota_circuit_open():
                 if time.monotonic() >= self._next_poll_at:
                     self._sync()
                     self._next_poll_at = time.monotonic() + self.poll_interval
@@ -334,6 +339,54 @@ class Scheduler:
             runner_control.write_runner_status(self._status_file.parent, status)
         except Exception:  # heartbeat is best-effort
             pass
+
+    def _quota_circuit_open(self) -> bool:
+        """True while a provider-quota park is in effect (sync+claim suspended)."""
+        if self._quota_paused_until <= 0.0:
+            return False
+        if time.monotonic() >= self._quota_paused_until:
+            self._quota_paused_until = 0.0
+            platform_log.log_event("quota_circuit_closed")
+            self._next_poll_at = 0.0  # sync promptly once the quota clears
+            return False
+        return True
+
+    def _open_quota_circuit(self, task_id: int, outcome: "HandlerOutcome") -> None:
+        """Requeue a quota-blocked task for its reset time and park the loop.
+
+        ``outcome.quota_until`` is an ISO reset hint if the provider stated one;
+        otherwise we park a default window. Requeue (not complete) means recovery
+        never runs - no error post, no resolver (which shares the quota)."""
+        park_s, not_before = self._quota_park(outcome.quota_until)
+        try:
+            self.db.requeue(task_id, not_before=not_before)
+        except TypeError:  # a db double without not_before support
+            self.db.requeue(task_id)
+        self._quota_paused_until = time.monotonic() + park_s
+        platform_log.log_event(
+            "quota_circuit_open",
+            task_id=task_id,
+            park_seconds=park_s,
+            not_before=not_before,
+            quota_until=outcome.quota_until,
+        )
+
+    def _quota_park(self, quota_until: Optional[str]) -> tuple[float, str]:
+        """Return (park_seconds, not_before_iso) from an optional ISO reset hint."""
+        from specseed_runtime.executing.quota import DEFAULT_PARK_S, MIN_PARK_S
+
+        now = datetime.now(timezone.utc)
+        if quota_until:
+            try:
+                reset = datetime.fromisoformat(quota_until)
+                if reset.tzinfo is None:
+                    reset = reset.replace(tzinfo=timezone.utc)
+                secs = max(MIN_PARK_S, (reset - now).total_seconds())
+                return secs, reset.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+            except ValueError:
+                pass
+        nxt = now.replace(microsecond=0) + timedelta(seconds=DEFAULT_PARK_S)
+        return float(DEFAULT_PARK_S), nxt.isoformat().replace("+00:00", "Z")
 
     def _idle_sleep(self) -> float:
         if self.state != RUNNING:
@@ -492,13 +545,17 @@ class Scheduler:
             platform_log.log_event("task_requeued", task_id=task_id, reason="worker_no_outcome")
             return
         if outcome.requeue:
-            self.db.requeue(task_id)
+            if getattr(outcome, "quota", False):
+                self._open_quota_circuit(task_id, outcome)
+            else:
+                self.db.requeue(task_id)
             platform_log.log_event(
                 "task_requeued",
                 task_id=task_id,
                 success=outcome.success,
                 error=outcome.error,
                 detail=outcome.detail,
+                quota=getattr(outcome, "quota", False),
             )
         else:
             self.db.complete(task_id, outcome.success, outcome.error)

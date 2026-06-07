@@ -165,6 +165,11 @@ class DispatchRoutingTest(DispatchTestBase):
         self.assertEqual(self.runner.calls, [])
 
     def test_implement_runs_agent_with_prompt(self) -> None:
+        self.ctx.runner = FakeAgentRunner(AgentResult(
+            ok=True, returncode=0,
+            report={"status": "done", "summary": "did it", "files_changed": []},
+        ))
+        self.runner = self.ctx.runner
         eid = self._seed_local_entry("Do the thing", ["tier:issue", "status:todo"])
         out = dispatch(
             self.ctx,
@@ -176,6 +181,11 @@ class DispatchRoutingTest(DispatchTestBase):
         self.assertEqual(self.runner.calls[0]["cwd"], str(self.root))
 
     def test_review_runs_review_prompt(self) -> None:
+        self.ctx.runner = FakeAgentRunner(AgentResult(
+            ok=True, returncode=0,
+            report={"verdict": "approve", "confidence": 0.99, "summary": "ok"},
+        ))
+        self.runner = self.ctx.runner
         eid = self._seed_local_entry("Review me", ["tier:issue", "status:in_review"])
         out = dispatch(
             self.ctx,
@@ -283,6 +293,29 @@ class DispatchRoutingTest(DispatchTestBase):
         self.assertTrue(out.success)
         self.assertEqual(self.runner.calls, [])
         self.assertIn("no actionable intent", out.detail)
+
+    def test_implement_missing_report_is_retryable_failure(self) -> None:
+        # rc==0 but no result file -> not really done -> retryable failure (this is
+        # the "Blocked: cannot make changes", exit 0 case).
+        self.ctx.runner = FakeAgentRunner(AgentResult(ok=True, returncode=0, report=None,
+                                                      report_error="no result file"))
+        eid = self._seed_local_entry("Do it", ["tier:issue", "status:todo"])
+        out = dispatch(self.ctx, {"action": "handle_entry_created", "post_id": str(eid), "payload": {}})
+        self.assertFalse(out.success)
+        self.assertTrue(out.retryable)
+        self.assertIn("result file", out.error)
+
+    def test_quota_exhausted_requeues_as_quota(self) -> None:
+        # Every spec quota-blocked -> requeue + quota flag (no complete-as-failed,
+        # so recovery never spawns an error post / resolver).
+        self.ctx.runner = FakeAgentRunner(AgentResult(
+            ok=False, returncode=1, error="usage limit", quota_exhausted=True, quota_reset_hint=None,
+        ))
+        eid = self._seed_local_entry("Do it", ["tier:issue", "status:todo"])
+        out = dispatch(self.ctx, {"action": "handle_entry_created", "post_id": str(eid), "payload": {}})
+        self.assertFalse(out.success)
+        self.assertTrue(out.requeue)
+        self.assertTrue(out.quota)
 
     def test_agent_timeout_requeues(self) -> None:
         self.ctx.runner = FakeAgentRunner(

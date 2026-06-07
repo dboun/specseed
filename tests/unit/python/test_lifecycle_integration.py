@@ -54,9 +54,15 @@ class LifecycleTest(unittest.TestCase):
             if "reviewing completed work" in call["prompt"]:
                 v, c = review_script[min(state["i"], len(review_script) - 1)]
                 state["i"] += 1
-                return AgentResult(ok=True, returncode=0,
-                                   stdout=f"review\nSPECSEED_REVIEW verdict={v} confidence={c}")
-            return AgentResult(ok=True, returncode=0)
+                return AgentResult(
+                    ok=True, returncode=0,
+                    stdout=f"review\nSPECSEED_REVIEW verdict={v} confidence={c}",
+                    report={"verdict": v, "confidence": c, "summary": "review findings"},
+                )
+            return AgentResult(
+                ok=True, returncode=0,
+                report={"status": "done", "summary": "implemented", "files_changed": []},
+            )
 
         return FakeAgentRunner(side_effect=side_effect)
 

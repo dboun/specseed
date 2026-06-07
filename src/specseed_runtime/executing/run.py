@@ -77,6 +77,10 @@ def build_scheduler(
     if applied:
         platform_log.log_event("storage_migrated", storage=str(storage_dir), applied=applied)
     config = load_config(storage_dir)
+    # Git is mandatory + the engine is off-limits: repair a non-git target and
+    # refresh the identity guardrails before the loop. Skipped for the engine's
+    # own checkout (target == dev repo) so we never rewrite its CLAUDE.md.
+    _ensure_target_ready(Path(repo_root) if repo_root else Path.cwd(), config)
     platform_log.log_event(
         "scheduler_build",
         storage=str(storage_dir),
@@ -126,6 +130,32 @@ def build_scheduler(
         # the runner came from config - never swap out an injected double.
         config_loader=None if runner_injected else (lambda: load_config(storage_dir)),
     )
+
+
+def _ensure_target_ready(repo_root: Path, config: dict) -> None:
+    """Best-effort startup repair: git-init + identity guardrails for the target.
+
+    Never touches the engine's own checkout (target == dev repo). Failures are
+    logged, never fatal - a scaffold hiccup must not stop the runner."""
+    try:
+        from specseed_runtime import registry
+
+        if registry.is_dev() and repo_root.resolve() == registry.dev_root().resolve():
+            return
+    except Exception:
+        pass
+    try:
+        from specseed_runtime.configuring import scaffold
+
+        specseed_dir = config.get("specseed_dir") or ".specseed"
+        dev_branch = config.get("dev_branch") or "main"
+        result = scaffold.scaffold_target(repo_root, specseed_dir, dev_branch)
+        if result.get("git"):
+            platform_log.log_event(
+                "target_git_initialized", repo_root=str(repo_root), actions=result["git"]
+            )
+    except Exception as exc:
+        platform_log.log_event("target_scaffold_error", repo_root=str(repo_root), error=repr(exc))
 
 
 def _backend_kind(remote_state: dict) -> str:

@@ -236,6 +236,70 @@ class _EchoRunner(SubprocessAgentRunner):
         ]
 
 
+class _ReportRunner(SubprocessAgentRunner):
+    """``python -c`` child that writes the JSON result file then exits 0."""
+
+    def __init__(self, payload_json: str) -> None:
+        super().__init__(poll_interval=0.05)
+        self.payload_json = payload_json
+
+    def build_command(self, prompt: str, cwd) -> list[str]:
+        code = (
+            "import os,sys;sys.stdin.read();"
+            "open(os.environ['SPECSEED_RESULT_FILE'],'w').write({0!r});"
+            "print('done')".format(self.payload_json)
+        )
+        return [sys.executable, "-c", code]
+
+
+class ResultFileTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+
+    def test_valid_report_is_parsed_for_intent(self) -> None:
+        payload = json.dumps({"verdict": "approve", "confidence": 0.9, "summary": "ok"})
+        result = _ReportRunner(payload).run("p", cwd=self._tmp.name, timeout_s=30, intent="review")
+        self.assertTrue(result.ok)
+        self.assertEqual(result.report["verdict"], "approve")
+        self.assertIsNone(result.report_error)
+
+    def test_missing_report_records_error(self) -> None:
+        # writes nothing to the result file -> empty file -> report_error set.
+        result = _EchoRunner(0).run("p", cwd=self._tmp.name, timeout_s=30, intent="implement")
+        self.assertTrue(result.ok)  # rc==0; the gate lives in dispatch, not here
+        self.assertIsNone(result.report)
+        self.assertIsNotNone(result.report_error)
+
+    def test_no_intent_skips_parsing(self) -> None:
+        result = _EchoRunner(0).run("p", cwd=self._tmp.name, timeout_s=30)
+        self.assertIsNone(result.report)
+        self.assertIsNone(result.report_error)
+
+
+class ChainQuotaTest(unittest.TestCase):
+    def test_all_quota_failures_mark_exhausted(self) -> None:
+        q = AgentResult(ok=False, returncode=1, error="You've hit your usage limit. try again in 5 minutes")
+        c1 = FakeAgentRunner(result=q)
+        c2 = FakeAgentRunner(result=q)
+        chains = RunnerChains({"implementation": [c1, c2]})
+        result = chains.run("p", function="implementation", cwd="/tmp", intent="implement")
+        self.assertFalse(result.ok)
+        self.assertTrue(result.quota_exhausted)
+
+    def test_one_nonquota_failure_is_not_quota(self) -> None:
+        q = AgentResult(ok=False, returncode=1, error="usage limit")
+        plain = AgentResult(ok=False, returncode=1, error="boom")
+        chains = RunnerChains({"implementation": [FakeAgentRunner(result=q), FakeAgentRunner(result=plain)]})
+        result = chains.run("p", function="implementation", cwd="/tmp", intent="implement")
+        self.assertFalse(getattr(result, "quota_exhausted", False))
+
+    def test_success_is_never_quota(self) -> None:
+        chains = RunnerChains({"implementation": [FakeAgentRunner(result=AgentResult(ok=True, returncode=0))]})
+        result = chains.run("p", function="implementation", cwd="/tmp", intent="implement")
+        self.assertFalse(result.quota_exhausted)
+
+
 class SubprocessFailureTailTest(unittest.TestCase):
     """Failed runs log a stdout tail in agent_subprocess_complete; ok runs don't."""
 

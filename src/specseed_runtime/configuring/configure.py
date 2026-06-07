@@ -58,6 +58,7 @@ _add_package_parent_to_path()
 
 from specseed_runtime.migrating.migrate import run_migrations
 from specseed_runtime.storage_paths import default_storage_dir as _dev_default_storage_dir
+from specseed_runtime.configuring import scaffold  # noqa: E402
 
 # Single source of truth for the runner vocabulary - a mirrored copy here once
 # drifted and hid a new function from configure + the UI.
@@ -309,10 +310,10 @@ def default_config():
             "max_attempts": 3,
         },
         "permissions": {
-            # local git. creating local branches is ALWAYS allowed when git is on
-            # (no switch); merging into the dev branch gets its own switch.
+            # local git is MANDATORY (always on - the target is git-initialized at
+            # configure time). Creating branches is always allowed; only merging into
+            # the dev branch gets a switch.
             "git": {
-                "enabled": True,
                 "merge_to_dev_branch": False,
             },
             # remote actions. only meaningful once the remote is enabled (remote.json).
@@ -404,6 +405,7 @@ def coerce_config(existing):
         for block in ("git", "remote", "platform", "agents"):
             if isinstance(permissions.get(block), dict):
                 cfg["permissions"][block].update(permissions[block])
+        cfg["permissions"]["git"].pop("enabled", None)  # legacy switch: git is mandatory
     return cfg
 
 
@@ -454,6 +456,14 @@ def write_config_files(
     if remote.get("enabled") and token:
         written["token"] = write_token(storage, token)
         written["storage_gitignore"] = ensure_gitignored(storage)
+    # Git is mandatory + the engine is off-limits: init a non-git target, give the
+    # dev branch a root commit, and drop the identity guardrails (idempotent).
+    if repo_root is not None:
+        specseed_dir = cfg.get("specseed_dir") or (
+            specseed_rel.as_posix() if specseed_rel is not None else DEFAULT_SPECSEED_DIR
+        )
+        dev_branch = cfg.get("dev_branch") or DEFAULT_DEV_BRANCH
+        written["scaffold"] = scaffold.scaffold_target(repo_root, specseed_dir, dev_branch)
     return written
 
 
@@ -706,16 +716,10 @@ def section_backend(cfg, remote, storage):
 
 def section_git_permissions(cfg):
     git = cfg["permissions"]["git"]
+    git.pop("enabled", None)  # legacy switch: git is mandatory now
     dev_branch = cfg.get("dev_branch") or DEFAULT_DEV_BRANCH
     print("\n--- local git ---")
-    git["enabled"] = ask_yn(
-        "Let the agent use local git (branch/commit/merge)?",
-        default=git.get("enabled", True),
-    )
-    if not git["enabled"]:
-        git["merge_to_dev_branch"] = False
-        return
-    print("  (creating local branches is always allowed once git is on.)")
+    print("  (git is mandatory; the target is git-initialized and branching is always allowed.)")
     git["merge_to_dev_branch"] = ask_yn(
         f"  Allow merging into the dev branch ({dev_branch})?",
         default=git.get("merge_to_dev_branch", False),
@@ -870,10 +874,7 @@ def summary_lines(cfg, remote, token):
     approvers = cfg.get("approvals", {}).get("approver_usernames", [])
     L.append("approvers: " + (", ".join(approvers) if approvers else "none configured"))
     git = cfg["permissions"]["git"]
-    if not git["enabled"]:
-        L.append("git: OFF (agent never touches git)")
-    else:
-        L.append(f"git: on — branches=always, merge_to_dev_branch={git['merge_to_dev_branch']}")
+    L.append(f"git: mandatory — branches=always, merge_to_dev_branch={git.get('merge_to_dev_branch', False)}")
     plat = cfg["permissions"].get("platform", {})
     L.append(f"platform: auto_implement_issue={plat.get('auto_implement_issue', True)}, "
              f"auto_proceed_to_next_sprint={plat.get('auto_proceed_to_next_sprint_if_available', False)}")

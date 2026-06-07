@@ -473,5 +473,45 @@ class ConfigReloadOnResumeTest(unittest.TestCase):
         self.assertEqual(calls, [])
 
 
+class QuotaCircuitTest(SchedulerTest):
+    """A quota-exhausted outcome parks the loop and requeues, no recovery."""
+
+    def test_open_circuit_requeues_for_later_and_parks(self) -> None:
+        from specseed_runtime.executing.dispatch import HandlerOutcome
+
+        sched = self._scheduler()
+        self.db.enqueue("handle_entry_created", post_id="1", payload={})
+        task = self.db.claim_next()
+        out = HandlerOutcome(success=False, requeue=True, quota=True, quota_until=None)
+        sched._open_quota_circuit(int(task["task_id"]), out)
+
+        self.assertTrue(sched._quota_circuit_open())
+        # parked in the future -> not claimable right now
+        self.assertIsNone(self.db.claim_next())
+
+    def test_circuit_closes_after_deadline(self) -> None:
+        sched = self._scheduler()
+        sched._quota_paused_until = time.monotonic() - 1  # already elapsed
+        self.assertFalse(sched._quota_circuit_open())
+        self.assertEqual(sched._quota_paused_until, 0.0)
+
+    def test_quota_park_parses_iso_reset(self) -> None:
+        from datetime import datetime, timedelta, timezone
+
+        sched = self._scheduler()
+        future = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
+        secs, not_before = sched._quota_park(future)
+        self.assertGreater(secs, 60)
+        self.assertTrue(not_before)
+
+    def test_quota_park_default_when_no_hint(self) -> None:
+        from specseed_runtime.executing.quota import DEFAULT_PARK_S
+
+        sched = self._scheduler()
+        secs, not_before = sched._quota_park(None)
+        self.assertEqual(secs, float(DEFAULT_PARK_S))
+        self.assertTrue(not_before)
+
+
 if __name__ == "__main__":
     unittest.main()

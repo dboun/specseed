@@ -22,13 +22,16 @@ from __future__ import annotations
 
 import os
 import subprocess
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from specseed_runtime.executing import agent_report
 from specseed_runtime.executing import platform_log
+from specseed_runtime.executing import quota as quota_mod
 
 
 # Hard cap on a single agent run. The scheduler also enforces this at the thread
@@ -65,6 +68,13 @@ def stdout_tail(text: str, limit: int = STDOUT_TAIL_CHARS) -> str:
     return "...[truncated]" + text[-limit:]
 
 
+def _unlink(path: str) -> None:
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
 @dataclass
 class AgentResult:
     """Outcome of one agent run."""
@@ -76,6 +86,15 @@ class AgentResult:
     timed_out: bool = False     # stopped by the wall-clock deadline
     error: Optional[str] = None
     duration_s: float = 0.0
+    # Structured result the agent wrote to $SPECSEED_RESULT_FILE (parsed per
+    # intent), or None + report_error when missing/invalid. rc==0 is no longer a
+    # sufficient success signal; the caller judges from this.
+    report: Optional[dict] = None
+    report_error: Optional[str] = None
+    # Set by RunnerChains when EVERY spec in the chain failed with a provider
+    # quota signal: a global condition, not a task-local failure.
+    quota_exhausted: bool = False
+    quota_reset_hint: Optional[str] = None
 
 
 class AgentRunner:
@@ -93,6 +112,7 @@ class AgentRunner:
         cancel: Optional[threading.Event] = None,
         timeout_s: float = DEFAULT_AGENT_TIMEOUT_S,
         on_start: Optional[Callable[[int, str], None]] = None,
+        intent: Optional[str] = None,
     ) -> AgentResult:
         raise NotImplementedError
 
@@ -116,7 +136,7 @@ class SubprocessAgentRunner(AgentRunner):
     def build_command(self, prompt: str, cwd: str | Path) -> list[str]:
         raise NotImplementedError
 
-    def _child_env(self) -> Optional[dict[str, str]]:
+    def _child_env(self, result_file: Optional[str] = None) -> Optional[dict[str, str]]:
         env = {**os.environ, **self.env_overrides}
         # The agent runs in the target (cwd=repo_root) but may execute python that
         # imports the engine (e.g. enqueue a spec-change run). The engine is not in
@@ -125,6 +145,9 @@ class SubprocessAgentRunner(AgentRunner):
         engine_src = str(Path(__file__).resolve().parents[2])
         existing = env.get("PYTHONPATH")
         env["PYTHONPATH"] = engine_src if not existing else os.pathsep.join([engine_src, existing])
+        # Where the agent must write its structured JSON result (agent_report).
+        if result_file:
+            env[agent_report.RESULT_FILE_ENV] = result_file
         return env
 
     def run(
@@ -135,8 +158,13 @@ class SubprocessAgentRunner(AgentRunner):
         cancel: Optional[threading.Event] = None,
         timeout_s: float = DEFAULT_AGENT_TIMEOUT_S,
         on_start: Optional[Callable[[int, str], None]] = None,
+        intent: Optional[str] = None,
     ) -> AgentResult:
         argv = self.build_command(prompt, cwd)
+        # Per-run result file the agent writes its JSON outcome to. Pre-created
+        # empty so a vanished file is unambiguous; cleaned up after parsing.
+        result_fd, result_path = tempfile.mkstemp(prefix="specseed-result-", suffix=".json")
+        os.close(result_fd)
         start = time.monotonic()
         deadline = start + timeout_s if timeout_s and timeout_s > 0 else None
         platform_log.log_event(
@@ -157,9 +185,10 @@ class SubprocessAgentRunner(AgentRunner):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
-                env=self._child_env(),
+                env=self._child_env(result_path),
             )
         except (OSError, ValueError) as exc:
+            _unlink(result_path)
             platform_log.log_event(
                 "agent_subprocess_launch_failed",
                 runner=type(self).__name__,
@@ -228,6 +257,13 @@ class SubprocessAgentRunner(AgentRunner):
         stdout = "".join(chunks)
         duration = time.monotonic() - start
 
+        # Read the structured result the agent wrote, then drop the temp file.
+        report = None
+        report_error = None
+        if intent is not None:
+            report, report_error = agent_report.parse_result_file(result_path, intent)
+        _unlink(result_path)
+
         if killed:
             error = "agent run cancelled"
         elif timed_out:
@@ -249,6 +285,8 @@ class SubprocessAgentRunner(AgentRunner):
             error=error,
             stdout_chars=len(stdout),
             stdout_tail=stdout_tail(stdout) if error else None,
+            has_report=report is not None,
+            report_error=report_error,
         )
         return AgentResult(
             ok=ok,
@@ -258,6 +296,8 @@ class SubprocessAgentRunner(AgentRunner):
             timed_out=timed_out,
             error=error,
             duration_s=duration,
+            report=report,
+            report_error=report_error,
         )
 
     def _stop(self, proc: "subprocess.Popen[Any]") -> None:
@@ -443,24 +483,48 @@ class RunnerChains:
         cancel: Optional[threading.Event] = None,
         timeout_s: float = DEFAULT_AGENT_TIMEOUT_S,
         on_start: Optional[Callable[[int, str], None]] = None,
+        intent: Optional[str] = None,
     ) -> AgentResult:
         chain = self.chain_for(function)
         last: Optional[AgentResult] = None
+        quota_hits: list[Any] = []
         for i, runner in enumerate(chain):
             if i:
                 platform_log.log_event(
                     "agent_chain_fallback", function=function, spec_index=i
                 )
             result = runner.run(
-                prompt, cwd=cwd, cancel=cancel, timeout_s=timeout_s, on_start=on_start
+                prompt, cwd=cwd, cancel=cancel, timeout_s=timeout_s,
+                on_start=on_start, intent=intent,
             )
             last = result
             if getattr(result, "killed", False):
                 return result  # deliberate stop — do not try fallbacks
             if getattr(result, "ok", False):
                 return result
+            # A failure: was it a provider quota? Sniff error + stdout. We try the
+            # WHOLE chain first (a fallback may be a different provider/account);
+            # only if every spec is quota-blocked do we open the circuit.
+            sig = quota_mod.quota_signal(
+                "{0}\n{1}".format(getattr(result, "error", "") or "", getattr(result, "stdout", "") or "")
+            )
+            quota_hits.append(sig)
         if last is None:
             return AgentResult(ok=False, error=f"no runner configured for {function!r}")
+        if quota_hits and all(h is not None for h in quota_hits):
+            longest = max(quota_hits, key=lambda h: h.park_seconds)
+            last.quota_exhausted = True
+            last.quota_reset_hint = (
+                longest.reset_at.isoformat() if longest.reset_at is not None else None
+            )
+            platform_log.log_event(
+                "agent_chain_quota_exhausted",
+                function=function,
+                specs=len(chain),
+                park_seconds=longest.park_seconds,
+                reset_hint=last.quota_reset_hint,
+            )
+            return last
         platform_log.log_event(
             "agent_chain_exhausted", function=function, specs=len(chain)
         )
@@ -513,9 +577,10 @@ class FakeAgentRunner(AgentRunner):
         cancel: Optional[threading.Event] = None,
         timeout_s: float = DEFAULT_AGENT_TIMEOUT_S,
         on_start: Optional[Callable[[int, str], None]] = None,
+        intent: Optional[str] = None,
     ) -> AgentResult:
         call = {"prompt": prompt, "cwd": str(cwd), "timeout_s": timeout_s, "cancel": cancel,
-                "on_start": on_start}
+                "on_start": on_start, "intent": intent}
         self.calls.append(call)
         if self.side_effect is not None:
             return self.side_effect(call)

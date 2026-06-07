@@ -25,8 +25,7 @@ def _local_answers(*, specseed="seedmeta", dev_branch="", write=""):
     answers += [""] * (5 * len(configure.RUNNER_FUNCTIONS))
     answers += [
         dev_branch,  # dev branch
-        "",          # local git on
-        "",          # merge_to_dev_branch off
+        "",          # merge_to_dev_branch off (git is mandatory: no enable prompt)
         "",          # auto_implement_issue (yes)
         "",          # auto_proceed_to_next_sprint (no)
     ]
@@ -130,7 +129,7 @@ class ConfigurePermissionsShapeTest(unittest.TestCase):
             self.assertNotIn("backend", cfg)
             perms = cfg["permissions"]
             self.assertEqual(set(perms), {"git", "remote", "platform", "agents"})
-            self.assertEqual(perms["git"], {"enabled": True, "merge_to_dev_branch": False})
+            self.assertEqual(perms["git"], {"merge_to_dev_branch": False})
             self.assertEqual(perms["remote"], {
                 "post_control": False, "push_branches": False,
                 "push_dev_branch": False, "make_prs": False,
@@ -163,7 +162,7 @@ class ConfigurePermissionsShapeTest(unittest.TestCase):
             self.assertNotIn("backend", cfg)
             self.assertNotIn("require_human_approval", cfg["review"])
             self.assertTrue(cfg["review"]["enabled"])               # kept
-            self.assertFalse(cfg["permissions"]["git"]["enabled"])  # merged
+            self.assertNotIn("enabled", cfg["permissions"]["git"])  # legacy git switch dropped
             # new blocks materialize with defaults
             self.assertIn("platform", cfg["permissions"])
             self.assertEqual(cfg["permissions"]["agents"], configure.default_agent_gates())

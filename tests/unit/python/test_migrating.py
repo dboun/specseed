@@ -70,7 +70,8 @@ class RunMigrationsTest(unittest.TestCase):
             # The whole chain up to the running engine, in order.
             self.assertEqual(
                 applied,
-                ["m_0_3_0__0_3_1", "m_0_3_1__0_4_0", "m_0_4_0__0_5_0", "m_0_5_0__0_7_0"],
+                ["m_0_3_0__0_3_1", "m_0_3_1__0_4_0", "m_0_4_0__0_5_0",
+                 "m_0_5_0__0_7_0", "m_0_7_0__0_9_0"],
             )
             self.assertEqual(migrate.storage_version(storage), migrate.code_version())
 
@@ -329,6 +330,59 @@ class Hop050To070Test(unittest.TestCase):
             (storage / "specseed.db").unlink()
             changed = [p.name for p in m_0_5_0__0_7_0.run(storage, specseed_dir)]
             self.assertEqual(changed, ["seed_state.json"])
+
+
+class Hop070To090Test(unittest.TestCase):
+    """0.9.0: drop permissions.git.enabled; bump default-shaped confidence."""
+
+    def _old_shape(self, root: Path, cfg: dict) -> tuple[Path, Path]:
+        specseed_dir, storage = _fixture_tree(root, version="0.9.0")
+        storage.mkdir(parents=True, exist_ok=True)
+        (storage / "configuration.json").write_text(json.dumps(cfg), encoding="utf-8")
+        return specseed_dir, storage
+
+    def test_drops_git_enabled_and_bumps_default_confidence(self) -> None:
+        from specseed_runtime.migrating import m_0_7_0__0_9_0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = {
+                "permissions": {"git": {"enabled": True, "merge_to_dev_branch": True}},
+                "review": {"enabled": True, "confidence_threshold": 0.75},
+            }
+            specseed_dir, storage = self._old_shape(Path(tmp), cfg)
+            changed = m_0_7_0__0_9_0.run(storage, specseed_dir)
+            self.assertEqual([p.name for p in changed], ["configuration.json"])
+            out = json.loads((storage / "configuration.json").read_text(encoding="utf-8"))
+            self.assertNotIn("enabled", out["permissions"]["git"])
+            self.assertTrue(out["permissions"]["git"]["merge_to_dev_branch"])
+            self.assertEqual(out["review"]["confidence_threshold"], 0.95)
+
+    def test_keeps_custom_confidence(self) -> None:
+        from specseed_runtime.migrating import m_0_7_0__0_9_0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = {"permissions": {"git": {}}, "review": {"confidence_threshold": 0.6}}
+            specseed_dir, storage = self._old_shape(Path(tmp), cfg)
+            m_0_7_0__0_9_0.run(storage, specseed_dir)
+            out = json.loads((storage / "configuration.json").read_text(encoding="utf-8"))
+            self.assertEqual(out["review"]["confidence_threshold"], 0.6)
+
+    def test_idempotent_and_noop_when_clean(self) -> None:
+        from specseed_runtime.migrating import m_0_7_0__0_9_0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = {"permissions": {"git": {"merge_to_dev_branch": False}},
+                   "review": {"confidence_threshold": 0.95}}
+            specseed_dir, storage = self._old_shape(Path(tmp), cfg)
+            self.assertEqual(m_0_7_0__0_9_0.run(storage, specseed_dir), [])
+
+    def test_missing_config_is_noop(self) -> None:
+        from specseed_runtime.migrating import m_0_7_0__0_9_0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            specseed_dir, storage = _fixture_tree(Path(tmp), version="0.9.0")
+            storage.mkdir(parents=True, exist_ok=True)
+            self.assertEqual(m_0_7_0__0_9_0.run(storage, specseed_dir), [])
 
 
 if __name__ == "__main__":

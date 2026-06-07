@@ -83,11 +83,12 @@ class Permissions:
 
     # -- git ------------------------------------------------------------- #
     def git_enabled(self) -> bool:
-        # Default True: local git is on unless explicitly disabled.
-        return bool(self._git.get("enabled", True))
+        # Git is mandatory now (the target is git-initialized at configure time).
+        # Kept as a constant True for any back-compat callers.
+        return True
 
     def can_merge_to_dev_branch(self) -> bool:
-        return self.git_enabled() and bool(self._git.get("merge_to_dev_branch"))
+        return bool(self._git.get("merge_to_dev_branch"))
 
     # -- remote ---------------------------------------------------------- #
     def _remote_switch(self, key: str) -> bool:
