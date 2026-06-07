@@ -81,6 +81,32 @@ a valid slice. Slices may skip layers; the rule is observability.
 Ticket/issue/epic prose gets the humanizer pass (neutral, concrete, no em dashes).
 Labels and req ids are machine text, exempt.
 
+## Scaffolding (the first issue) — suggest, don't force
+
+A greenfield project with no agreed layout will have each parallel issue invent its
+own (one issue makes `pkg/`, another `src/pkg/`) and never commit cleanly. Prevent it
+by laying the foundation ONCE, first.
+
+**Emit a scaffold issue** (`type:chore`, `difficulty:easy`, first in the first sprint)
+when the project is greenfield AND the structure is non-trivial (a real package tree,
+a build/test toolchain, multiple components). It builds the canonical layout from
+`sad.md`'s `## Project layout`, the build/test config + manifest, and the
+language-appropriate `.gitignore` (e.g. the standard Python ignore) — nothing more. It
+produces a building, test-runnable skeleton.
+
+**Wire it as the foundation dependency:** every other first-wave issue (and the first
+issue of each component) gets `depends_on: #<scaffold>` in its body. The runtime
+dependency gate then holds those issues until the scaffold issue is `done`, so they
+start against a layout that already exists rather than racing to create one. (This is
+exactly what the issue-level `depends_on` gate is for; see the runtime's dispatch
+gate.)
+
+**Skip it** when there is nothing to scaffold: a tiny/single-file project, or an
+existing repo whose layout is already set (adopt route). Then fold the minimal setup
+(a couple of files, the `.gitignore`) into the first feature issue instead — do not
+manufacture a ceremonial scaffold issue. Naming is a soft convention (a clear title,
+optional `-scaffold` suffix), not enforced.
+
 ## Critical path (ticket tier, project-level)
 
 Compute it over **all** tickets, not per sprint: the dependency DAG crosses sprint

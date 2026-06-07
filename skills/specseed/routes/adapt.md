@@ -56,6 +56,12 @@ Record the tier + rationale in `plan.json`.
    `incremental` deep-questions only the first increment's components).
 4. `sad.md` — architecture: components, interfaces, data flow. Prose humanized; real,
    not aspirational. `incremental`: skeleton whole + deep only where increment 1 touches.
+   **MUST include an authoritative `## Project layout` section**: the canonical
+   top-level directory tree (package/module roots, where tests live, src- vs flat-
+   layout, entry points, config/manifest files). This is the ONE place the layout is
+   decided — every impl agent reads it and matches it (`prompts.build_implement_prompt`
+   points here), so issues never each invent their own structure. Pick a layout
+   idiomatic for the language/framework; state it concretely, not as options.
 5. `*-sdd.md` (or `sdd.md`) — the how, per component in scope.
 6. `adr.csv` — columns `Decision,Justification`. One row per real decision.
 7. `reqs.json` — via `scripts/requirements_generate_json.py`, then
