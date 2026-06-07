@@ -72,7 +72,7 @@ class RunMigrationsTest(unittest.TestCase):
                 applied,
                 ["m_0_3_0__0_3_1", "m_0_3_1__0_4_0", "m_0_4_0__0_5_0",
                  "m_0_5_0__0_7_0", "m_0_7_0__0_9_0", "m_0_9_0__0_11_0",
-                 "m_0_11_0__0_12_0"],
+                 "m_0_11_0__0_12_0", "m_0_12_0__0_13_0"],
             )
             self.assertEqual(migrate.storage_version(storage), migrate.code_version())
 
@@ -481,6 +481,57 @@ class Hop0110To0120Test(unittest.TestCase):
             specseed_dir, storage = _fixture_tree(Path(tmp), version="0.11.0")
             storage.mkdir(parents=True, exist_ok=True)
             self.assertEqual(m_0_11_0__0_12_0.run(storage, specseed_dir), [])
+
+
+class Hop0120To0130Test(unittest.TestCase):
+    """0.13.0: drop the dead ``permissions.remote.make_prs`` switch."""
+
+    def _cfg(self, storage, cfg):
+        storage.mkdir(parents=True, exist_ok=True)
+        (storage / "configuration.json").write_text(
+            json.dumps(cfg) + "\n", encoding="utf-8"
+        )
+
+    def test_drops_make_prs_keeps_other_remote_keys(self) -> None:
+        from specseed_runtime.migrating import m_0_12_0__0_13_0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            specseed_dir, storage = _fixture_tree(Path(tmp), version="0.12.0")
+            self._cfg(storage, {
+                "permissions": {
+                    "remote": {"push_primary": True, "make_prs": True},
+                },
+            })
+
+            changed = m_0_12_0__0_13_0.run(storage, specseed_dir)
+
+            self.assertEqual([p.name for p in changed], ["configuration.json"])
+            out = json.loads((storage / "configuration.json").read_text(encoding="utf-8"))
+            rem = out["permissions"]["remote"]
+            self.assertNotIn("make_prs", rem)
+            self.assertTrue(rem["push_primary"])  # other keys untouched
+
+    def test_idempotent_and_noop_when_absent(self) -> None:
+        from specseed_runtime.migrating import m_0_12_0__0_13_0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            specseed_dir, storage = _fixture_tree(Path(tmp), version="0.12.0")
+            self._cfg(storage, {"permissions": {"remote": {"push_primary": False}}})
+
+            self.assertEqual(m_0_12_0__0_13_0.run(storage, specseed_dir), [])
+            # second run after a strip is still a no-op.
+            self._cfg(storage, {"permissions": {"remote": {"make_prs": True}}})
+            self.assertEqual([p.name for p in m_0_12_0__0_13_0.run(storage, specseed_dir)],
+                             ["configuration.json"])
+            self.assertEqual(m_0_12_0__0_13_0.run(storage, specseed_dir), [])
+
+    def test_missing_config_is_noop(self) -> None:
+        from specseed_runtime.migrating import m_0_12_0__0_13_0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            specseed_dir, storage = _fixture_tree(Path(tmp), version="0.12.0")
+            storage.mkdir(parents=True, exist_ok=True)
+            self.assertEqual(m_0_12_0__0_13_0.run(storage, specseed_dir), [])
 
 
 if __name__ == "__main__":

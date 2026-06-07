@@ -750,8 +750,10 @@ class RuntimeGitLifecycleTest(DispatchTestBase):
         log = self._git("log", "-1", "--pretty=%s").stdout.strip()
         self.assertIn("FEAT-0001", log)
 
-    def test_merge_disabled_leaves_branch_unmerged(self) -> None:
-        # default config: merge_to_primary off -> branch left, primary untouched.
+    def test_merge_disabled_parks_merge_gate_unmerged(self) -> None:
+        # default config: merge_to_primary off -> the issue parks at a merge gate
+        # (awaiting_approval) with the branch intact; nothing lands on primary until
+        # a human approves the merge. An unmerged issue never reads as done.
         self.ctx.runner = _FileWritingRunner(
             AgentResult(ok=True, returncode=0,
                         report={"status": "done", "summary": "did it", "files_changed": ["x.py"]}),
@@ -764,7 +766,13 @@ class RuntimeGitLifecycleTest(DispatchTestBase):
         )
         self.assertTrue(out.success)
         self.assertFalse((self.root / "x.py").exists())  # not on primary
-        self.assertIn("merge disabled", out.detail)
+        self.assertIn("merge gate", out.detail)
+        labels = {l.name for l in self.remote.get_entry(eid).data.labels}
+        self.assertIn("issue:status:awaiting_approval", labels)
+        # the work branch still exists, intact for the approved merge (or a manual one)
+        self.assertEqual(
+            self._git("rev-parse", "--verify", "refs/heads/feat-0002-thing").returncode, 0
+        )
 
     def test_merge_enabled_merges_branch_into_primary(self) -> None:
         self.config["permissions"]["git"] = {"merge_to_primary": True}

@@ -21,11 +21,15 @@ DEFAULT_STATE = "todo"
 TERMINAL_STATES = {"done", "wont_do", "deprecated"}
 APPROVAL_COMMAND_RE = re.compile(r"^\s*approve\b(?P<ids>.*)$", re.IGNORECASE | re.DOTALL)
 REJECT_COMMAND_RE = re.compile(r"^\s*reject\b(?P<ids>.*)$", re.IGNORECASE | re.DOTALL)
+# "approve AND merge in one step": the comment-equivalent of the ❤️ reaction.
+MERGE_COMMAND_RE = re.compile(r"^\s*merge\b(?P<ids>.*)$", re.IGNORECASE | re.DOTALL)
 ID_SPLIT_RE = re.compile(r"[\s,]+")
 
-# Reaction kinds the approval system reads off a post: 👍 approves, 👎 rejects.
+# Reaction kinds the approval system reads off a post: 👍 approves one gate, 👎
+# rejects, ❤️ approves EVERY stacked gate at once (e.g. work + merge together).
 APPROVE_REACTION = "thumbs_up"
 REJECT_REACTION = "thumbs_down"
+MERGE_REACTION = "heart"
 # NOTE: the local/remote stand-in author names used to be hard-banned from
 # approving. The human authors as them too on those trackers, so the ban
 # deadlocked every local gate. Platform comments are told apart by the
@@ -56,6 +60,7 @@ class StateMachineResult:
     transitions: list[StateTransition] = field(default_factory=list)
     approved_by: list[str] = field(default_factory=list)
     rejected_by: list[str] = field(default_factory=list)
+    merge_approved_by: list[str] = field(default_factory=list)
     approval_ids: list[str] = field(default_factory=list)
     review_required: bool = False
     manual_testing_required: bool = False
@@ -94,6 +99,24 @@ def reject_ids_from_body(body: Optional[str]) -> list[str]:
     if not body:
         return []
     match = REJECT_COMMAND_RE.match(body.strip())
+    if match is None:
+        return []
+    tail = match.group("ids").strip()
+    if not tail:
+        return []
+    return [part for part in ID_SPLIT_RE.split(tail) if part]
+
+
+def merge_ids_from_body(body: Optional[str]) -> list[str]:
+    """Parse a strict single merge-approval post: ``merge <id> [<id> ...]``.
+
+    The ❤️-equivalent: approve the work AND authorize the merge in one comment.
+    Mirror of :func:`approval_ids_from_body`.
+    """
+
+    if not body:
+        return []
+    match = MERGE_COMMAND_RE.match(body.strip())
     if match is None:
         return []
     tail = match.group("ids").strip()
@@ -300,6 +323,26 @@ def rejected_by(
     return _dedupe(authors)
 
 
+def merge_approved_by(
+    entity: Entity,
+    config: dict[str, Any],
+    conversation: Optional[Iterable[Any]] = None,
+) -> list[str]:
+    """Find approvers who approved this entity AND authorized its merge in one go.
+
+    The ❤️ (``heart``) reaction or a ``merge <id>`` comment. At a combined
+    work+merge gate this means "approve the work and merge it" (vs 👍 which only
+    approves the work, leaving the merge for a follow-up gate).
+    """
+
+    is_approver = _approver_predicate(config)
+    authors = _command_authors(entity, config, conversation, merge_ids_from_body)
+    for user in _entity_reaction_users(entity, MERGE_REACTION):
+        if is_approver(user):
+            authors.append(user)
+    return _dedupe(authors)
+
+
 def evaluate_entity_state(
     entity: Entity,
     config: dict[str, Any],
@@ -311,6 +354,7 @@ def evaluate_entity_state(
     tier = entity.tier or "entity"
     approvals = approved_by(entity, config, conversation)
     rejections = rejected_by(entity, config, conversation)
+    merge_approvals = merge_approved_by(entity, config, conversation)
     review_required = _review_required(entity, config)
     manual_required = _manual_testing_required(entity, config)
     hitl_required = _hitl_required(entity, config)
@@ -332,6 +376,7 @@ def evaluate_entity_state(
         transitions=transitions,
         approved_by=approvals,
         rejected_by=rejections,
+        merge_approved_by=merge_approvals,
         approval_ids=sorted(approval_target_ids(entity)),
         review_required=review_required,
         manual_testing_required=manual_required,

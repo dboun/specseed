@@ -36,6 +36,7 @@ from __future__ import annotations
 import datetime
 import json
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
@@ -146,6 +147,112 @@ def _comment(ctx: Any, post_id: Any, body: str) -> None:
 
 def _close(ctx: Any, post_id: Any) -> None:
     ctx.remote.set_entry_closed(post_id)
+
+
+# --------------------------------------------------------------------------- #
+# merge gate
+# --------------------------------------------------------------------------- #
+# Markers stamped on a gate comment so both the runtime and the UI can tell which
+# kind of approval box this is:
+#   PURE merge gate     -> the work is already accepted; only the merge is left.
+#                          👍 merges, 👎 leaves the branch unmerged for a human.
+#   COMBINED work+merge -> the work needs sign-off AND the merge is gated.
+#                          ❤️ approves+merges in one step, 👍 approves the work only
+#                          (the merge becomes a pure gate), 👎 rejects the work.
+MERGE_GATE_MARKER = "<!-- specseed:merge-gate -->"
+WORK_MERGE_GATE_MARKER = "<!-- specseed:work-merge-gate -->"
+
+
+@dataclass
+class WorkTransition:
+    """Outcome of a lifecycle transition. ``merge`` tells ``dispatch`` to run the
+    issue-branch merge into primary now - advance owns remote STATE, dispatch owns
+    git. ``detail`` is the human-readable line for the HandlerOutcome (None when
+    nothing was applied / still waiting on a human)."""
+
+    detail: Optional[str]
+    merge: bool = False
+
+
+def _item_body(item: Any) -> Optional[str]:
+    if isinstance(item, dict):
+        return item.get("body")
+    return getattr(item, "body", None)
+
+
+def _primary_branch_name(ctx: Any) -> str:
+    return (getattr(ctx, "config", {}) or {}).get("specseed_primary_branch") or "main"
+
+
+def _merge_gated(ctx: Any) -> bool:
+    """True when merging into primary needs explicit human authorization."""
+    try:
+        return not ctx.permissions.can_merge_to_primary()
+    except Exception:
+        return False
+
+
+def _issue_has_branch(entity: Any) -> bool:
+    """Only code issues carry a git branch worth merging (tickets/epics roll up)."""
+    return getattr(entity, "tier", None) == "issue"
+
+
+def _pure_merge_gate(conversation: Any) -> bool:
+    """The active awaiting_approval is a PURE merge gate (work already accepted)."""
+    for item in conversation or []:
+        body = _item_body(item)
+        if body and MERGE_GATE_MARKER in str(body):
+            return True
+    return False
+
+
+def close_issue_done(ctx: Any, entity: Any) -> str:
+    """Settle an issue as done: set the label, close the entry, roll up the parent."""
+    _set_status(ctx, entity, "done")
+    _close(ctx, entity.post_id)
+    rolled = roll_up(ctx, entity)
+    return "done (closed)" + ("; " + rolled if rolled else "")
+
+
+def park_unmerged(ctx: Any, entity: Any) -> None:
+    """Park an issue ``blocked`` because its merge needs a human. The branch is left
+    intact and the issue is NOT closed - an unmerged issue must never read as done."""
+    _set_status(ctx, entity, "blocked")
+
+
+def _merge_gate_comment(ctx: Any, entity: Any) -> str:
+    primary = _primary_branch_name(ctx)
+    return (
+        "**Merge approval** — the work is complete and committed on this issue's "
+        "branch. Merging into `{0}` is gated, so it needs your go-ahead:\n\n"
+        "- react 👍 (or comment `approve {1}`) to merge into `{0}` now, or\n"
+        "- react 👎 (or comment `reject {1}`) to leave the branch unmerged for you "
+        "to merge manually.\n\n"
+        "Until then this stays `awaiting_approval`.\n\n{2}".format(
+            primary, entity.post_id, MERGE_GATE_MARKER
+        )
+    )
+
+
+def _open_merge_gate(ctx: Any, entity: Any, reason: str) -> WorkTransition:
+    """Park the issue awaiting_approval as a pure merge gate (merge pending)."""
+    _set_status(ctx, entity, "awaiting_approval")
+    _comment(ctx, entity.post_id, _merge_gate_comment(ctx, entity))
+    return WorkTransition(
+        "{0} -> awaiting_approval (merge gate; merge pending)".format(reason)
+    )
+
+
+def _settle_or_merge(ctx: Any, entity: Any, reason: str) -> WorkTransition:
+    """Reach the end of work: close now (no branch / merge auto-on closes after the
+    merge), open a merge gate (merge gated), or hand dispatch the merge (auto-on)."""
+    if not _issue_has_branch(entity):
+        return WorkTransition("{0} -> {1}".format(reason, close_issue_done(ctx, entity)))
+    if _merge_gated(ctx):
+        return _open_merge_gate(ctx, entity, reason)
+    # Auto-merge: leave the status as-is; dispatch merges then closes on success, so
+    # the issue never shows `done` with code still off primary.
+    return WorkTransition("{0} -> merging into primary".format(reason), merge=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -293,24 +400,28 @@ def apply_post_work_transition(
     result: Any,
     state_result: Any,
     conversation: Any = None,
-) -> str:
+) -> WorkTransition:
     """Apply the lifecycle transition implied by a successful agent run.
 
-    ``intent`` is ``dispatch.AgentIntent.{IMPLEMENT,REVIEW}``. Returns a short
-    human-readable detail describing what was applied (for the HandlerOutcome).
+    ``intent`` is ``dispatch.AgentIntent.{IMPLEMENT,REVIEW}``. Returns a
+    ``WorkTransition`` (detail + whether dispatch should now run the merge).
     """
     if not _can_write(ctx):
-        return "remote writes not permitted; no transition applied"
+        return WorkTransition("remote writes not permitted; no transition applied")
     if _is_stale(ctx, entity):
-        return "stale event; remote already advanced past {0}, skipping".format(entity.status)
+        return WorkTransition(
+            "stale event; remote already advanced past {0}, skipping".format(entity.status)
+        )
     if intent == "implement":
         return _advance_after_implement(ctx, entity, state_result, result)
     if intent == "review":
         return _advance_after_review(ctx, entity, result, conversation)
-    return "no transition for intent {0!r}".format(intent)
+    return WorkTransition("no transition for intent {0!r}".format(intent))
 
 
-def _advance_after_implement(ctx: Any, entity: Any, state_result: Any, result: Any = None) -> str:
+def _advance_after_implement(
+    ctx: Any, entity: Any, state_result: Any, result: Any = None
+) -> WorkTransition:
     # The agent's structured report decides whether work really happened. rc==0
     # alone used to advance a "Blocked: cannot make changes" run to review.
     report = getattr(result, "report", None) or {}
@@ -336,7 +447,7 @@ def _advance_after_implement(ctx: Any, entity: Any, state_result: Any, result: A
             "discussion. Parked `blocked` (review skipped). Approve to accept anyway, or "
             "comment guidance to retry.".format(" #{0}".format(new_id) if new_id is not None else ""),
         )
-        return "implement recommends spec-change -> blocked + draft adapt"
+        return WorkTransition("implement recommends spec-change -> blocked + draft adapt")
     status = str(report.get("status") or "").lower()
     if status in ("blocked", "needs_input"):
         detail = report.get("summary") or "(no detail provided)"
@@ -346,10 +457,10 @@ def _advance_after_implement(ctx: Any, entity: Any, state_result: Any, result: A
             "Implementation could not complete - reported {0}:\n\n{1}".format(word, detail),
         )
         _set_status(ctx, entity, "blocked")
-        return "implement reported {0} -> blocked".format(status)
+        return WorkTransition("implement reported {0} -> blocked".format(status))
     if getattr(state_result, "review_required", False):
         _set_status(ctx, entity, "in_review")
-        return "implement done -> in_review"
+        return WorkTransition("implement done -> in_review")
     if getattr(state_result, "hitl_required", False):
         _set_status(ctx, entity, "awaiting_approval")
         _comment(
@@ -357,14 +468,13 @@ def _advance_after_implement(ctx: Any, entity: Any, state_result: Any, result: A
             "Implementation finished; human sign-off required. An approver must "
             "comment `approve {0}` to complete.".format(entity.post_id),
         )
-        return "implement done -> awaiting_approval"
-    _set_status(ctx, entity, "done")
-    _close(ctx, entity.post_id)
-    rolled = roll_up(ctx, entity)
-    return "implement done -> done (closed)" + ("; " + rolled if rolled else "")
+        return WorkTransition("implement done -> awaiting_approval")
+    return _settle_or_merge(ctx, entity, "implement done")
 
 
-def _advance_after_review(ctx: Any, entity: Any, result: Any, conversation: Any) -> str:
+def _advance_after_review(
+    ctx: Any, entity: Any, result: Any, conversation: Any
+) -> WorkTransition:
     cfg = _review_config(ctx)
     threshold = float(cfg.get("confidence_threshold", 0.95))
     max_attempts = int(cfg.get("max_attempts", 2))
@@ -389,32 +499,25 @@ def _advance_after_review(ctx: Any, entity: Any, result: Any, conversation: Any)
     )
     _comment(ctx, entity.post_id, "{0}\n\n{1}\n\n{2}".format(header, summary, REVIEW_MARKER))
 
-    # approve + confident -> done.
+    # approve + confident -> done (merge gate / merge / close per config).
     if verdict == "approve" and confidence >= threshold:
-        _set_status(ctx, entity, "done")
-        _close(ctx, entity.post_id)
-        rolled = roll_up(ctx, entity)
-        return "review passed -> done (closed)" + ("; " + rolled if rolled else "")
+        return _settle_or_merge(ctx, entity, "review passed")
 
     # approve but UNDER the confidence bar -> a human looks, NOT a reimplement and
     # NOT a spec change. "Reviewer thinks it's fine but isn't sure" is the textbook
-    # case for human sign-off; reimplementing fine code just burns cycles.
+    # case for human sign-off; reimplementing fine code just burns cycles. When the
+    # merge is also gated this becomes a COMBINED gate: ❤️ signs off AND merges.
     if verdict == "approve":
         _set_status(ctx, entity, "awaiting_approval")
-        _comment(
-            ctx, entity.post_id,
-            "Review approved but confidence {0:.2f} is below the {1:.2f} bar. Parked for "
-            "human sign-off: comment `approve {2}` (or 👍) to complete, reply with what to "
-            "change to revise, or comment `retry` to re-review.".format(
-                confidence, threshold, entity.post_id
-            ),
-        )
-        return "review approve below confidence bar -> awaiting_approval"
+        _comment(ctx, entity.post_id, _below_confidence_comment(ctx, entity, confidence, threshold))
+        return WorkTransition("review approve below confidence bar -> awaiting_approval")
 
     # verdict == changes: reimplement until the loop is exhausted.
     if attempt < max_attempts:
         _set_status(ctx, entity, "todo")
-        return "review requested changes -> todo (reimplement, attempt {0})".format(attempt)
+        return WorkTransition(
+            "review requested changes -> todo (reimplement, attempt {0})".format(attempt)
+        )
 
     # Loop exhausted. Only escalate to a spec change when the REVIEWER recommended
     # it; otherwise park for a human decision (don't presume the spec is wrong).
@@ -442,7 +545,7 @@ def _advance_after_review(ctx: Any, entity: Any, result: Any, conversation: Any)
                 max_attempts, " #{0}".format(new_id) if new_id is not None else ""
             ),
         )
-        return "review exhausted + recommend_spec_change -> blocked + draft adapt"
+        return WorkTransition("review exhausted + recommend_spec_change -> blocked + draft adapt")
     _comment(
         ctx, entity.post_id,
         "Review still requesting changes after {0} attempts. Parked `blocked` for a human "
@@ -451,7 +554,29 @@ def _advance_after_review(ctx: Any, entity: Any, result: Any, conversation: Any)
             max_attempts, entity.post_id
         ),
     )
-    return "review exhausted -> blocked (human decision; no adapt)"
+    return WorkTransition("review exhausted -> blocked (human decision; no adapt)")
+
+
+def _below_confidence_comment(ctx: Any, entity: Any, confidence: float, threshold: float) -> str:
+    base = (
+        "Review approved but confidence {0:.2f} is below the {1:.2f} bar. Parked for "
+        "human sign-off.".format(confidence, threshold)
+    )
+    if _merge_gated(ctx) and _issue_has_branch(entity):
+        # Combined gate: the work needs sign-off AND the merge is gated.
+        primary = _primary_branch_name(ctx)
+        return (
+            "{0}\n\nMerging into `{1}` is also gated, so you have three choices:\n\n"
+            "- react ❤️ (or comment `merge {2}`) to approve AND merge into `{1}` in one step,\n"
+            "- react 👍 (or comment `approve {2}`) to approve the work now and leave the "
+            "merge as a follow-up gate, or\n"
+            "- reply with what to change to revise, or comment `retry` to re-review.\n\n"
+            "{3}".format(base, primary, entity.post_id, WORK_MERGE_GATE_MARKER)
+        )
+    return (
+        "{0} Comment `approve {1}` (or 👍) to complete, reply with what to change to "
+        "revise, or comment `retry` to re-review.".format(base, entity.post_id)
+    )
 
 
 def _draft_adapt_post(ctx: Any, entity: Any, title: str, reason: str, summary: str) -> Any:
@@ -499,94 +624,156 @@ def park_for_implement_approval(ctx: Any, entity: Any) -> str:
 
 def resolve_approval(
     ctx: Any, entity: Any, state_result: Any, conversation: Any = None, action: Any = None
-) -> Optional[str]:
+) -> WorkTransition:
     """Resolve an ``awaiting_approval`` entity from a human's signal.
 
-    Returns a detail string if anything was applied, else None (still waiting).
+    Returns a ``WorkTransition`` (``detail`` None = nothing applied / still waiting;
+    ``merge`` True = dispatch should now run the issue-branch merge).
 
-    * approve (👍 / ``approve <id>``) -> a completion gate (work reviewed) closes the
-      entry; a pre-work HITL gate resumes the issue to ``todo``.
-    * prose comment, or ``reject <prose>`` -> ``todo`` so the implementer revises with
-      that guidance (the comment is already on the thread for it to read).
-    * ``retry`` -> ``todo`` to re-run with no new feedback.
-    * bare ``reject`` / 👎 with no guidance -> post the options prompt once and wait;
-      nothing is run until the human says what to do.
+    Reaction vocabulary: 👍 approves the single primary gate; ❤️ approves every
+    stacked gate at once (work AND merge); 👎 rejects. So:
+
+    * COMBINED work+merge gate (review under the bar AND merge gated): ❤️ signs off
+      and merges; 👍 signs off the work only and opens a pure merge gate; 👎 rejects.
+    * PURE merge gate (work already accepted): 👍/❤️ authorize the merge; 👎 declines
+      it and settles the issue done with the branch left for a manual merge.
+    * plain completion gate (merge auto-on): 👍 completes (+ dispatch merges).
+    * pre-work HITL gate: 👍 resumes the issue to ``todo``.
+    * prose / ``retry`` -> ``todo`` to revise (work gate only); bare reject / 👎 with
+      no guidance -> post the options prompt once and wait.
     """
     if entity.status != "awaiting_approval":
-        return None
+        return WorkTransition(None)
     approved = getattr(state_result, "approved_by", None)
+    merge_approved = getattr(state_result, "merge_approved_by", None)
     rejected = getattr(state_result, "rejected_by", None)
     is_comment = action in _COMMENT_ACTIONS
     # Nothing to act on (a bare label re-sync, say): bow out before any remote read.
-    if not approved and not rejected and not is_comment:
-        return None
+    if not approved and not merge_approved and not rejected and not is_comment:
+        return WorkTransition(None)
     if not _can_write(ctx):
-        return None
+        return WorkTransition(None)
     if _is_stale(ctx, entity):
-        return "stale event; remote already advanced past awaiting_approval"
+        return WorkTransition("stale event; remote already advanced past awaiting_approval")
+
+    pure_merge = _pure_merge_gate(conversation)
+    primary = _primary_branch_name(ctx)
+
     # Approval wins over a stray rejection if somehow both are present.
-    if approved:
-        approver = approved[0]
+    if approved or merge_approved:
+        approver = (merge_approved or approved)[0]
+        # Pure merge gate: the work is already accepted; any approval authorizes the
+        # merge. dispatch runs it then closes on success.
+        if pure_merge:
+            _comment(
+                ctx, entity.post_id,
+                "Merge approved by {0}; merging into `{1}`.".format(approver, primary),
+            )
+            return WorkTransition("merge gate approved by {0} -> merging".format(approver), merge=True)
+        # Completion gate (work was reviewed). Pre-work/HITL gates (0 attempts) keep
+        # the original resume-to-todo behavior.
         if _count_review_attempts(conversation) > 0:
-            _set_status(ctx, entity, "done")
-            _close(ctx, entity.post_id)
+            if merge_approved:
+                # ❤️ : approve the work AND merge in one step.
+                _comment(
+                    ctx, entity.post_id,
+                    "Approved + merge by {0}; merging into `{1}`.".format(approver, primary),
+                )
+                return WorkTransition(
+                    "approval gate approved+merge by {0} -> merging".format(approver), merge=True
+                )
+            # 👍 : approve the work only. Merge gated -> open a pure merge gate.
+            if _merge_gated(ctx) and _issue_has_branch(entity):
+                _comment(ctx, entity.post_id, "Work approved by {0}.".format(approver))
+                return _open_merge_gate(ctx, entity, "approval gate approved by {0}".format(approver))
+            # Merge auto-on (or nothing to merge): complete now.
+            settle = _settle_or_merge(ctx, entity, "approval gate approved by {0}".format(approver))
             _comment(ctx, entity.post_id, "Approved by {0}; completing.".format(approver))
-            rolled = roll_up(ctx, entity)
-            return "approval gate -> done (closed)" + ("; " + rolled if rolled else "")
+            return settle
         _set_status(ctx, entity, "todo")
         _comment(ctx, entity.post_id, "Approved by {0}; work may proceed.".format(approver))
-        return "approval gate -> todo (resume work)"
+        return WorkTransition("approval gate -> todo (resume work)")
+
+    # Rejection on a PURE merge gate = decline the runtime merge: settle done with the
+    # branch left for a manual merge (the human owns it). Not a rework.
+    if pure_merge and rejected:
+        detail = close_issue_done(ctx, entity)
+        _comment(
+            ctx, entity.post_id,
+            "Merge declined by {0}; issue marked done with the branch left unmerged for "
+            "you to merge manually.".format(rejected[0]),
+        )
+        return WorkTransition("merge gate declined -> {0} (unmerged)".format(detail))
 
     # Not approved. A directive only counts off a fresh comment, never a stale one
-    # surfaced by a label/reaction event.
+    # surfaced by a label/reaction event. On a pure merge gate prose is not a rework.
     kind, _text = (None, None)
-    if is_comment:
+    if is_comment and not pure_merge:
         kind, _text = _human_directive(conversation, getattr(ctx, "config", {}))
     if kind == "retry":
         _set_status(ctx, entity, "todo")
         _comment(ctx, entity.post_id, "Retrying implementation with no new feedback.")
-        return "approval gate -> todo (retry, no feedback)"
+        return WorkTransition("approval gate -> todo (retry, no feedback)")
     if kind == "guidance":
         _set_status(ctx, entity, "todo")
         _comment(
             ctx, entity.post_id,
             "Taking your comment as change guidance; re-running implementation.",
         )
-        return "approval gate -> todo (revise with guidance)"
+        return WorkTransition("approval gate -> todo (revise with guidance)")
 
     # Bare reject / 👎 with no guidance: ask what to do (once), then wait.
     if (kind == "reject_bare" or rejected) and not _options_already_posted(ctx, entity.post_id):
         _post_reject_options(ctx, entity)
-        return "approval gate: rejected without guidance -> options prompt posted"
-    return None
+        return WorkTransition("approval gate: rejected without guidance -> options prompt posted")
+    return WorkTransition(None)
 
 
 def resolve_blocked(
     ctx: Any, entity: Any, state_result: Any, conversation: Any = None, action: Any = None
-) -> Optional[str]:
+) -> WorkTransition:
     """Human bypass for a ``blocked`` issue (e.g. parked by a spec-change recommend).
 
     The recommendation is a suggestion, never a forced path: a human can still
     approve the work (force done) or hand the implementer guidance (re-run). Returns
-    a detail string if a transition was applied, else None.
+    a ``WorkTransition`` (``detail`` None = nothing applied; ``merge`` True = dispatch
+    should run the merge). A force-approve routes through the same merge gate as any
+    other completion, so an overridden block never lands code on primary unreviewed.
     """
     if getattr(entity, "status", None) != "blocked":
-        return None
+        return WorkTransition(None)
     approved = getattr(state_result, "approved_by", None)
+    merge_approved = getattr(state_result, "merge_approved_by", None)
     is_comment = action in _COMMENT_ACTIONS
     # Only a human approval or a fresh comment can move a block; skip otherwise.
-    if not approved and not is_comment:
-        return None
+    if not approved and not merge_approved and not is_comment:
+        return WorkTransition(None)
     if not _can_write(ctx):
-        return None
+        return WorkTransition(None)
     if _is_stale(ctx, entity):
-        return "stale event; remote already advanced past blocked"
-    if approved:
-        _set_status(ctx, entity, "done")
-        _close(ctx, entity.post_id)
-        _comment(ctx, entity.post_id, "Approved by {0} over the block; completing.".format(approved[0]))
-        rolled = roll_up(ctx, entity)
-        return "blocked -> done (human override)" + ("; " + rolled if rolled else "")
+        return WorkTransition("stale event; remote already advanced past blocked")
+    primary = _primary_branch_name(ctx)
+    if approved or merge_approved:
+        approver = (merge_approved or approved)[0]
+        no_branch = not _issue_has_branch(entity)
+        # ❤️ authorizes the merge outright (bypasses the gate); 👍 with merge gated
+        # opens a merge gate first (an override must still get a merge sign-off before
+        # code lands on primary); 👍 with merge auto-on (or no branch) completes now.
+        if merge_approved or no_branch or not _merge_gated(ctx):
+            if no_branch:
+                detail = close_issue_done(ctx, entity)
+                _comment(ctx, entity.post_id, "Approved by {0} over the block; completing.".format(approver))
+                return WorkTransition("blocked -> human override by {0} -> {1}".format(approver, detail))
+            _comment(
+                ctx, entity.post_id,
+                "Approved by {0} over the block; merging into `{1}`.".format(approver, primary),
+            )
+            return WorkTransition(
+                "blocked -> human override by {0} -> merging into primary; completing".format(approver),
+                merge=True,
+            )
+        _comment(ctx, entity.post_id, "Approved by {0} over the block.".format(approver))
+        return _open_merge_gate(ctx, entity, "blocked -> human override by {0}".format(approver))
     kind, _text = (None, None)
     if is_comment:
         kind, _text = _human_directive(conversation, getattr(ctx, "config", {}))
@@ -598,8 +785,10 @@ def resolve_blocked(
             else "Taking your comment as change guidance; re-running implementation."
         )
         _comment(ctx, entity.post_id, note)
-        return "blocked -> todo ({0})".format("retry" if kind == "retry" else "revise with guidance")
-    return None
+        return WorkTransition(
+            "blocked -> todo ({0})".format("retry" if kind == "retry" else "revise with guidance")
+        )
+    return WorkTransition(None)
 
 
 # --------------------------------------------------------------------------- #

@@ -153,7 +153,7 @@ class ConfigurePermissionsShapeTest(unittest.TestCase):
             self.assertEqual(perms["git"], {"merge_to_primary": False})
             self.assertEqual(perms["remote"], {
                 "post_control": False, "push_branches": False,
-                "push_primary": False, "make_prs": False,
+                "push_primary": False,
             })
             self.assertEqual(perms["platform"], {
                 "auto_implement_issue": True,

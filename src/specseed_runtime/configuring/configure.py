@@ -313,7 +313,6 @@ def default_config():
                 "post_control": False,     # the CONTROL channel post
                 "push_branches": False,
                 "push_primary": False,  # push to the primary branch on the remote
-                "make_prs": False,
             },
             # platform-level autos. off = a human approves first.
             "platform": {
@@ -794,10 +793,6 @@ def section_remote_permissions(cfg, remote):
         f"Allow pushing to the primary branch ({primary_branch}) on the remote?",
         default=rem.get("push_primary", False),
     )
-    rem["make_prs"] = ask_yn(
-        "Allow opening pull/merge requests?",
-        default=rem.get("make_prs", False),
-    )
 
 
 def section_platform(cfg):
@@ -939,8 +934,7 @@ def summary_lines(cfg, remote, token):
     if remote.get("enabled"):
         r = cfg["permissions"]["remote"]
         L.append(f"remote actions: post_control={r['post_control']}, "
-                 f"push_branches={r['push_branches']}, push_primary={r['push_primary']}, "
-                 f"make_prs={r['make_prs']}")
+                 f"push_branches={r['push_branches']}, push_primary={r['push_primary']}")
     gates = cfg["permissions"].get("agents", {})
     blocked = sorted(k for k, v in gates.items() if v == "block")
     L.append("agent gates: " + (f"{len(gates)} classes (block: {', '.join(blocked) or 'none'})"

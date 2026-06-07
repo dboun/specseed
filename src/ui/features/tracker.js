@@ -325,27 +325,66 @@ export function createTracker({ repo, ctx }) {
 
   // The approval request is a comment; surface it as a box with approve/reject
   // (which resolve to 👍/👎 on the post) instead of a plain comment with reactions.
-  const isApprovalComment = (comment) => /Approval required:/i.test(comment.body || "");
+  // Two extra kinds carry a runtime marker: a pure merge gate (👍 merges, 👎 leaves
+  // the branch for a manual merge) and a combined work+merge gate (❤️ approves AND
+  // merges in one step, 👍 approves the work only, 👎 rejects).
+  const MERGE_GATE_MARKER = "<!-- specseed:merge-gate -->";
+  const WORK_MERGE_GATE_MARKER = "<!-- specseed:work-merge-gate -->";
+
+  const isApprovalComment = (comment) => {
+    const b = comment.body || "";
+    return /Approval required:/i.test(b) || b.includes(MERGE_GATE_MARKER) || b.includes(WORK_MERGE_GATE_MARKER);
+  };
+
+  // "combined" = work+merge (3 buttons); "merge" = pure merge gate; else a plain
+  // work/HITL approval gate.
+  function gateType(comment) {
+    const b = comment.body || "";
+    if (b.includes(WORK_MERGE_GATE_MARKER)) return "combined";
+    if (b.includes(MERGE_GATE_MARKER)) return "merge";
+    return "work";
+  }
 
   function approvalResolution(post) {
     const names = (post.labels || []).map((l) => l.name);
     const reacted = (kind) => (post.reactions || []).some((r) => r.kind === kind && r.count > 0);
-    if (names.some((n) => n.endsWith(":status:approved") || n.endsWith(":status:done")) || reacted("thumbs_up")) return "approved";
+    // ❤️ (approve + merge) counts as approval too.
+    if (names.some((n) => n.endsWith(":status:approved") || n.endsWith(":status:done")) || reacted("thumbs_up") || reacted("heart")) return "approved";
     if (names.some((n) => n.endsWith(":status:rejected")) || reacted("thumbs_down")) return "rejected";
     return null;
   }
 
+  function approvalButtons(comment) {
+    const kind = gateType(comment);
+    if (kind === "combined") {
+      // ❤️ approve+merge, 👍 approve work only, 👎 reject.
+      return `
+        <button type="button" class="btn btn-primary" data-approve-merge>Approve &amp; merge</button>
+        <button type="button" class="btn" data-approve>Approve</button>
+        <button type="button" class="btn btn-danger" data-reject>Reject</button>`;
+    }
+    if (kind === "merge") {
+      // pure merge gate: 👍 merges into primary, 👎 leaves the branch unmerged.
+      return `
+        <button type="button" class="btn btn-primary" data-approve>Approve merge</button>
+        <button type="button" class="btn btn-danger" data-reject>Decline</button>`;
+    }
+    return `
+      <button type="button" class="btn btn-primary" data-approve>Approve</button>
+      <button type="button" class="btn btn-danger" data-reject>Reject</button>`;
+  }
+
   function approvalBox(comment, post) {
     const resolved = approvalResolution(post);
+    const body = (comment.body || "")
+      .split(MERGE_GATE_MARKER).join("")
+      .split(WORK_MERGE_GATE_MARKER).join("");
     return `
       <article class="approval-box ${resolved ? "resolved" : ""}">
-        <div class="approval-body">${renderMarkdown(comment.body || "")}</div>
+        <div class="approval-body">${renderMarkdown(body)}</div>
         ${resolved
           ? `<div class="approval-status">${resolved === "approved" ? "✅ Approved" : "🚫 Rejected"}</div>`
-          : `<div class="button-row">
-              <button type="button" class="btn btn-primary" data-approve>Approve</button>
-              <button type="button" class="btn btn-danger" data-reject>Reject</button>
-            </div>`}
+          : `<div class="button-row">${approvalButtons(comment)}</div>`}
       </article>`;
   }
 
@@ -445,6 +484,7 @@ export function createTracker({ repo, ctx }) {
     const add = t.closest("[data-add-label]");
     if (add) return mutate(() => api.updateLabel(repo.id, state.selectedId, "add", add.dataset.addLabel));
     if (t.closest("[data-remove-draft]")) return mutate(() => api.updateLabel(repo.id, state.selectedId, "remove", "draft"));
+    if (t.closest("[data-approve-merge]")) return mutate(() => api.reactPost(repo.id, state.selectedId, "heart"));
     if (t.closest("[data-approve]")) return mutate(() => api.reactPost(repo.id, state.selectedId, "thumbs_up"));
     if (t.closest("[data-reject]")) return mutate(() => api.reactPost(repo.id, state.selectedId, "thumbs_down"));
     const stateSeg = t.closest("[data-state]");

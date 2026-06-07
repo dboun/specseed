@@ -87,7 +87,9 @@ def test_review_comment_carries_report_summary_not_banner() -> None:
         )
         h.drain(6)
         st, is_open = h.status()
-        assert st == "done" and is_open is False
+        # merge gated (default): a passed review parks at the merge gate awaiting a
+        # human merge approval rather than closing - but the review summary still posts.
+        assert st == "awaiting_approval" and is_open is True
         joined = "\n".join(h.comments())
         assert "PARSER LGTM, criteria met" in joined   # report.summary landed
         assert "banner noise first" not in joined       # raw stdout did not

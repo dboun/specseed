@@ -9,6 +9,7 @@ transitions must act once, not once per event). No GitHub/GitLab.
 
 from __future__ import annotations
 
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -28,18 +29,30 @@ class LifecycleTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
+        # Real git repo so a merge-on-completion (merge auto-on) can run; dbs/storage
+        # gitignored so checkouts don't fight open handles.
+        (self.root / ".gitignore").write_text("*.db\n*.db-*\nstorage/\n", encoding="utf-8")
+        self._git("init")
+        self._git("symbolic-ref", "HEAD", "refs/heads/main")
+        self._git("-c", "user.email=t@t", "-c", "user.name=t",
+                  "commit", "--allow-empty", "-m", "root")
 
-    def _build(self, runner, review):
+    def _git(self, *args) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", *args], cwd=str(self.root),
+                              capture_output=True, text=True)
+
+    def _build(self, runner, review, merge=False):
         remote = TrackingRemoteLocal(db_path=self.root / "remote.db", author="alice")
         local = TrackingLocal(db_path=self.root / "local.db", author="agent")
         db = Database(db_path=self.root / "queue.db")
         cfg = {
             "specseed_dir": "seedmeta",
+            "specseed_primary_branch": "main",
             "approvals": {"approver_usernames": ["alice"]},
-            "permissions": {},
+            "permissions": {"git": {"merge_to_primary": True}} if merge else {},
             "review": review,
         }
-        sched = Scheduler(db=db, runner=runner, config=cfg, storage=self.root,
+        sched = Scheduler(db=db, runner=runner, config=cfg, storage=self.root / "storage",
                           repo_root=self.root, remote=remote, local=local, poll_interval=0)
         for l in ("issue", "issue:status:todo"):
             remote.create_label(l)
@@ -88,6 +101,7 @@ class LifecycleTest(unittest.TestCase):
         sched, remote, eid = self._build(
             self._runner([("changes", 0.2), ("approve", 0.95)]),
             {"enabled": True, "confidence_threshold": 0.75, "max_attempts": 3},
+            merge=True,
         )
         for _ in range(6):
             sched.run_once()
@@ -95,6 +109,28 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(st, "done")
         self.assertFalse(is_open)
         self.assertEqual(self._drafts(remote), [])
+
+    def test_merge_gate_approval_merges_and_closes(self) -> None:
+        # merge GATED (default): implement reaches the merge gate (awaiting_approval);
+        # a human `approve` then authorizes the merge -> branch merged, issue done +
+        # closed. The single approval IS the merge approval (no double approval).
+        sched, remote, eid = self._build(self._runner([]), {"enabled": False})
+        for _ in range(4):
+            sched.run_once()
+        st, is_open = self._status(remote, eid)
+        self.assertEqual(st, "awaiting_approval")  # parked at the merge gate
+        self.assertTrue(is_open)
+        bodies = [c.body for c in remote.get_entry(eid).data.comments]
+        self.assertTrue(any("Merge approval" in (b or "") for b in bodies))
+        # human approves the merge
+        remote.add_entry_comment(eid, "approve {0}".format(eid))
+        for _ in range(4):
+            sched.run_once()
+        st, is_open = self._status(remote, eid)
+        self.assertEqual(st, "done")
+        self.assertFalse(is_open)
+        bodies = [c.body for c in remote.get_entry(eid).data.comments]
+        self.assertTrue(any("Merged branch" in (b or "") for b in bodies))
 
     def test_persistent_failure_with_recommend_escalates_to_single_draft(self) -> None:
         # Reviewer recommends a spec change -> exhausting the loop opens ONE draft

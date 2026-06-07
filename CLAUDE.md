@@ -77,7 +77,7 @@ src/
     entities/                        #   epic/ticket/issue = meaning over neutral entries (tier/status/links). EntityRef
     state_machines/                  #   legal status transitions + approvals (👍/👎 reactions, approve/reject cmds)
     configuring/                     #   configure.py interactive setup -> config
-    migrating/                       #   storage migrations (hops); 0.3.1->0.4.0 deletes copied code; 0.4.0->0.5.0 + 0.5.0->0.7.0 drop the seed marker so new labels re-seed; 0.5.0->0.7.0 also adds tasks.not_before; 0.11.0->0.12.0 renames dev_branch->specseed_primary_branch (+ merge_to_primary/push_primary)
+    migrating/                       #   storage migrations (hops); 0.3.1->0.4.0 deletes copied code; 0.4.0->0.5.0 + 0.5.0->0.7.0 drop the seed marker so new labels re-seed; 0.5.0->0.7.0 also adds tasks.not_before; 0.11.0->0.12.0 renames dev_branch->specseed_primary_branch (+ merge_to_primary/push_primary); 0.12.0->0.13.0 drops the dead permissions.remote.make_prs switch
   ui/                  # the SHARED web UI (vanilla JS modules, no deps): server.py (multi-repo API) + shell/ + features/{repos,monitor,tracker,configuration} + theme.css
 skills/specseed/                     # the spec-change worker skill (markdown + helper scripts), at repo root
   SKILL.md                           #   START HERE. router: routes, contract, hard rules
@@ -130,6 +130,20 @@ tests/integration/python/            # opt-in integration tests (marker: integra
   Reject -> closed, nothing created. Deterministic, no agent. The skill never writes `settled`; adapt is the only
   route that reopens a settled doc. A mechanical run (clarification round, sprint label shuffle) skips propose and
   enqueues `run_spec_change_script` directly.
+- **merge gate** (`advance.WorkTransition` + `_settle_or_merge`/`_open_merge_gate`, run by `dispatch._execute_merge`)
+  - advance owns remote STATE + decides whether a finished issue's branch may merge NOW; dispatch owns git +
+    runs it. An issue is NOT done until its code is on primary, so an unmerged issue never reads done/closed.
+    `merge_to_primary` ON -> advance returns `WorkTransition(merge=True)`, dispatch merges (conflict ->
+    resolver agent; unresolved/failed -> park `blocked`, branch intact) then closes done + rolls up. `merge_to_primary`
+    OFF (default) -> a finish parks `awaiting_approval` as a GATE instead of closing. Two gate shapes, one APR/approval
+    mechanism (`state_machines/base.py`, no dedicated label): a PURE merge gate (work already accepted) -
+    👍/`approve` merges, 👎 declines (settle done, branch left for a manual merge); a COMBINED work+merge gate (review
+    under the confidence bar AND merge gated) - ❤️/`merge` (heart, `merge_approved_by`) approves AND merges in one
+    step, 👍 approves the work only + opens a follow-up pure merge gate, 👎 rejects. So no double-approval: the human's
+    single sign-off either covers the merge (❤️) or the merge is the only approval. Markers `MERGE_GATE_MARKER` /
+    `WORK_MERGE_GATE_MARKER` tag the gate comment; the UI approval box (`ui/features/tracker.js`) renders 3 buttons
+    for a combined gate. specseed does NOT open PRs/MRs yet (provider plumbing kept, `make_prs` config dropped at
+    0.13.0); the issue-branch merge is the unit.
 
 ## Testing (enforced)
 

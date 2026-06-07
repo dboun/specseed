@@ -9,7 +9,7 @@ Shape of ``configuration.json`` permissions::
     "permissions": {
         "git":      {"merge_to_primary": false},
         "remote":   {"post_control": false, "push_branches": false,
-                     "push_primary": false, "make_prs": false},
+                     "push_primary": false},
         "platform": {"auto_implement_issue": true,
                      "auto_proceed_to_next_sprint_if_available": false},
         "agents":   {"<action-class>": "block"|"surface"|"auto"|"require_human_approval", ...},
@@ -109,9 +109,6 @@ class Permissions:
 
     def can_push_primary(self) -> bool:
         return self._remote_switch("push_primary")
-
-    def can_make_prs(self) -> bool:
-        return self._remote_switch("make_prs")
 
     # -- derived gates --------------------------------------------------- #
     def can_run_spec_change(self) -> bool:

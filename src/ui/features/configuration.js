@@ -166,7 +166,6 @@ export function createConfiguration({ repo, ctx }) {
         ${repo.provider === "local" ? "" : toggle("remote_post_control", p.remote?.post_control, "remote: create CONTROL post")}
         ${toggle("remote_push_branches", p.remote?.push_branches, "remote: push branches")}
         ${toggle("remote_push_dev", p.remote?.push_primary, "remote: push primary branch")}
-        ${toggle("remote_make_prs", p.remote?.make_prs, "remote: make PRs")}
       </section>
       <section class="panel">
         <div class="panel-title">Permissions — platform</div>
@@ -253,7 +252,6 @@ export function createConfiguration({ repo, ctx }) {
     p.remote.post_control = on("remote_post_control");
     p.remote.push_branches = on("remote_push_branches");
     p.remote.push_primary = on("remote_push_dev");
-    p.remote.make_prs = on("remote_make_prs");
     p.platform = p.platform || {};
     p.platform.auto_implement_issue = on("plat_auto_impl");
     p.platform.auto_proceed_to_next_sprint_if_available = on("plat_auto_next");

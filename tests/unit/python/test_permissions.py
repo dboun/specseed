@@ -63,16 +63,14 @@ class RemoteSwitchesTest(unittest.TestCase):
         self.assertTrue(p.can_post_control())
         self.assertTrue(p.can_push_primary())
         self.assertTrue(p.can_push_branches())
-        self.assertTrue(p.can_make_prs())
 
     def test_switches_bite_when_remote_enabled(self) -> None:
         state = {"enabled": True, "provider": "github"}
         p = Permissions(_cfg({"remote": {"post_control": False, "push_branches": True,
-                                         "push_primary": False, "make_prs": False}}), state)
+                                         "push_primary": False}}), state)
         self.assertFalse(p.can_post_control())
         self.assertTrue(p.can_push_branches())
         self.assertFalse(p.can_push_primary())
-        self.assertFalse(p.can_make_prs())
 
 
 class PlatformTest(unittest.TestCase):
