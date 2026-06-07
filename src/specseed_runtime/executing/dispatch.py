@@ -593,6 +593,77 @@ def _finalize_git_branch(ctx: ExecutionContext, entity: Any, intent: str, branch
     )
 
 
+def _merge_comment(ctx: ExecutionContext, post_id: Any, body: str) -> None:
+    try:
+        ctx.remote.add_entry_comment(post_id, platform_comment(body))
+    except Exception:
+        pass  # a comment hiccup never aborts the merge bookkeeping
+
+
+def _merge_done_issue(ctx: ExecutionContext, entity: Any, branch: Optional[str], task: dict) -> str:
+    """Merge a just-finished issue's branch into the primary branch.
+
+    Gated by ``merge_to_primary``: off -> leave the branch for a human. On a clean
+    merge -> done. On conflict -> run a resolver agent (edits only) and complete the
+    merge; if it still conflicts, abort and leave the branch + a note for a human.
+    The issue is already ``done``; a merge problem never reopens it, only surfaces.
+    """
+    if branch is None:
+        return ""
+    post_id = getattr(entity, "post_id", None)
+    primary = _primary_branch(ctx)
+    if not ctx.permissions.can_merge_to_primary():
+        platform_log.log_event("git_merge_skipped_disabled", post_id=post_id, branch=branch)
+        _merge_comment(
+            ctx, post_id,
+            "Work is done on branch `{0}`. Merging into `{1}` is disabled in config, so a "
+            "human should merge it.".format(branch, primary),
+        )
+        return "merge disabled; branch {0} left for a human".format(branch)
+
+    res = git_ops.merge(ctx.repo_root, branch, primary)
+    platform_log.log_event(
+        "git_merge", post_id=post_id, branch=branch, primary=primary,
+        ok=res.ok, conflicted=res.conflicted, files=res.files, error=res.error,
+    )
+    if res.ok:
+        return "merged {0} -> {1}".format(branch, primary)
+    if not res.conflicted:
+        _merge_comment(
+            ctx, post_id,
+            "Could not merge branch `{0}` into `{1}`: {2}. Left for a human.".format(
+                branch, primary, res.error or "unknown error"),
+        )
+        return "merge of {0} failed: {1}".format(branch, res.error)
+
+    # Conflict + merge enabled -> resolver agent (edits only; runtime completes).
+    prompt = prompts.build_merge_conflict_prompt(entity, branch, primary, res.files, ctx)
+    resolver = _run_agent(ctx, prompt, AgentIntent.IMPLEMENT, task_id=task.get("task_id"))
+    complete = (
+        git_ops.complete_merge(ctx.repo_root)
+        if getattr(resolver, "ok", False)
+        else git_ops.GitResult(ok=False, error="resolver agent did not finish")
+    )
+    platform_log.log_event(
+        "git_merge_conflict_resolution", post_id=post_id, branch=branch,
+        resolver_ok=getattr(resolver, "ok", False), completed=complete.ok, error=complete.error,
+    )
+    if complete.ok:
+        _merge_comment(
+            ctx, post_id,
+            "Merged branch `{0}` into `{1}` after auto-resolving conflicts.".format(branch, primary),
+        )
+        return "merged {0} -> {1} after conflict resolution".format(branch, primary)
+    git_ops.abort_merge(ctx.repo_root)
+    _merge_comment(
+        ctx, post_id,
+        "Tried to merge branch `{0}` into `{1}` but hit conflicts I could not resolve "
+        "automatically. Aborted the merge; the branch is intact for a human to merge.".format(
+            branch, primary),
+    )
+    return "merge conflict on {0} unresolved; aborted, branch left for a human".format(branch)
+
+
 def _run_work(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
     """Common path for every work handler: load entity, judge state, run agent."""
     post_id = task.get("post_id")
@@ -811,6 +882,17 @@ def _run_work(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
                 detail = "{0}; {1}".format(detail, transition)
             except Exception as exc:  # never lose the successful run over a write hiccup
                 detail = "{0}; transition failed: {1!r}".format(detail, exc)
+            else:
+                # Issue finished -> runtime merges its branch into the primary
+                # branch (gated). Best-effort: a merge problem surfaces as a note,
+                # never reopens the done issue.
+                try:
+                    if advance.remote_status(ctx, entity.post_id) == "done":
+                        merged = _merge_done_issue(ctx, entity, branch, task)
+                        if merged:
+                            detail = "{0}; {1}".format(detail, merged)
+                except Exception as exc:
+                    detail = "{0}; merge failed: {1!r}".format(detail, exc)
         return HandlerOutcome(success=True, detail=detail)
     if getattr(result, "killed", False) or getattr(result, "timed_out", False):
         return HandlerOutcome(

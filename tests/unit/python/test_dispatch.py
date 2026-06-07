@@ -646,6 +646,17 @@ class RuntimeGitLifecycleTest(DispatchTestBase):
         return subprocess.run(["git", *args], cwd=str(self.root),
                               capture_output=True, text=True)
 
+    def _seed_both(self, title, labels):
+        # The done-transition + merge reads the entity's status from the REMOTE, so
+        # seed it there too (matching ids: both dbs are fresh + autoincrement).
+        for label in labels:
+            self.local.create_label(label)
+            self.remote.create_label(label)
+        rid = self.remote.add_entry(title, labels=labels).data.id
+        lid = self.local.add_entry(title, labels=labels).data.id
+        self.assertEqual(str(rid), str(lid))
+        return lid
+
     def test_implement_branches_commits_and_returns_to_primary(self) -> None:
         self.ctx.runner = _FileWritingRunner(
             AgentResult(ok=True, returncode=0,
@@ -670,6 +681,41 @@ class RuntimeGitLifecycleTest(DispatchTestBase):
         self.assertTrue((self.root / "new.py").exists())
         log = self._git("log", "-1", "--pretty=%s").stdout.strip()
         self.assertIn("FEAT-0001", log)
+
+    def test_merge_disabled_leaves_branch_unmerged(self) -> None:
+        # default config: merge_to_primary off -> branch left, primary untouched.
+        self.ctx.runner = _FileWritingRunner(
+            AgentResult(ok=True, returncode=0,
+                        report={"status": "done", "summary": "did it", "files_changed": ["x.py"]}),
+            filename="x.py",
+        )
+        eid = self._seed_both("FEAT-0002 Thing", ["tier:issue", "status:todo"])
+        out = dispatch(
+            self.ctx,
+            {"action": "handle_label_added", "post_id": str(eid), "payload": {"label": "status:todo"}},
+        )
+        self.assertTrue(out.success)
+        self.assertFalse((self.root / "x.py").exists())  # not on primary
+        self.assertIn("merge disabled", out.detail)
+
+    def test_merge_enabled_merges_branch_into_primary(self) -> None:
+        self.config["permissions"]["git"] = {"merge_to_primary": True}
+        self.ctx.permissions = Permissions(self.config)
+        self.ctx.runner = _FileWritingRunner(
+            AgentResult(ok=True, returncode=0,
+                        report={"status": "done", "summary": "did it", "files_changed": ["y.py"]}),
+            filename="y.py",
+        )
+        eid = self._seed_both("FEAT-0003 Thing", ["tier:issue", "status:todo"])
+        out = dispatch(
+            self.ctx,
+            {"action": "handle_label_added", "post_id": str(eid), "payload": {"label": "status:todo"}},
+        )
+        self.assertTrue(out.success)
+        self.assertEqual(_git_ops.current_branch(self.root), "main")
+        # primary now carries the merged file
+        self.assertTrue((self.root / "y.py").exists())
+        self.assertIn("merged", out.detail)
 
 
 if __name__ == "__main__":

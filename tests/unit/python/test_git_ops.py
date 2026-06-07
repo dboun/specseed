@@ -91,5 +91,70 @@ class GitLifecycleTest(unittest.TestCase):
         self.assertTrue((self.root / "new.py").exists())
 
 
+@unittest.skipUnless(_HAS_GIT, "git not available")
+class MergeTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self._git("init")
+        self._git("symbolic-ref", "HEAD", "refs/heads/main")
+        (self.root / "base.txt").write_text("base\n", encoding="utf-8")
+        self._git("add", "-A")
+        self._git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "root")
+
+    def _git(self, *args) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", *args], cwd=str(self.root),
+                              capture_output=True, text=True)
+
+    def _commit_on(self, branch, filename, content):
+        git_ops.ensure_on_branch(self.root, branch, "main")
+        (self.root / filename).write_text(content, encoding="utf-8")
+        git_ops.commit_all(self.root, f"add {filename}")
+        git_ops.checkout(self.root, "main")
+
+    def test_clean_merge(self) -> None:
+        self._commit_on("feat-1-a", "a.txt", "a\n")
+        res = git_ops.merge(self.root, "feat-1-a", "main")
+        self.assertTrue(res.ok)
+        self.assertEqual(git_ops.current_branch(self.root), "main")
+        self.assertTrue((self.root / "a.txt").exists())
+
+    def test_conflict_left_in_place_then_completed(self) -> None:
+        # main and branch both edit base.txt differently -> conflict
+        git_ops.ensure_on_branch(self.root, "feat-1-c", "main")
+        (self.root / "base.txt").write_text("branch side\n", encoding="utf-8")
+        git_ops.commit_all(self.root, "branch edit")
+        git_ops.checkout(self.root, "main")
+        (self.root / "base.txt").write_text("main side\n", encoding="utf-8")
+        git_ops.commit_all(self.root, "main edit")
+
+        res = git_ops.merge(self.root, "feat-1-c", "main")
+        self.assertFalse(res.ok)
+        self.assertTrue(res.conflicted)
+        self.assertIn("base.txt", res.files)
+        self.assertTrue(git_ops.unmerged_files(self.root))
+        # resolver fixes the file, runtime completes
+        (self.root / "base.txt").write_text("resolved\n", encoding="utf-8")
+        done = git_ops.complete_merge(self.root)
+        self.assertTrue(done.ok)
+        self.assertFalse(git_ops.unmerged_files(self.root))
+
+    def test_complete_refuses_with_markers(self) -> None:
+        git_ops.ensure_on_branch(self.root, "feat-1-d", "main")
+        (self.root / "base.txt").write_text("branch\n", encoding="utf-8")
+        git_ops.commit_all(self.root, "branch edit")
+        git_ops.checkout(self.root, "main")
+        (self.root / "base.txt").write_text("main\n", encoding="utf-8")
+        git_ops.commit_all(self.root, "main edit")
+        git_ops.merge(self.root, "feat-1-d", "main")
+        # leave the conflict unresolved
+        res = git_ops.complete_merge(self.root)
+        self.assertFalse(res.ok)
+        # abort cleans up
+        self.assertTrue(git_ops.abort_merge(self.root).ok)
+        self.assertFalse(git_ops.unmerged_files(self.root))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -136,3 +136,77 @@ def commit_all(repo_root: str | Path, message: str) -> GitResult:
     if commit.returncode != 0:
         return GitResult(ok=False, error=commit.stderr.strip() or "git commit failed")
     return GitResult(ok=True, actions=["commit"], detail="committed")
+
+
+@dataclass
+class MergeResult:
+    ok: bool
+    conflicted: bool = False
+    files: list[str] = field(default_factory=list)
+    error: Optional[str] = None
+    actions: list[str] = field(default_factory=list)
+
+
+def unmerged_files(repo_root: str | Path) -> list[str]:
+    """Paths with unresolved merge conflicts (git diff-filter=U)."""
+    out = _run(Path(repo_root), ["diff", "--name-only", "--diff-filter=U"])
+    return [ln.strip() for ln in out.stdout.splitlines() if ln.strip()]
+
+
+def merge(repo_root: str | Path, branch: str, primary: str, message: Optional[str] = None) -> MergeResult:
+    """Merge ``branch`` into ``primary``. Clean -> ok. Conflict -> conflicted+files
+    (the half-merged state is LEFT in place for a resolver; caller completes or
+    aborts). Any other failure -> ok=False with an error."""
+    repo_root = Path(repo_root)
+    co = _run(repo_root, ["checkout", primary])
+    if co.returncode != 0:
+        return MergeResult(ok=False, error=co.stderr.strip() or f"checkout {primary} failed")
+    msg = message or f"specseed: merge {branch} into {primary}"
+    out = _run(repo_root, [*_GIT_ENV_ARGS, "merge", "--no-ff", "-m", msg, branch])
+    if out.returncode == 0:
+        return MergeResult(ok=True, actions=[f"merge {branch} -> {primary}"])
+    files = unmerged_files(repo_root)
+    if files:
+        return MergeResult(ok=False, conflicted=True, files=files)
+    # non-conflict failure (e.g. unknown branch); leave nothing half-done.
+    _run(repo_root, ["merge", "--abort"])
+    return MergeResult(ok=False, error=out.stderr.strip() or "merge failed")
+
+
+def _has_conflict_markers(path: Path) -> bool:
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return False
+    return "<<<<<<<" in text and ">>>>>>>" in text
+
+
+def complete_merge(repo_root: str | Path, message: Optional[str] = None) -> GitResult:
+    """Finish an in-progress merge after conflicts were resolved in the worktree.
+
+    A resolver agent edits files but never runs git, so conflicted paths stay in
+    the index's unmerged state until we ``git add`` them - which is why we judge
+    "still conflicted" by scanning those files for leftover markers, not by the
+    index state. Fails (without committing) if any marker remains; otherwise stages
+    everything and commits the merge."""
+    repo_root = Path(repo_root)
+    for rel in unmerged_files(repo_root):
+        if _has_conflict_markers(repo_root / rel):
+            return GitResult(ok=False, error="unresolved conflicts remain in {0}".format(rel))
+    add = _run(repo_root, ["add", "-A"])
+    if add.returncode != 0:
+        return GitResult(ok=False, error=add.stderr.strip() or "git add failed")
+    args = [*_GIT_ENV_ARGS, "commit", "--no-edit"]
+    if message:
+        args = [*_GIT_ENV_ARGS, "commit", "-m", message]
+    commit = _run(repo_root, args)
+    if commit.returncode != 0:
+        return GitResult(ok=False, error=commit.stderr.strip() or "git commit failed")
+    return GitResult(ok=True, actions=["complete merge"], detail="merged")
+
+
+def abort_merge(repo_root: str | Path) -> GitResult:
+    out = _run(Path(repo_root), ["merge", "--abort"])
+    if out.returncode != 0:
+        return GitResult(ok=False, error=out.stderr.strip() or "merge --abort failed")
+    return GitResult(ok=True, actions=["merge --abort"])

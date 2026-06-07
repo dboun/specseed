@@ -318,6 +318,28 @@ DONE = the post tells a human something they can act on. End your output with ex
 PLATFORM_ERROR_REPORTED"""
 
 
+def build_merge_conflict_prompt(entity: Any, branch: str, primary: str, files: list, ctx: Any) -> str:
+    """Prompt for resolving merge conflicts after the runtime hit them merging an
+    issue branch into the primary branch. The agent ONLY edits the conflicted
+    files; the runtime started the merge and completes it."""
+    file_list = "\n".join("  - {0}".format(f) for f in (files or [])) or "  (see `git status`)"
+    return (
+        render_identity_rule(ctx, agent_report.IMPLEMENT) + "\n\n"
+        + "You are resolving git MERGE CONFLICTS. The runtime started merging the issue "
+        f"branch `{branch}` into `{primary}` for issue {getattr(entity, 'post_id', '?')} "
+        f"({_title(entity)!r}) and hit conflicts. The repository is mid-merge right now.\n\n"
+        "Conflicted files:\n" + file_list + "\n\n"
+        "Resolve every conflict by editing the files: keep both sides' intent where they "
+        "are compatible, pick the correct result where they are not, and REMOVE all conflict "
+        "markers (`<<<<<<<`, `=======`, `>>>>>>>`). Leave the tree building and test-passing.\n\n"
+        "Do NOT run any git command (no add/commit/merge/abort). The runtime completes or "
+        "aborts the merge based on whether conflict markers remain. If a conflict is genuinely "
+        "unsafe to resolve mechanically, leave that file's markers in place and say so in your "
+        "report - the runtime will abort and hand it to a human.\n\n"
+        + agent_report.result_instructions(agent_report.IMPLEMENT)
+    )
+
+
 def build_review_prompt(entity: Any, ctx: Any) -> str:
     """Prompt for reviewing an issue that is in review."""
     specseed_dir = _specseed_dir(ctx)
