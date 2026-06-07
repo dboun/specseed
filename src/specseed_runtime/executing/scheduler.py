@@ -481,11 +481,11 @@ class Scheduler:
         self._refresh_dashboards()
 
     def _refresh_dashboards(self) -> None:
-        """Re-render ROADMAP / Current sprint when the work tree changed.
+        """Re-render ROADMAP / CURRENT SPRINT when the work tree changed.
 
         Cheap signature gate first so the per-post body reads only happen after a
         real change. Never lets a dashboard hiccup disturb the loop. Dashboards are
-        always kept in sync - a stale ROADMAP/Current sprint is worse than useless.
+        always kept in sync - a stale ROADMAP/CURRENT SPRINT is worse than useless.
         """
         if self._remote is None:
             return

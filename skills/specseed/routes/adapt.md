@@ -120,7 +120,7 @@ question rounds entirely when the impact map is unambiguous.
   revision and its cause.
 - A `done` post whose underlying req changed -> swap to `:status:blocked` and comment
   for triage.
-- ROADMAP and Current sprint re-render from the runtime — do not hand-edit them.
+- ROADMAP and CURRENT SPRINT re-render from the runtime — do not hand-edit them.
 
 ## 4. ADR
 

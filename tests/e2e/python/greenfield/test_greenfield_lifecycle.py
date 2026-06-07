@@ -258,7 +258,7 @@ def test_greenfield_full_lifecycle(harness):
     # ---- 1. seeded remote: dashboards + the draft adapt post ------------- #
     draft = harness.wait_for(lambda: find_post(boss, DRAFT_TITLE), "seeded draft adapt post")
     request_id = draft.id
-    for title in ("CONTROL", "ROADMAP", "SCHEDULE", "Current sprint"):
+    for title in ("CONTROL", "ROADMAP", "SCHEDULE", "CURRENT SPRINT"):
         assert find_post(boss, title), f"seeded post {title!r} missing"
 
     # ---- 2. bootstrap prompt: fill the draft, drop the draft label ------- #
@@ -379,10 +379,10 @@ def test_greenfield_full_lifecycle(harness):
         lambda: SCRIPT["epics"][0]["title"] in (details_of(boss, roadmap_id).body or ""),
         "ROADMAP lists the epics",
     )
-    sprint_board_id = find_post(boss, "Current sprint").id
+    sprint_board_id = find_post(boss, "CURRENT SPRINT").id
     harness.wait_for(
         lambda: "No active issues" in (details_of(boss, sprint_board_id).body or ""),
-        "Current sprint board drains",
+        "CURRENT SPRINT board drains",
     )
 
     # ---- 11. CONTROL: STATUS reply, then STOP ----------------------------- #

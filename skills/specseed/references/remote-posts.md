@@ -84,7 +84,7 @@ text too. Posts are flat; the structure is the links.
 | ROADMAP | strategic map: phases -> epics -> ticket titles | yes |
 | SCHEDULE | tactical schedule: sprints in execution order, each listing its tickets | yes |
 | CONTROL | command/ops channel | yes |
-| Current sprint | the active sprint's board | no |
+| CURRENT SPRINT | the active sprint's board | no |
 
 ROADMAP and SCHEDULE are **orthogonal**: ROADMAP groups by outcome (what + why),
 SCHEDULE groups by time (which tickets ship in which sprint). SCHEDULE never
@@ -120,7 +120,7 @@ Find them by title via `local.list_entries(...)`. (GitHub pins cap at 3, which i
 why there are three pinned; GitLab has no pinning and `pin_entry` no-ops there.)
 
 **Who refreshes which dashboard:**
-- **ROADMAP** and **Current sprint** are rendered automatically by the runtime
+- **ROADMAP** and **CURRENT SPRINT** are rendered automatically by the runtime
   scheduler (`executing/dashboards.py`) from the live work posts, idempotently. Do
   NOT hand-edit them. Create/update the work posts (epics/tickets/issues + labels)
   and the scheduler reflects the change on its next poll. There is no permission
@@ -169,6 +169,6 @@ Do not treat `draft` posts as work. `question` marks clarification threads.
 
 Only through the `apply.py` reconcile script, and only what the route plans:
 create work posts, edit bodies (incl. the SCHEDULE dashboard — but NOT ROADMAP or
-Current sprint, which the runtime scheduler owns), swap status labels, comment,
+CURRENT SPRINT, which the runtime scheduler owns), swap status labels, comment,
 close/delete retired posts. Never write the local cache directly; the remote is
 the system's source of truth and the next poll re-syncs the cache from it.

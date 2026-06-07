@@ -77,7 +77,7 @@ Manual work preempts the existing active sprint:
   tickets created or selected by this inject request.
 - If the request injects an issue under an existing ticket, move that parent
   ticket into the new current sprint with the manual issue.
-- Refresh the SCHEDULE body. ROADMAP and Current sprint re-render from the runtime
+- Refresh the SCHEDULE body. ROADMAP and CURRENT SPRINT re-render from the runtime
   (from the work posts + `sprint:*`/`current_sprint` labels) — do not hand-edit them.
 
 There must still be only one active current sprint after the plan applies.

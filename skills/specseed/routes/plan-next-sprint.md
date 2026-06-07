@@ -31,7 +31,7 @@ the title/body/comments as a planning-help request.
 When the request asks for help, or when there is no un-specced roadmap tail left:
 
 - Do not change spec files.
-- Use the current spec, ROADMAP, Current sprint, and work posts to infer a short,
+- Use the current spec, ROADMAP, CURRENT SPRINT, and work posts to infer a short,
   grounded next-focus list. Prefer 2-5 concrete focus areas. If the work really
   looks complete, say that it looks done unless the user wants to adapt the spec.
 - In `plan.json`, create one remote post labeled `draft`,
@@ -69,7 +69,7 @@ to adapt** for that change (note it in `plan.json`), then resume.
   `scripts/critical_path.py`; each slice sharpens it. Pack with
   `scripts/sprint_pack.py`.
 - Pack the new tickets into the next sprint. Refresh the SCHEDULE body
-  (`edit_entry`). ROADMAP and Current sprint re-render from the runtime — do not
+  (`edit_entry`). ROADMAP and CURRENT SPRINT re-render from the runtime — do not
   hand-edit them.
 
 ## Finish

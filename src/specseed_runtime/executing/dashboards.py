@@ -1,7 +1,7 @@
-"""dashboards.py - keep the ROADMAP and Current sprint posts in sync.
+"""dashboards.py - keep the ROADMAP and CURRENT SPRINT posts in sync.
 
 The seed creates permanent ``management`` posts (ROADMAP, SCHEDULE, CONTROL,
-Current sprint) and their bodies say "the scheduler keeps this in sync". This
+CURRENT SPRINT) and their bodies say "the scheduler keeps this in sync". This
 module is that maintenance: it renders the live epic -> ticket -> issue tree from
 the work posts and rewrites the dashboard bodies to match.
 
@@ -29,7 +29,7 @@ from specseed_runtime.executing import platform_log
 from specseed_runtime.executing import relationships
 
 ROADMAP_TITLE = "ROADMAP"
-CURRENT_SPRINT_TITLE = "Current sprint"
+CURRENT_SPRINT_TITLE = "CURRENT SPRINT"
 
 _TERMINAL = {"done", "wont_do", "deprecated"}
 _WORK_TIERS = ("epic", "ticket", "issue")
@@ -43,7 +43,7 @@ ROADMAP_HEADER = (
 )
 
 CURRENT_SPRINT_HEADER = (
-    "# Current sprint\n\n"
+    "# CURRENT SPRINT\n\n"
     "The active (not-yet-finished) work and its status. The scheduler keeps this "
     "in sync; treat it as a read-only board. Plan the next sprint with a "
     "`spec-change:plan-next-sprint` post.\n"
@@ -84,7 +84,7 @@ def work_signature(remote: Any) -> Optional[str]:
 
 
 def refresh_dashboards(remote: Any) -> dict:
-    """Re-render ROADMAP + Current sprint from the live work posts.
+    """Re-render ROADMAP + CURRENT SPRINT from the live work posts.
 
     Returns a small summary dict. Only rewrites a dashboard whose body actually
     changed.

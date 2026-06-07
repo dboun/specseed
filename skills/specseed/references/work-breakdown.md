@@ -221,7 +221,7 @@ A sprint is a time-boxed batch of tickets (~one week, ~168h soft budget). It is
 has one epic and one sprint.
 
 A sprint is expressed as a `sprint:<id>` label on each member ticket post (the runtime
-renders the `Current sprint` board from those labels — you do not write that body). You
+renders the `CURRENT SPRINT` board from those labels — you do not write that body). You
 write `SCHEDULE`, which lists every sprint in execution order with its tickets (format
 in `remote-posts.md`). ROADMAP stays strategic, never lists sprints, and is also
 runtime-rendered.

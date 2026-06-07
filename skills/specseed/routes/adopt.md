@@ -129,7 +129,7 @@ until the plan is approved; the request is the gate). Forward
 tickets' `satisfies_reqs` reference gap reqs; their `depends_on` DAG covers only
 forward work. Run the risk-detection & gating pass (adopt repos often touch real infra
 — expect gates). Compute the critical path + first sprint over the *remaining* work.
-Write SCHEDULE (you write it); ROADMAP and Current sprint are runtime-rendered.
+Write SCHEDULE (you write it); ROADMAP and CURRENT SPRINT are runtime-rendered.
 
 ### No forward gaps
 

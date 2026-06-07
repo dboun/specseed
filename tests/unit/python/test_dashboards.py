@@ -1,4 +1,4 @@
-"""test_dashboards.py - scheduler-maintained ROADMAP / Current sprint.
+"""test_dashboards.py - scheduler-maintained ROADMAP / CURRENT SPRINT.
 
 TrackingRemoteLocal only. No GitHub/GitLab.
 """
@@ -28,7 +28,7 @@ class DashboardTest(unittest.TestCase):
 
     def _seed_dashboards(self):
         self._mk("ROADMAP", ["management"], "# ROADMAP\n\nold body\n")
-        self._mk("Current sprint", ["management", "current_sprint"], "# Current sprint\n\nold\n")
+        self._mk("CURRENT SPRINT", ["management", "current_sprint"], "# CURRENT SPRINT\n\nold\n")
 
     def _body(self, post_id):
         return self.remote.get_entry(post_id).data.body

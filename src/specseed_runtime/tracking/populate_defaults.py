@@ -173,7 +173,7 @@ CONTROL_BODY = (
 )
 
 CURRENT_SPRINT_BODY = (
-    "# Current sprint\n\n"
+    "# CURRENT SPRINT\n\n"
     "The issues in the active sprint and their status. The scheduler keeps this in "
     "sync; treat it as a read-only board. Plan the next sprint with a "
     "`spec-change:plan-next-sprint` post. If you are unsure what to plan next, "
@@ -189,11 +189,15 @@ FIRST_ADAPT_DRAFT_BODY = (
     "run `spec-change:adapt` from this request.\n"
 )
 
+# Permanent posts whose title changed across versions; renamed in place at seed
+# time so existing trackers don't strand a duplicate under the old title.
+LEGACY_POST_RENAMES = {"Current sprint": "CURRENT SPRINT"}
+
 DEFAULT_POSTS = [
     ("SCHEDULE", SCHEDULE_BODY, ["management"], True),
     ("ROADMAP", ROADMAP_BODY, ["management"], True),
     ("CONTROL", CONTROL_BODY, ["management"], True),
-    ("Current sprint", CURRENT_SPRINT_BODY, ["management", "current_sprint"], False),
+    ("CURRENT SPRINT", CURRENT_SPRINT_BODY, ["management", "current_sprint"], False),
     (
         FIRST_ADAPT_DRAFT_TITLE,
         FIRST_ADAPT_DRAFT_BODY,
@@ -248,6 +252,8 @@ def populate_defaults(
         _ensure_label_exact(kind, tracker, spec)
         summary["ensured_labels"].append(spec.name)
 
+    _rename_legacy_posts(tracker)
+
     for title, body, labels, should_pin in DEFAULT_POSTS:
         entry_id, created = _ensure_default_post(tracker, title, body, labels)
         summary["default_posts"][title] = {"id": entry_id, "created": created}
@@ -273,6 +279,19 @@ def _list_label_names(tracker: TrackingBase) -> list[str]:
     result = tracker.list_labels()
     _require_ok(result, "list labels")
     return [label.name for label in result.data.labels]
+
+
+def _rename_legacy_posts(tracker: TrackingBase) -> None:
+    """Rename any permanent post still under an old title (idempotent). Skips the
+    rename when a post already carries the new title (no clobber)."""
+    entries = _entries(tracker)
+    titles = {entry.title for entry in entries}
+    for old, new in LEGACY_POST_RENAMES.items():
+        if new in titles:
+            continue
+        legacy = next((entry for entry in entries if entry.title == old), None)
+        if legacy is not None:
+            _require_ok(tracker.edit_entry(legacy.id, title=new), f"rename {old} -> {new}")
 
 
 def _ensure_default_post(

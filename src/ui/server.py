@@ -53,7 +53,7 @@ from specseed_runtime.tracking.supported_values import (
 ROOT = Path(__file__).resolve().parent
 
 # Permanent dashboard posts the tracker manages itself (SCHEDULE/ROADMAP/CONTROL/
-# Current sprint) - surfaced as quick toggles, never in the normal list. The adapt
+# CURRENT SPRINT) - surfaced as quick toggles, never in the normal list. The adapt
 # DRAFT post is NOT one of these: it is a user-editable request template.
 DEFAULT_POST_TITLES = {
     title for title, _body, labels, _pin in populate_defaults.DEFAULT_POSTS if "management" in labels

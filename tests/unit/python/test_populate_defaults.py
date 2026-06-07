@@ -55,7 +55,7 @@ class PopulateDefaultsTest(unittest.TestCase):
         self.assertEqual(roadmap.body, "Keep this body")
         self.assertIn("management", [label.name for label in roadmap.labels])
 
-        current_sprint = self.entry("Current sprint")
+        current_sprint = self.entry("CURRENT SPRINT")
         self.assertEqual(
             {label.name for label in current_sprint.labels},
             {"current_sprint", "management"},
@@ -99,6 +99,17 @@ class PopulateDefaultsTest(unittest.TestCase):
         )
 
         self.assertTrue((WORK_TYPE_LABELS | DIFFICULTY_LABELS).issubset(DESIRED_LABELS))
+
+    def test_legacy_current_sprint_renamed_not_duplicated(self) -> None:
+        # An old tracker seeded "Current sprint"; the seed renames it in place.
+        legacy_id = self.remote.add_entry(
+            "Current sprint", labels=["management", "current_sprint"]
+        ).data.id
+        populate_defaults("remote_local", tracker=self.remote)
+        titles = [entry.title for entry in self.remote.list_entries().data]
+        self.assertIn("CURRENT SPRINT", titles)
+        self.assertNotIn("Current sprint", titles)
+        self.assertEqual(self.entry("CURRENT SPRINT").id, legacy_id)  # same post, renamed
 
     def test_second_run_is_idempotent(self) -> None:
         first = populate_defaults("remote_local", tracker=self.remote)

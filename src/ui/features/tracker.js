@@ -118,7 +118,7 @@ export function createTracker({ repo, ctx }) {
       .join("")}</div>`;
   }
 
-  const STATE_TABS = { open: "open", need_approval: "need approval", closed: "closed", all: "all" };
+  const STATE_TABS = { open: "open", closed: "closed", all: "all", need_approval: "approvals" };
 
   // Split available label names into the human-facing "important" set (kept in the
   // server's order) and the rest (alphabetical), so every picker leads with what a

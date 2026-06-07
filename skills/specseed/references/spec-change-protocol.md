@@ -218,7 +218,7 @@ All on the object from `resolve_remote()`. All return `TrackingResult`.
 
 A **status swap** = `remove_entry_label(id, "<tier>:status:<old>")` then
 `add_entry_label(id, "<tier>:status:<new>")`. A **SCHEDULE refresh** =
-`edit_entry(schedule_id, body=<rendered markdown>)` (ROADMAP + Current sprint are
+`edit_entry(schedule_id, body=<rendered markdown>)` (ROADMAP + CURRENT SPRINT are
 runtime-rendered — do not hand-edit). See `remote-posts.md` for the post/label model.
 
 ## Approval gate (APR-NNNN): nothing is created until the plan is approved

@@ -115,7 +115,7 @@ Read `references/spec-change-protocol.md` first. The shape is always:
    contract: `add_entry`, `edit_entry` (title/body), `add_entry_label`,
    `remove_entry_label`, `add_entry_comment`, `set_entry_open`/`set_entry_closed`,
    `delete_entry`, `ensure_label`. `edit_entry` rewrites post bodies — including the
-   SCHEDULE dashboard, but NOT ROADMAP or Current sprint, which the runtime scheduler
+   SCHEDULE dashboard, but NOT ROADMAP or CURRENT SPRINT, which the runtime scheduler
    renders from the work posts. A status swap is `remove_entry_label` then
    `add_entry_label`. See the protocol for the canonical header and the
    per-provider notes (GitHub cannot hard-delete issues, so close instead).
