@@ -166,8 +166,9 @@ round, then stop," not "one question."
 1. Make the spec edits you ARE confident about (if any), or none.
 2. In `apply.py`, the remote action is the question round posted as a **comment (or
    comments)** on the spec-change post, plus adding the label
-   `spec-change:status:awaiting_approval`. Record the round in `plan.json` (the
-   `questions` key) so a re-trigger does not re-ask.
+   `spec-change:status:awaiting_input` (NOT `awaiting_approval` — that one is the
+   runtime's APR plan gate). Record the round in `plan.json` (the `questions` key)
+   so a re-trigger does not re-ask.
 3. Enqueue as normal and stop. The human answers on the remote (a one-word `OK` takes
    all your suggestions); the next poll re-triggers this route with their reply in the
    post comments.

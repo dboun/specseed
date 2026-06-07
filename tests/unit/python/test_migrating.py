@@ -71,7 +71,7 @@ class RunMigrationsTest(unittest.TestCase):
             self.assertEqual(
                 applied,
                 ["m_0_3_0__0_3_1", "m_0_3_1__0_4_0", "m_0_4_0__0_5_0",
-                 "m_0_5_0__0_7_0", "m_0_7_0__0_9_0"],
+                 "m_0_5_0__0_7_0", "m_0_7_0__0_9_0", "m_0_9_0__0_11_0"],
             )
             self.assertEqual(migrate.storage_version(storage), migrate.code_version())
 
@@ -385,6 +385,32 @@ class Hop070To090Test(unittest.TestCase):
             specseed_dir, storage = _fixture_tree(Path(tmp), version="0.9.0")
             storage.mkdir(parents=True, exist_ok=True)
             self.assertEqual(m_0_7_0__0_9_0.run(storage, specseed_dir), [])
+
+
+class Hop090To0110Test(unittest.TestCase):
+    """0.11.0: drop the seed marker so the awaiting_input label re-seeds."""
+
+    def test_deletes_seed_marker_forcing_reseed(self) -> None:
+        from specseed_runtime.migrating import m_0_9_0__0_11_0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            specseed_dir, storage = _fixture_tree(Path(tmp), version="0.9.0")
+            storage.mkdir(parents=True, exist_ok=True)
+            (storage / "seed_state.json").write_text('{"kind": "remote_local"}\n', encoding="utf-8")
+
+            deleted = [p.name for p in m_0_9_0__0_11_0.run(storage, specseed_dir)]
+
+            self.assertEqual(deleted, ["seed_state.json"])
+            self.assertFalse((storage / "seed_state.json").exists())
+
+    def test_idempotent_missing_marker_is_noop(self) -> None:
+        from specseed_runtime.migrating import m_0_9_0__0_11_0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            specseed_dir, storage = _fixture_tree(Path(tmp), version="0.9.0")
+            storage.mkdir(parents=True, exist_ok=True)
+            self.assertEqual(m_0_9_0__0_11_0.run(storage, specseed_dir), [])
+            self.assertEqual(m_0_9_0__0_11_0.run(storage, specseed_dir), [])
 
 
 if __name__ == "__main__":

@@ -135,13 +135,14 @@ not opt-out.)
 ## Spec-change post (the request itself)
 
 The triggering post carries `spec-change:<route>` plus a
-`spec-change:status:<state>` label: `open, awaiting_approval, approved, done,
-rejected`. The runtime drives the status on a **proposal**: a run that plans work or
-settles docs enqueues `enqueue_spec_change_propose`, and the runtime moves the request
-to `awaiting_approval` (posting the plan summary + `APR-NNNN`) and, on approval, to
-`done` (running the deferred `apply.py` that creates the posts). You move it to
-`awaiting_approval` yourself only for a clarification question (a direct apply). Record
-intent in `plan.json`. Replies to the request go on this post as comments.
+`spec-change:status:<state>` label: `open, awaiting_input, awaiting_approval,
+approved, done, rejected`. The runtime drives the status on a **proposal**: a run
+that plans work or settles docs enqueues `enqueue_spec_change_propose`, and the
+runtime moves the request to `awaiting_approval` (posting the plan summary +
+`APR-NNNN`) and, on approval, to `done` (running the deferred `apply.py` that
+creates the posts). You set a status yourself only for a clarification question
+(a direct apply): `awaiting_input`, never `awaiting_approval`. Record intent in
+`plan.json`. Replies to the request go on this post as comments.
 
 ## Reactions + the approval gate
 

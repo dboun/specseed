@@ -108,6 +108,14 @@ class DecideIntentTest(DispatchTestBase):
         _, reply = self._intent_for(labels, action="handle_comment_added")
         self.assertEqual(reply, AgentIntent.SPEC_CHANGE)
 
+    def test_spec_change_awaiting_input_only_wakes_on_comment(self) -> None:
+        # The question-round parked status behaves like awaiting_approval for waking.
+        labels = ["spec-change:adapt", "spec-change:status:awaiting_input"]
+        _, churn = self._intent_for(labels, action="handle_entry_updated")
+        self.assertEqual(churn, AgentIntent.NONE)
+        _, reply = self._intent_for(labels, action="handle_comment_added")
+        self.assertEqual(reply, AgentIntent.SPEC_CHANGE)
+
     def test_spec_change_status_label_ignored(self) -> None:
         # A spec-change:status:* label is not a route.
         _, intent = self._intent_for(["spec-change:status:awaiting_approval"])

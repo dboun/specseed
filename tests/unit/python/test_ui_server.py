@@ -317,6 +317,63 @@ class PageArgsTest(unittest.TestCase):
         self.assertEqual(server._page_args({"q_offset": ["nope"]}, "q", 50), (0, 50))
 
 
+class InProgressPostIdsTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.storage = Path(self.tmp.name)
+        _make_queue_db(self.storage)
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def _insert(self, post_id, status) -> None:
+        conn = sqlite3.connect(self.storage / "specseed.db")
+        conn.execute(
+            "INSERT INTO tasks(action, post_id, status, created_at) VALUES (?, ?, ?, ?)",
+            ("act", post_id, status, "2026-01-01T00:00:00Z"),
+        )
+        conn.commit()
+        conn.close()
+
+    def test_only_in_progress_posts_reported(self) -> None:
+        self._insert("7", "in_progress")
+        self._insert("8", "pending")
+        self._insert("9", "success")
+        self._insert(None, "in_progress")  # no post: ignored
+        self.assertEqual(server._in_progress_post_ids(self.storage), {"7"})
+
+    def test_missing_db_degrades_to_empty(self) -> None:
+        self.assertEqual(server._in_progress_post_ids(self.storage / "nope"), set())
+
+
+class RepoSummaryQueueTest(unittest.TestCase):
+    def test_summary_carries_live_queue_counts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = Path(tmp)
+            _make_queue_db(storage, tasks=3)  # statuses alternate pending/success
+            record = {
+                "id": "r1",
+                "name": "repo",
+                "provider": "local",
+                "target": str(storage),
+                "storage": str(storage),
+            }
+            summary = server._repo_summary(record)
+            self.assertEqual(summary["queue"], {"pending": 2, "in_progress": 0})
+
+    def test_summary_queue_zero_without_db(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            record = {
+                "id": "r1",
+                "name": "repo",
+                "provider": "local",
+                "target": tmp,
+                "storage": tmp,
+            }
+            summary = server._repo_summary(record)
+            self.assertEqual(summary["queue"], {"pending": 0, "in_progress": 0})
+
+
 class PrepareTargetTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()

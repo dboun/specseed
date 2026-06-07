@@ -67,9 +67,11 @@ _SPEC_CHANGE_STATUS_PREFIX = "spec-change:status:"
 # label (``spec-change:adapt`` etc.) never goes away, so without this gate every
 # later edit / label churn on a finished request re-ran the whole worker.
 _SPEC_CHANGE_TERMINAL_STATUSES = {"done", "rejected"}
-# ``awaiting_approval`` means the worker asked the human a question and is parked.
-# Only a fresh comment (the human's answer) should wake it; an ``updated_at`` bump
-# or a status-label swap must not.
+# Parked statuses: ``awaiting_input`` = the worker asked the human a question;
+# ``awaiting_approval`` = an APR-NNNN plan approval is pending. Both wake only on
+# a fresh comment (the human's answer / a plan objection); an ``updated_at`` bump
+# or a status-label swap must not re-run the worker.
+_SPEC_CHANGE_PARKED_STATUSES = {"awaiting_input", "awaiting_approval"}
 _SPEC_CHANGE_WAKE_ACTIONS = {"handle_comment_added", "handle_comment_updated"}
 
 
@@ -179,12 +181,12 @@ def _spec_change_actionable(status: Optional[str], action: Optional[str]) -> boo
     """Whether a spec-change event should (re)run the worker.
 
     A request only runs while it is open/approved (or has no status yet). A
-    terminal request never runs again. A request parked ``awaiting_approval`` runs
-    only when woken by a new comment (the human's answer).
+    terminal request never runs again. A parked request (``awaiting_input`` /
+    ``awaiting_approval``) runs only when woken by a new comment (the human's answer).
     """
     if status in _SPEC_CHANGE_TERMINAL_STATUSES:
         return False
-    if status == "awaiting_approval":
+    if status in _SPEC_CHANGE_PARKED_STATUSES:
         return action in _SPEC_CHANGE_WAKE_ACTIONS
     return True
 

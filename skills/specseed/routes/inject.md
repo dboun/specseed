@@ -95,8 +95,8 @@ Record the full decision:
 - `sprint_shift` describing what moved from current to next sprint
 
 If clarification is needed instead, `plan.json` should contain only the clarifying
-comment(s) + the `awaiting_approval` label, enqueued as a **direct apply**
-(`enqueue_spec_change_run`).
+comment(s) + the `spec-change:status:awaiting_input` label, enqueued as a **direct
+apply** (`enqueue_spec_change_run`).
 
 ## Finish
 

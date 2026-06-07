@@ -81,7 +81,7 @@ export function createTracker({ repo, ctx }) {
       <div class="tab-head">
         <h1>Tracker</h1>
         <div class="tab-head-actions">
-          <span class="auto-dot" title="auto-refreshing"></span>
+          <span data-queue-dot></span>
           <button class="btn btn-primary" data-new-post>+ New post</button>
         </div>
       </div>
@@ -152,8 +152,8 @@ export function createTracker({ repo, ctx }) {
             .map(([s, label]) => `<button class="seg-btn ${state.stateFilter === s ? "active" : ""}" data-state="${s}">${label}</button>`)
             .join("")}
         </div>
-        <details class="label-filter">
-          <summary>labels${state.labelFilter.size ? ` · ${state.labelFilter.size}` : ""}</summary>
+        <details class="label-filter ${state.labelFilter.size ? "filtering" : ""}">
+          <summary>labels${state.labelFilter.size ? ` (${state.labelFilter.size})` : ""}</summary>
           <div class="label-filter-menu">
             ${labelPicker(names, filterChip) || `<span class="muted">no labels</span>`}
           </div>
@@ -190,13 +190,13 @@ export function createTracker({ repo, ctx }) {
       <article class="${cls}" data-open-post="${escapeHtml(post.id)}">
         <div class="post-card-top">
           <span class="post-id">#${escapeHtml(post.id)}</span>
-          <span class="state-dot ${post.is_open ? "open" : "closed"}"></span>
+          ${post.agent_running ? `<span class="state-dot running" title="agent running"></span>` : ""}
         </div>
         <div class="post-title">${escapeHtml(post.title)}</div>
         <div class="post-meta">${escapeHtml(post.author || "unknown")} · ${escapeHtml(formatTime(post.updated_at))}</div>
         <div class="post-foot">
           <div class="chip-row">${labels.map((l) => `<span class="chip sm">${escapeHtml(l.name)}</span>`).join("")}</div>
-          <span class="reply-count" title="replies">💬 ${escapeHtml(post.comment_count || 0)}</span>
+          ${post.comment_count ? `<span class="reply-count" title="replies">💬 ${escapeHtml(post.comment_count)}</span>` : ""}
         </div>
       </article>`;
   }
@@ -449,6 +449,13 @@ export function createTracker({ repo, ctx }) {
       const name = lf.dataset.labelFilter;
       state.labelFilter.has(name) ? state.labelFilter.delete(name) : state.labelFilter.add(name);
       lf.classList.toggle("on");
+      // the filter bar never repaints (keeps the dropdown open) — sync the summary in place
+      const dd = lf.closest(".label-filter");
+      if (dd) {
+        dd.classList.toggle("filtering", state.labelFilter.size > 0);
+        const sum = dd.querySelector("summary");
+        if (sum) sum.textContent = state.labelFilter.size ? `labels (${state.labelFilter.size})` : "labels";
+      }
       state.page = 0;
       repaintList();
       return;
@@ -587,11 +594,25 @@ export function createTracker({ repo, ctx }) {
     if (drawer.contains(document.activeElement)) return true;
     return [...drawer.querySelectorAll("input, textarea")].some((el) => el.value.trim());
   }
+  // Queue dot in the tab head: glows only while the repo has queued/running work.
+  async function refreshQueueDot() {
+    const slot = document.querySelector("[data-queue-dot]");
+    if (!slot) return;
+    try {
+      const q = (await api.repo(repo.id)).queue || {};
+      const busy = (q.pending || 0) + (q.in_progress || 0) > 0;
+      slot.innerHTML = busy ? `<span class="auto-dot" title="tasks queued or running"></span>` : "";
+    } catch {
+      /* transient; next tick retries */
+    }
+  }
+
   async function autoRefresh() {
     if (state.external || polling) return;
     if (document.querySelector("[data-modal]") || document.hidden) return;
     polling = true;
     try {
+      await refreshQueueDot();
       if (state.selectedId) {
         if (drawerBusy()) return;
         const id = state.selectedId;
@@ -614,7 +635,10 @@ export function createTracker({ repo, ctx }) {
   }
 
   function afterRender() {
-    if (!state.external) timer = setInterval(autoRefresh, 5000);
+    if (!state.external) {
+      refreshQueueDot(); // initial paint; the interval keeps it current
+      timer = setInterval(autoRefresh, 5000);
+    }
   }
 
   function dispose() {

@@ -268,18 +268,27 @@ export function createMonitor({ repo, ctx, refreshTopbar }) {
       </div>`;
   }
 
+  // Glows only while there is queued/running work; absent on an idle queue.
+  function queueDot() {
+    const c = data?.counts || {};
+    const busy = (c.pending || 0) + (c.in_progress || 0) > 0;
+    return busy ? `<span class="auto-dot" title="tasks queued or running"></span>` : "";
+  }
+
   function html() {
     return `
       <div class="tab-head">
         <h1>Monitor</h1>
         <div class="tab-head-actions">
-          <span class="auto-dot" title="auto-refreshing"></span>
+          <span data-queue-dot>${queueDot()}</span>
         </div>
       </div>
       <div data-monitor-body>${body()}</div>`;
   }
 
   function paint() {
+    const dot = container?.querySelector("[data-queue-dot]");
+    if (dot) dot.innerHTML = queueDot();
     const slot = container?.querySelector("[data-monitor-body]");
     if (!slot) return;
     // preserve the log scroll position across a repaint

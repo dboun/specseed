@@ -65,6 +65,7 @@ LABEL_SPECS = [
         )
         for status, color in {
             "open": "1d76db",
+            "awaiting_input": "fbca04",
             "awaiting_approval": "d93f0b",
             "approved": "0e8a16",
             "done": "0e8a16",

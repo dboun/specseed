@@ -334,7 +334,8 @@ created ids), then enqueues.
 Cannot proceed safely? Do not guess. Post a **clarification round** — possibly several
 questions in the confidence/suggestion format of `references/question-protocol.md`,
 delivered as comment(s) on the spec-change post into `plan.json.comments` — add label
-`spec-change:status:awaiting_approval`, record the round in `plan.json.questions`. A
+`spec-change:status:awaiting_input` (never `awaiting_approval`; that is the runtime's
+APR plan gate), record the round in `plan.json.questions`. A
 clarification creates no work and settles no doc, so enqueue it as a **direct apply**
 (`enqueue_spec_change_run`, not a proposal), then stop. The human replies on the remote
 (a one-word `OK` accepts all your suggestions); the next poll re-triggers this route

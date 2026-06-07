@@ -10,7 +10,7 @@ The *format* below is identical in both; only delivery + when-you-stop differ.
 
 - **Runner mode (async).** You cannot interview a human live. A round is posted as
   a **comment (or comments) on the spec-change request post**, then you swap the
-  request to `spec-change:status:awaiting_approval` and **stop**. The next poll
+  request to `spec-change:status:awaiting_input` and **stop**. The next poll
   re-triggers the route with the human's reply in the post comments, where you read
   the answers and continue. A round may carry **several questions** — the headless
   constraint is "one round, then park and wait," NOT "one question." Do not loop

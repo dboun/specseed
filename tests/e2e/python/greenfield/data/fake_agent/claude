@@ -8,7 +8,7 @@ no network, deterministic. CLI flags are ignored; only the prompt matters.
 Plays all three agent jobs by sniffing the prompt:
 
 * spec change - acts as the spec-change worker per the skill contract: question
-  rounds first (parked awaiting_approval, woken by the human's answer), then the
+  rounds first (parked awaiting_input, woken by the human's answer), then the
   scripted breakdown. Writes spec docs + plan.json + apply.py into the request
   dir and enqueues the run. Never runs apply.py itself.
 * implement   - no-op (the e2e writes no application code).
@@ -190,12 +190,16 @@ def _emit(storage: Path, request_id: str, route: str, plan: dict) -> None:
     )
 
 
-def _park_labels(request_id: str) -> list[dict]:
+def _park_labels(request_id: str, status: str = "awaiting_approval") -> list[dict]:
+    # Question rounds park ``awaiting_input`` (the skill contract); the APR plan
+    # gate stays ``awaiting_approval``.
+    target = f"spec-change:status:{status}"
+    stale = ["spec-change:status:open", "spec-change:status:awaiting_input"]
     return [
         {
             "post": request_id,
-            "remove": ["spec-change:status:open"],
-            "add": ["spec-change:status:awaiting_approval"],
+            "remove": [name for name in stale if name != target],
+            "add": [target],
         }
     ]
 
@@ -307,7 +311,7 @@ def run_spec_change(prompt: str) -> int:
             creates=[],
             edits=[],
             id_map={},
-            labels=_park_labels(request_id),
+            labels=_park_labels(request_id, "awaiting_input"),
             comments=[{"post": request_id, "body": question}],
             settle_docs=[],
         )

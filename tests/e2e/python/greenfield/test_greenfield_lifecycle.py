@@ -16,7 +16,7 @@ Scenario (every approval step covered):
 
 1. configure a fresh target repo; start the listener (it seeds labels + posts).
 2. fill the seeded draft adapt post with a bootstrap prompt, drop ``draft``.
-3. two discussion rounds (worker parks ``awaiting_approval``; answers wake it).
+3. two discussion rounds (worker parks ``awaiting_input``; answers wake it).
 4. sprint-1 breakdown: 2 epics, 4 tickets, 4 gated issues + APR-0001; spec docs.
 5. approve the request (settles spec docs, request -> done).
 6. approve each sprint-1 issue (thumbs-up and ``approve APR-0001``); each runs
@@ -272,8 +272,8 @@ def test_greenfield_full_lifecycle(harness):
         "fake agent log missing: a real agent CLI may have run!" + harness.diagnostics()
     )
     harness.wait_for(
-        lambda: "spec-change:status:awaiting_approval" in labels_of(boss, request_id),
-        "request parked awaiting_approval after round 1",
+        lambda: "spec-change:status:awaiting_input" in labels_of(boss, request_id),
+        "request parked awaiting_input after round 1",
     )
     _ok(boss.add_entry_comment(request_id, "1. OK. One JSON file is plenty."), "answer round 1")
 

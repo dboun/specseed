@@ -30,6 +30,7 @@ SPEC_CHANGE_LABELS = frozenset(
         "spec-change:inject",
         "spec-change:plan-next-sprint",
         "spec-change:status:open",
+        "spec-change:status:awaiting_input",
         "spec-change:status:awaiting_approval",
         "spec-change:status:approved",
         "spec-change:status:done",

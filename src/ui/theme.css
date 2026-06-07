@@ -262,6 +262,7 @@ a { color: var(--accent-2); }
 
 .label-filter { position: relative; }
 .label-filter > summary { list-style: none; cursor: pointer; padding: 8px 13px; border: 1px solid var(--line-2); border-radius: 9px; background: var(--panel-2); }
+.label-filter.filtering > summary { color: var(--accent); border-color: var(--accent); }
 .label-filter > summary::-webkit-details-marker { display: none; }
 .label-filter-menu {
   position: absolute; right: 0; top: calc(100% + 6px); z-index: 15; width: 260px;
@@ -294,8 +295,9 @@ button.chip { cursor: pointer; }
 .post-card-top { display: flex; justify-content: space-between; align-items: center; }
 .post-id { font-family: var(--mono); color: var(--muted); font-size: 12px; }
 .state-dot { width: 8px; height: 8px; border-radius: 50%; }
-.state-dot.open { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
-.state-dot.closed { background: var(--muted); }
+/* shown only on posts an agent is actively working (queue task in_progress) */
+.state-dot.running { background: var(--ok); box-shadow: 0 0 8px var(--ok); animation: dot-pulse 1.6s ease-in-out infinite; }
+@keyframes dot-pulse { 50% { opacity: 0.35; } }
 .post-title { font-weight: 600; margin: 4px 0 2px; }
 .post-meta { color: var(--muted); font-size: 12px; }
 

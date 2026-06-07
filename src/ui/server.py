@@ -397,6 +397,9 @@ def _repo_summary(record: dict) -> dict:
     configured = (Path(storage) / "configuration.json").is_file() and (
         Path(storage) / "remote.json"
     ).is_file()
+    # live queue counts straight from the db (the runner heartbeat goes stale when
+    # the runner is down, but queued work is still queued)
+    counts = _queue_counts(storage)
     return {
         "id": record["id"],
         "name": record["name"],
@@ -404,6 +407,7 @@ def _repo_summary(record: dict) -> dict:
         "target": record["target"],
         "configured": configured,
         "external_link": _external_link(record),
+        "queue": {"pending": counts["pending"], "in_progress": counts["in_progress"]},
         "runner": {
             "state": status.get("state", "stopped"),
             "alive": bool(status.get("alive")),
@@ -452,10 +456,26 @@ def _needs_approval(post: dict) -> bool:
     return False
 
 
+def _in_progress_post_ids(storage: str | Path) -> set[str]:
+    """Post ids with a task currently running (an agent working on them)."""
+    try:
+        conn = sqlite3.connect(f"file:{_queue_db(storage)}?mode=ro", uri=True, timeout=5.0)
+        ids = {
+            str(row[0])
+            for row in conn.execute(
+                "SELECT DISTINCT post_id FROM tasks WHERE status = 'in_progress' AND post_id IS NOT NULL"
+            )
+        }
+        conn.close()
+        return ids
+    except sqlite3.Error:
+        return set()  # indicator degrades gracefully
+
+
 def _enrich_list(record: dict, posts: object) -> object:
     """Stamp list-only fields the summary shape lacks: comment_count, the newest
     activity timestamp (entry vs latest comment, for sorting), a search blob of
-    comment bodies, and the needs_approval flag."""
+    comment bodies, the needs_approval flag, and agent_running."""
     if not isinstance(posts, list):
         return posts
     agg: dict[str, tuple[int, str | None, str]] = {}
@@ -471,6 +491,7 @@ def _enrich_list(record: dict, posts: object) -> object:
         conn.close()
     except sqlite3.Error:
         pass  # chips degrade gracefully; the list itself still renders
+    running = _in_progress_post_ids(record["storage"])
     for post in posts:
         if not isinstance(post, dict):
             continue
@@ -478,6 +499,7 @@ def _enrich_list(record: dict, posts: object) -> object:
         post["comment_count"] = count
         post["comments_text"] = bodies
         post["needs_approval"] = _needs_approval(post)
+        post["agent_running"] = str(post.get("id")) in running
         stamps = [s for s in (post.get("updated_at"), last_comment_at) if s]
         post["last_activity_at"] = max(stamps) if stamps else post.get("updated_at")
     return posts
