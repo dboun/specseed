@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from specseed_runtime.entities.entity_base import parse_depends_on
+from specseed_runtime.entities.entity_base import parse_depends_on, parse_parent
 
 
 class ParseDependsOnTest(unittest.TestCase):
@@ -36,6 +36,21 @@ class ParseDependsOnTest(unittest.TestCase):
     def test_dedupes_preserving_order(self) -> None:
         body = "Depends on: #7, #7, #8"
         self.assertEqual(parse_depends_on(body), ["7", "8"])
+
+
+class ParseParentTest(unittest.TestCase):
+    def test_issue_ticket_link(self) -> None:
+        self.assertEqual(parse_parent("<!-- Ticket: #41   Depends on: #61 -->"), "41")
+
+    def test_ticket_epic_link(self) -> None:
+        self.assertEqual(parse_parent("<!-- Epic: #12   Issues: #61, #62 -->"), "12")
+
+    def test_human_id(self) -> None:
+        self.assertEqual(parse_parent("Ticket: #PROJ-0007"), "PROJ-0007")
+
+    def test_none_when_absent(self) -> None:
+        self.assertIsNone(parse_parent("Depends on: #5\nno parent here"))
+        self.assertIsNone(parse_parent(None))
 
 
 if __name__ == "__main__":

@@ -667,22 +667,45 @@ def _merge_done_issue(ctx: ExecutionContext, entity: Any, branch: Optional[str],
     return "merge conflict on {0} unresolved; aborted, branch left for a human".format(branch)
 
 
-def _unmet_dependencies(ctx: ExecutionContext, entity: Any) -> list[tuple[str, str]]:
-    """Issue deps (body ``Depends on: #NN``) that are not yet ``done``.
+def _dep_status(ctx: ExecutionContext, dep_id: str) -> Optional[str]:
+    dep_entity, _ = context_mod.load_entity(ctx, str(dep_id))
+    return getattr(dep_entity, "status", None) if dep_entity else None
 
-    Returns ``[(dep_id, status)]`` for each blocking dependency. Only numeric
-    provider-id deps are enforced (the remote-posts convention); a dep we cannot
-    resolve in the local mirror counts as not-done (likely just not synced yet) so
-    we wait rather than race ahead. Non-numeric (human-id) tokens are skipped.
+
+def _unmet_dependencies(ctx: ExecutionContext, entity: Any) -> list[tuple[str, str]]:
+    """Dependencies that are not yet ``done``, blocking this issue.
+
+    Two tiers:
+    * issue-level: the issue's own body ``Depends on: #NN`` ids;
+    * ticket-tier: the issue's parent ticket's ``Depends on: #NN`` tickets (so an
+      issue waits for the upstream tickets its ticket depends on, one hop up - those
+      tickets roll up to ``done`` when their own issues finish).
+
+    Returns ``[(dep_id, status)]`` for each blocker. Only numeric provider-id deps
+    are enforced (the remote-posts convention); a dep we cannot resolve counts as
+    not-done (likely just not synced yet) so we wait rather than race ahead.
+    Non-numeric (human-id) tokens are skipped.
     """
     unmet: list[tuple[str, str]] = []
-    for dep in getattr(entity, "depends_on", []) or []:
-        if not str(dep).isdigit():
-            continue
-        dep_entity, _ = context_mod.load_entity(ctx, str(dep))
-        status = getattr(dep_entity, "status", None) if dep_entity else None
+    seen: set[str] = set()
+
+    def _check(dep_id: str) -> None:
+        dep_id = str(dep_id)
+        if not dep_id.isdigit() or dep_id in seen:
+            return
+        seen.add(dep_id)
+        status = _dep_status(ctx, dep_id)
         if status != "done":
-            unmet.append((str(dep), status or "unknown"))
+            unmet.append((dep_id, status or "unknown"))
+
+    for dep in getattr(entity, "depends_on", []) or []:
+        _check(dep)
+
+    parent_id = getattr(entity, "parent_id", None)
+    if parent_id and str(parent_id).isdigit():
+        parent, _ = context_mod.load_entity(ctx, str(parent_id))
+        for dep in getattr(parent, "depends_on", []) or []:
+            _check(dep)
     return unmet
 
 

@@ -648,6 +648,38 @@ class DependencyGateTest(DispatchTestBase):
         self.assertFalse(out.requeue)
         self.assertEqual(len(self.runner.calls), 1)  # dep done -> agent ran
 
+    def test_held_while_parent_ticket_dependency_not_done(self) -> None:
+        # ticket-tier: issue under ticket B; B depends on ticket A (not done).
+        dep_ticket = self._seed_with_body("Ticket A", ["tier:ticket", "status:todo"], "")
+        parent = self._seed_with_body(
+            "Ticket B", ["tier:ticket", "status:todo"], "Depends on: #{0}".format(dep_ticket)
+        )
+        issue = self._seed_with_body(
+            "FEAT-0003 Under B", ["tier:issue", "status:todo"], "Ticket: #{0}".format(parent)
+        )
+        out = dispatch(
+            self.ctx,
+            {"action": "handle_label_added", "post_id": str(issue), "payload": {"label": "status:todo"}},
+        )
+        self.assertTrue(out.requeue)
+        self.assertIn("held", out.detail)
+        self.assertEqual(len(self.runner.calls), 0)
+
+    def test_runs_when_parent_ticket_dependency_done(self) -> None:
+        dep_ticket = self._seed_with_body("Ticket A", ["tier:ticket", "status:done"], "")
+        parent = self._seed_with_body(
+            "Ticket B", ["tier:ticket", "status:todo"], "Depends on: #{0}".format(dep_ticket)
+        )
+        issue = self._seed_with_body(
+            "FEAT-0003 Under B", ["tier:issue", "status:todo"], "Ticket: #{0}".format(parent)
+        )
+        out = dispatch(
+            self.ctx,
+            {"action": "handle_label_added", "post_id": str(issue), "payload": {"label": "status:todo"}},
+        )
+        self.assertFalse(out.requeue)
+        self.assertEqual(len(self.runner.calls), 1)
+
 
 class _FileWritingRunner(FakeAgentRunner):
     """Fake runner that writes a file into cwd (simulating an agent's edits) then

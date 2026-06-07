@@ -32,6 +32,9 @@ STATUS_LABEL_PREFIX = "status:"
 # or a plain "Depends on: #61" line. We extract the `#NN` ids after the phrase.
 _DEPENDS_ON_RE = re.compile(r"depends\s+on\s*:?\s*(.+)", re.IGNORECASE)
 _ID_TOKEN_RE = re.compile(r"#\s*([0-9]+|[A-Za-z]+-[0-9]+)")
+# Parent link in a post body: an issue links its `Ticket: #NN`, a ticket its
+# `Epic: #NN` (remote-posts.md). The immediate parent is the first of these.
+_PARENT_RE = re.compile(r"\b(?:Ticket|Epic)\s*:\s*#\s*([0-9]+|[A-Za-z]+-[0-9]+)", re.IGNORECASE)
 
 
 def parse_depends_on(body: Optional[str]) -> list[str]:
@@ -57,6 +60,15 @@ def parse_depends_on(body: Optional[str]) -> list[str]:
             if tok and tok not in ids:
                 ids.append(tok)
     return ids
+
+
+def parse_parent(body: Optional[str]) -> Optional[str]:
+    """Immediate parent id from a post body's link (``Ticket: #NN`` for an issue,
+    ``Epic: #NN`` for a ticket). Returns the id without ``#``, or None."""
+    if not body:
+        return None
+    m = _PARENT_RE.search(body)
+    return m.group(1).strip() if m else None
 
 # The canonical work vocabulary actually seeded on the tracker (see
 # tracking/supported_values.py, tracking/populate_defaults.py and
