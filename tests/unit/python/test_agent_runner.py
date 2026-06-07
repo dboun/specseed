@@ -17,6 +17,7 @@ from pathlib import Path
 from specseed_runtime.executing import platform_log
 from specseed_runtime.executing.agent_runner import (
     AgentResult,
+    CLAUDE_MODELS,
     ClaudeAgentRunner,
     CodexAgentRunner,
     FakeAgentRunner,
@@ -27,10 +28,54 @@ from specseed_runtime.executing.agent_runner import (
     _config_dir_env,
     build_runner,
     build_runner_chains,
+    default_model,
     default_runner_chains,
+    list_codex_model_slugs,
+    model_presets,
     runner_from_spec,
     stdout_tail,
 )
+
+
+class ModelPresetsTest(unittest.TestCase):
+    def _cache(self, models) -> Path:
+        d = Path(tempfile.mkdtemp())
+        p = d / "models_cache.json"
+        p.write_text(json.dumps({"models": models}), encoding="utf-8")
+        return p
+
+    def test_claude_presets_are_the_tier_tags(self) -> None:
+        self.assertEqual(model_presets("claude"), list(CLAUDE_MODELS))
+        self.assertEqual(model_presets("CLAUDE"), list(CLAUDE_MODELS))
+
+    def test_claude_default_is_opus(self) -> None:
+        self.assertEqual(default_model("claude"), "opus")
+
+    def test_codex_slugs_read_listed_models_in_order_deduped(self) -> None:
+        cache = self._cache([
+            {"slug": "gpt-5.4", "visibility": "list"},
+            {"slug": "gpt-5.4-mini", "visibility": "list"},
+            {"slug": "gpt-5.4", "visibility": "list"},  # dup dropped
+            {"slug": "hidden", "visibility": "hidden"},  # not listed
+            {"slug": "", "visibility": "list"},  # blank skipped
+        ])
+        self.assertEqual(list_codex_model_slugs(cache), ["gpt-5.4", "gpt-5.4-mini"])
+
+    def test_codex_missing_cache_is_empty(self) -> None:
+        self.assertEqual(list_codex_model_slugs(Path("/no/such/file.json")), [])
+
+    def test_codex_bad_json_is_empty(self) -> None:
+        d = Path(tempfile.mkdtemp())
+        p = d / "models_cache.json"
+        p.write_text("not json", encoding="utf-8")
+        self.assertEqual(list_codex_model_slugs(p), [])
+
+    def test_codex_default_is_first_slug_or_blank(self) -> None:
+        # No machine cache assumption: default_model reads the real cache, so we
+        # only assert the documented contract via list_codex_model_slugs shape.
+        slugs = list_codex_model_slugs(self._cache([{"slug": "a", "visibility": "list"}]))
+        self.assertEqual(slugs[0], "a")
+        self.assertEqual(list_codex_model_slugs(self._cache([])), [])
 
 
 class ConfigDirEnvTest(unittest.TestCase):

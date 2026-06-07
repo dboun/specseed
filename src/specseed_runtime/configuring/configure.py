@@ -66,8 +66,10 @@ from specseed_runtime.configuring import scaffold  # noqa: E402
 from specseed_runtime.executing.agent_runner import (  # noqa: E402
     PROVIDER_DEFAULT_HOME,
     RUNNER_FUNCTIONS,
+    default_model,
     default_runner_chains,
     default_runner_spec,
+    model_presets,
 )
 
 DEFAULT_POLL_INTERVAL = 45
@@ -827,12 +829,28 @@ def section_approvals(cfg):
     )
 
 
+def _ask_model(provider, current):
+    """Pick a model for ``provider``. Presets (claude tags / codex slugs) plus
+    'custom' for a free-typed string. A current value outside the presets is
+    treated as custom and pre-filled."""
+    presets = model_presets(provider)
+    current = (current or "").strip()
+    if not presets:
+        # No presets (e.g. codex cache missing) - free text, defaulting sanely.
+        return ask_str("    Model", current or default_model(provider))
+    is_custom = bool(current) and current not in presets
+    default = "custom" if is_custom else (current or default_model(provider) or presets[0])
+    choice = ask_choice("    Model", tuple(presets) + ("custom",), default)
+    if choice == "custom":
+        return ask_str("    Custom model", current if is_custom else "")
+    return choice
+
+
 def _ask_runner_spec(spec):
     """Prompt for one agent spec, defaulting from ``spec``. Returns a spec dict."""
     spec = spec or default_runner_spec()
     provider = ask_choice("    Provider", RUNNER_PROVIDERS, spec.get("provider") or "claude")
-    default_model = spec.get("model") or ("gpt-5.4-mini" if provider == "codex" else "opus")
-    model = ask_str("    Model", default_model) or default_model
+    model = _ask_model(provider, spec.get("model"))
     effort = ask_choice("    Reasoning effort", ("low", "medium", "high"), spec.get("effort") or "high")
     default_dir = spec.get("provider_data_dir") or PROVIDER_DEFAULT_HOME.get(provider, "~/.claude")
     data_dir = ask_str("    Provider data dir", default_dir) or default_dir

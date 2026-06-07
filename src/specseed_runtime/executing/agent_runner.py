@@ -20,6 +20,7 @@ Only Python stdlib is used.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import tempfile
@@ -54,6 +55,51 @@ RUNNER_FUNCTIONS = (
 # provider -> the env var its CLI reads for its config/home dir, and the default.
 PROVIDER_CONFIG_ENV = {"claude": "CLAUDE_CONFIG_DIR", "codex": "CODEX_HOME"}
 PROVIDER_DEFAULT_HOME = {"claude": "~/.claude", "codex": "~/.codex"}
+
+# Claude model presets - aliases that always point at the latest version of each
+# tier. Anything else a user types is a "custom" model string passed verbatim.
+CLAUDE_MODELS = ("opus", "sonnet", "haiku")
+
+
+def list_codex_model_slugs(cache_path: Path | None = None) -> list[str]:
+    """Codex model slugs the local CLI knows about, read from its models cache.
+    Empty list if the cache is missing/unreadable - caller falls back to custom."""
+    path = cache_path or (Path.home() / ".codex" / "models_cache.json")
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            payload = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return []
+    models = payload.get("models")
+    if not isinstance(models, list):
+        return []
+    slugs: list[str] = []
+    seen: set[str] = set()
+    for model in models:
+        if not isinstance(model, dict) or model.get("visibility") != "list":
+            continue
+        slug = str(model.get("slug") or "").strip()
+        if slug and slug not in seen:
+            seen.add(slug)
+            slugs.append(slug)
+    return slugs
+
+
+def model_presets(provider: str) -> list[str]:
+    """Preset model options offered for ``provider`` (claude tags, codex slugs).
+    Codex reads from the local cache, so the list is machine-dependent."""
+    if str(provider or "").lower() == "codex":
+        return list_codex_model_slugs()
+    return list(CLAUDE_MODELS)
+
+
+def default_model(provider: str) -> str:
+    """Default model when a spec switches to ``provider``: opus for claude, the
+    first cached slug for codex (blank if none cached -> user types a custom one)."""
+    if str(provider or "").lower() == "codex":
+        slugs = list_codex_model_slugs()
+        return slugs[0] if slugs else ""
+    return "opus"
 
 # Tail of agent stdout kept on failure (log + task error). Tail, not head: CLIs
 # print the error last.

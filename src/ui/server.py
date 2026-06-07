@@ -41,6 +41,7 @@ _add_repo_root_to_path()
 
 from specseed_runtime import registry
 from specseed_runtime.configuring import configure
+from specseed_runtime.executing import agent_runner
 from specseed_runtime.executing import runner_control
 from specseed_runtime.tracking import populate_defaults
 from specseed_runtime.tracking.tracking_remote_local import TrackingRemoteLocal
@@ -367,6 +368,11 @@ def _config_schema() -> dict:
         "runner_functions": list(configure.RUNNER_FUNCTIONS),
         "runner_providers": list(configure.RUNNER_PROVIDERS),
         "provider_homes": dict(configure.PROVIDER_DEFAULT_HOME),
+        # Preset model options per provider (codex slugs read from the local
+        # cache) + the default model when a spec switches provider. The UI adds
+        # a "custom" option on top of these.
+        "model_presets": {p: agent_runner.model_presets(p) for p in configure.RUNNER_PROVIDERS},
+        "model_defaults": {p: agent_runner.default_model(p) for p in configure.RUNNER_PROVIDERS},
         "default_spec": configure.default_runner_spec(),
         "agent_categories": dict(configure.AGENT_CATEGORIES),
         "agent_levels": list(configure.AGENT_LEVELS),

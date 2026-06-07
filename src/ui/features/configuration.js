@@ -1,10 +1,12 @@
 import { api } from "./api.js";
 import { escapeHtml, toast } from "../ui/components.js";
 
+const CUSTOM = "__custom__"; // sentinel model option that reveals a free-text input
+
 export function createConfiguration({ repo, ctx }) {
   let cfg = null;
   let remote = null;
-  let schema = { runner_functions: [], runner_providers: [], provider_homes: {}, agent_categories: {}, agent_levels: [], default_spec: {} };
+  let schema = { runner_functions: [], runner_providers: [], provider_homes: {}, model_presets: {}, model_defaults: {}, agent_categories: {}, agent_levels: [], default_spec: {} };
   let gate = { editable: true, reason: "" };
   let onChange = null;
 
@@ -94,7 +96,7 @@ export function createConfiguration({ repo, ctx }) {
         <div class="spec-rank">${idx === 0 ? "primary" : "fallback " + idx}</div>
         <div class="spec-fields">
           <label>provider${select(`data-spec="provider"`, spec.provider, providers)}</label>
-          <label>model${text2(`data-spec="model"`, spec.model)}</label>
+          <label>model${modelField(spec)}</label>
           <label>effort${select(`data-spec="effort"`, spec.effort || "high", ["low", "medium", "high"])}</label>
           <label class="wide">data dir${text2(`data-spec="dir"`, spec.provider_data_dir)}</label>
         </div>
@@ -104,6 +106,23 @@ export function createConfiguration({ repo, ctx }) {
   // input with a data-attr instead of name (read positionally, not by FormData)
   function text2(attr, value) {
     return `<input type="text" ${attr} value="${escapeHtml(value ?? "")}" ${ro()} />`;
+  }
+
+  // Model picker: a dropdown of presets (claude tags / codex slugs) + "custom".
+  // Picking custom reveals a free-text input. A model outside the presets (or a
+  // provider with no cached presets) starts in custom mode.
+  function modelField(spec) {
+    const presets = schema.model_presets?.[spec.provider] || [];
+    const model = spec.model ?? "";
+    const isCustom = !presets.length || (model !== "" && !presets.includes(model));
+    const options = [...presets, CUSTOM];
+    const selValue = isCustom ? CUSTOM : model || schema.model_defaults?.[spec.provider] || presets[0] || CUSTOM;
+    const labels = { [CUSTOM]: "custom…" };
+    const customAttr = isCustom ? "" : "hidden";
+    return (
+      select(`data-spec="model-select"`, selValue, options, labels) +
+      `<input type="text" data-spec="model-custom" class="model-custom" value="${escapeHtml(isCustom ? model : "")}" placeholder="model name" ${customAttr} ${ro()} />`
+    );
   }
 
   function runnersSection() {
@@ -198,6 +217,14 @@ export function createConfiguration({ repo, ctx }) {
     if (body) body.innerHTML = formHtml();
   }
 
+  // Model = the dropdown value, unless "custom" is picked -> the free-text input.
+  function readModel(row) {
+    const sel = row.querySelector('[data-spec="model-select"]');
+    if (!sel) return "";
+    if (sel.value === CUSTOM) return row.querySelector('[data-spec="model-custom"]').value.trim();
+    return sel.value;
+  }
+
   // -- read the DOM back into cfg --------------------------------------- #
   function syncFromForm() {
     const form = document.querySelector("[data-config-form]");
@@ -242,7 +269,7 @@ export function createConfiguration({ repo, ctx }) {
       const specs = rows.map((row) => ({
         provider: row.querySelector('[data-spec="provider"]').value,
         provider_data_dir: row.querySelector('[data-spec="dir"]').value.trim(),
-        model: row.querySelector('[data-spec="model"]').value.trim(),
+        model: readModel(row),
         effort: row.querySelector('[data-spec="effort"]').value.trim(),
       }));
       cfg.runner[fn] = specs.length ? specs : [{ ...(schema.default_spec || {}) }];
@@ -297,16 +324,37 @@ export function createConfiguration({ repo, ctx }) {
     }
   }
 
-  // Switching a spec's provider auto-fills its data dir with that provider's home.
   function afterRender(container) {
     onChange = (e) => {
-      const sel = e.target.closest('[data-spec="provider"]');
-      if (!sel) return;
-      const dir = sel.closest(".spec-row")?.querySelector('[data-spec="dir"]');
-      const homes = Object.values(schema.provider_homes || {});
-      if (dir && (!dir.value.trim() || homes.includes(dir.value.trim()))) {
-        dir.value = schema.provider_homes?.[sel.value] || dir.value;
+      // Picking "custom" in the model dropdown reveals the free-text input.
+      const msel = e.target.closest('[data-spec="model-select"]');
+      if (msel) {
+        const custom = msel.closest(".spec-row")?.querySelector('[data-spec="model-custom"]');
+        if (custom) {
+          custom.hidden = msel.value !== CUSTOM;
+          if (!custom.hidden) custom.focus();
+        }
+        return;
       }
+      // Switching provider resets the spec's model + data dir to that provider's
+      // defaults and repaints (the model dropdown's options are provider-specific).
+      const psel = e.target.closest('[data-spec="provider"]');
+      if (!psel) return;
+      const row = psel.closest(".spec-row");
+      const fn = row?.dataset.specFn;
+      const idx = [...container.querySelectorAll(`[data-spec-fn="${fn}"]`)].indexOf(row);
+      if (fn == null || idx < 0) return;
+      syncFromForm();
+      const spec = cfg.runner[fn]?.[idx];
+      if (!spec) return;
+      const provider = psel.value;
+      const homes = Object.values(schema.provider_homes || {});
+      if (!spec.provider_data_dir?.trim() || homes.includes(spec.provider_data_dir.trim())) {
+        spec.provider_data_dir = schema.provider_homes?.[provider] || spec.provider_data_dir;
+      }
+      spec.provider = provider;
+      spec.model = schema.model_defaults?.[provider] || (schema.model_presets?.[provider] || [])[0] || "";
+      paintForm();
     };
     container.addEventListener("change", onChange);
   }

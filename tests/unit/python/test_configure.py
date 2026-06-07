@@ -290,5 +290,42 @@ class IdentityDefaultsTest(unittest.TestCase):
         self.assertEqual(cfg["platform_username"], "bot")
 
 
+class AskModelTest(unittest.TestCase):
+    """The model picker: presets + 'custom' -> free text."""
+
+    def _ask(self, provider, current, answers):
+        ans = iter(answers)
+        with mock.patch.object(configure, "_input", side_effect=lambda _p: next(ans)):
+            return configure._ask_model(provider, current)
+
+    def test_claude_blank_enter_defaults_to_opus(self) -> None:
+        with mock.patch.object(configure, "model_presets", return_value=["opus", "sonnet", "haiku"]):
+            self.assertEqual(self._ask("claude", None, [""]), "opus")
+
+    def test_claude_pick_preset(self) -> None:
+        with mock.patch.object(configure, "model_presets", return_value=["opus", "sonnet", "haiku"]):
+            self.assertEqual(self._ask("claude", None, ["sonnet"]), "sonnet")
+
+    def test_claude_custom_then_free_text(self) -> None:
+        with mock.patch.object(configure, "model_presets", return_value=["opus", "sonnet", "haiku"]):
+            self.assertEqual(self._ask("claude", None, ["custom", "claude-opus-4-8"]), "claude-opus-4-8")
+
+    def test_current_outside_presets_defaults_to_custom_prefilled(self) -> None:
+        with mock.patch.object(configure, "model_presets", return_value=["opus", "sonnet", "haiku"]):
+            # blank enter at the choice -> default 'custom'; blank enter at the
+            # free-text -> the pre-filled current value.
+            self.assertEqual(self._ask("claude", "weird-model", ["", ""]), "weird-model")
+
+    def test_codex_default_is_first_slug(self) -> None:
+        with mock.patch.object(configure, "model_presets", return_value=["gpt-5.4", "gpt-5.4-mini"]):
+            with mock.patch.object(configure, "default_model", return_value="gpt-5.4"):
+                self.assertEqual(self._ask("codex", None, [""]), "gpt-5.4")
+
+    def test_no_presets_falls_back_to_free_text(self) -> None:
+        with mock.patch.object(configure, "model_presets", return_value=[]):
+            with mock.patch.object(configure, "default_model", return_value=""):
+                self.assertEqual(self._ask("codex", None, ["my-slug"]), "my-slug")
+
+
 if __name__ == "__main__":
     unittest.main()
