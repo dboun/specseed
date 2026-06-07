@@ -171,10 +171,59 @@ def _splice_block(existing: str, block: str) -> str:
     return block + "\n\n" + existing
 
 
-def scaffold_target(repo_root: str | Path, specseed_dir: str, primary_branch: str = "main") -> dict:
-    """Do all three: git, instruction files, router block. Best-effort."""
-    return {
+def repo_gitignore_file(repo_root: str | Path) -> Path:
+    return Path(repo_root) / ".gitignore"
+
+
+def ensure_repo_gitignored(repo_root: str | Path, specseed_dir: str | Path) -> Path | None:
+    """Append the specseed dir to the repo .gitignore, unless already listed.
+
+    The specseed dir holds storage (dbs, tokens, logs) + the generated spec; none
+    of it belongs in the target's history. Best-effort and idempotent. Returns the
+    .gitignore path (created if needed), or None when the dir is empty/unwritable.
+    """
+    entry = Path(specseed_dir).as_posix().strip("/")
+    if not entry:
+        return None
+    entry = f"{entry}/"
+    p = repo_gitignore_file(repo_root)
+    existing = ""
+    try:
+        existing = p.read_text(encoding="utf-8")
+    except OSError:
+        pass
+    normalized = {line.strip().strip("/") for line in existing.splitlines()}
+    if entry.strip("/") in normalized:
+        return p
+    sep = "" if existing == "" or existing.endswith("\n\n") else ("\n" if existing.endswith("\n") else "\n\n")
+    try:
+        with p.open("a", encoding="utf-8") as fh:
+            fh.write(f"{sep}{entry}\n")
+    except OSError:
+        return None
+    return p
+
+
+def scaffold_target(
+    repo_root: str | Path,
+    specseed_dir: str,
+    primary_branch: str = "main",
+    ignore_specseed: bool = True,
+) -> dict:
+    """Do all four: git, instruction files, router block, repo .gitignore.
+
+    ``ignore_specseed`` (default on) adds ``<specseed_dir>/`` to the target's
+    .gitignore. This runs on EVERY entry path (configure / add / startup repair),
+    so a repo registered without the interactive flow still gets its storage and
+    secrets kept out of git. Best-effort throughout.
+    """
+    out = {
         "git": ensure_git_repo(repo_root, primary_branch),
         "instructions": [str(p) for p in write_instruction_files(repo_root, specseed_dir)],
         "router": [str(p) for p in ensure_router_block(repo_root, specseed_dir)],
+        "gitignore": None,
     }
+    if ignore_specseed:
+        gi = ensure_repo_gitignored(repo_root, specseed_dir)
+        out["gitignore"] = str(gi) if gi is not None else None
+    return out

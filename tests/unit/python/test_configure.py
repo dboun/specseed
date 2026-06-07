@@ -60,6 +60,24 @@ class ConfigureSpecseedDirTest(unittest.TestCase):
             self.assertEqual(cfg["specseed_dir"], "seedmeta")
             self.assertIn("seedmeta/", (root / ".gitignore").read_text(encoding="utf-8"))
 
+    def test_defaults_path_gitignores_specseed_dir(self) -> None:
+        # Non-interactive path (the one `add` uses): .gitignore must still be
+        # written, since storage holds dbs/tokens/logs. Regression for the bug
+        # where add-then-run never ignored the specseed dir.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            storage = root / ".specseed" / "storage"
+            old_cwd = Path.cwd()
+            try:
+                os.chdir(root)
+                rc = configure.run_defaults(storage)
+            finally:
+                os.chdir(old_cwd)
+            self.assertEqual(rc, 0)
+            cfg = json.loads((storage / "configuration.json").read_text(encoding="utf-8"))
+            self.assertTrue(cfg["gitignore_specseed_dir"])
+            self.assertIn(".specseed/", (root / ".gitignore").read_text(encoding="utf-8"))
+
     def test_abort_does_not_gitignore_specseed_dir(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

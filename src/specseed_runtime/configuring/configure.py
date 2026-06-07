@@ -185,8 +185,12 @@ def gitignore_file(storage):
     return Path(storage) / ".gitignore"
 
 
-def repo_gitignore_file(repo_root):
-    return Path(repo_root) / ".gitignore"
+# Repo-.gitignore helpers live in scaffold.py now (so every entry path - configure,
+# add, startup repair - ignores the specseed dir). Re-exported here for callers/tests.
+from specseed_runtime.configuring.scaffold import (  # noqa: E402
+    ensure_repo_gitignored,
+    repo_gitignore_file,
+)
 
 
 def load_token(storage):
@@ -214,27 +218,6 @@ def ensure_gitignored(storage, entry="token_remote.txt"):
     except OSError:
         pass
     if entry in (line.strip() for line in existing.splitlines()):
-        return p
-    sep = "" if existing == "" or existing.endswith("\n\n") else ("\n" if existing.endswith("\n") else "\n\n")
-    with p.open("a", encoding="utf-8") as fh:
-        fh.write(f"{sep}{entry}\n")
-    return p
-
-
-def ensure_repo_gitignored(repo_root, specseed_rel):
-    """Append the specseed dir to the repo .gitignore, unless already listed."""
-    entry = specseed_rel.as_posix().strip("/")
-    if not entry:
-        return None
-    entry = f"{entry}/"
-    p = repo_gitignore_file(repo_root)
-    existing = ""
-    try:
-        existing = p.read_text(encoding="utf-8")
-    except OSError:
-        pass
-    normalized = {line.strip().strip("/") for line in existing.splitlines()}
-    if entry.strip("/") in normalized:
         return p
     sep = "" if existing == "" or existing.endswith("\n\n") else ("\n" if existing.endswith("\n") else "\n\n")
     with p.open("a", encoding="utf-8") as fh:
@@ -278,6 +261,9 @@ def default_agent_gates():
 def default_config():
     return {
         "specseed_dir": DEFAULT_SPECSEED_DIR,
+        # Add <specseed_dir>/ to the target's .gitignore (storage holds dbs, tokens,
+        # logs; spec is generated). On by default; every entry path honours it.
+        "gitignore_specseed_dir": True,
         # The integration branch work merges into. "primary branch" = where changes
         # go; default main (or master if that is the repo's branch).
         "specseed_primary_branch": DEFAULT_PRIMARY_BRANCH,
@@ -483,31 +469,41 @@ def write_config_files(
     token=None,
     repo_root=None,
     specseed_rel=None,
-    ignore_specseed=False,
+    ignore_specseed=None,
 ):
     """Persist config/remote/token files using configure.py's file policy.
 
     remote.json is ALWAYS written now (it holds the enabled+provider choice). The
     token is only written when the remote is enabled and a token was supplied.
+
+    ``ignore_specseed`` records the human's "ignore the specseed dir" choice into
+    ``cfg["gitignore_specseed_dir"]`` (None = keep whatever the config already
+    holds, default True). The actual .gitignore edit happens in scaffold_target so
+    EVERY entry path (add / startup, not just interactive configure) applies it.
     """
+    if ignore_specseed is not None:
+        cfg["gitignore_specseed_dir"] = bool(ignore_specseed)
+    do_ignore = cfg.get("gitignore_specseed_dir", True)
     written = {}
     written["config"] = _write_json(config_file(storage), cfg)
-    if ignore_specseed and repo_root is not None and specseed_rel is not None:
-        gitignore = ensure_repo_gitignored(repo_root, Path(specseed_rel))
-        if gitignore is not None:
-            written["repo_gitignore"] = gitignore
     written["remote"] = _write_json(remote_file(storage), remote)
     if remote.get("enabled") and token:
         written["token"] = write_token(storage, token)
         written["storage_gitignore"] = ensure_gitignored(storage)
     # Git is mandatory + the engine is off-limits: init a non-git target, give the
-    # primary branch a root commit, and drop the identity guardrails (idempotent).
+    # primary branch a root commit, drop the identity guardrails, and (when on)
+    # gitignore the specseed dir. All idempotent.
     if repo_root is not None:
         specseed_dir = cfg.get("specseed_dir") or (
             specseed_rel.as_posix() if specseed_rel is not None else DEFAULT_SPECSEED_DIR
         )
         primary_branch = cfg.get("specseed_primary_branch") or DEFAULT_PRIMARY_BRANCH
-        written["scaffold"] = scaffold.scaffold_target(repo_root, specseed_dir, primary_branch)
+        result = scaffold.scaffold_target(
+            repo_root, specseed_dir, primary_branch, ignore_specseed=do_ignore
+        )
+        written["scaffold"] = result
+        if result.get("gitignore"):
+            written["repo_gitignore"] = Path(result["gitignore"])
     return written
 
 
@@ -913,7 +909,8 @@ def section_interval(cfg):
 # --------------------------------------------------------------------------- #
 def summary_lines(cfg, remote, token):
     L = []
-    L.append(f"specseed dir: {cfg.get('specseed_dir') or DEFAULT_SPECSEED_DIR}")
+    L.append(f"specseed dir: {cfg.get('specseed_dir') or DEFAULT_SPECSEED_DIR}"
+             f" (gitignored: {cfg.get('gitignore_specseed_dir', True)})")
     primary_branch = cfg.get("specseed_primary_branch") or DEFAULT_PRIMARY_BRANCH
     if remote.get("enabled"):
         L.append(f"remote: {remote.get('provider')} mirror — repo={remote.get('repo') or '?'}, "

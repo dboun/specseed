@@ -93,5 +93,40 @@ class RouterBlockTest(unittest.TestCase):
         self.assertTrue((self.root / "CLAUDE.md").exists())
 
 
+class RepoGitignoreTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+
+    def test_adds_entry_and_is_idempotent(self) -> None:
+        p = scaffold.ensure_repo_gitignored(self.root, ".specseed")
+        self.assertEqual(p, self.root / ".gitignore")
+        self.assertIn(".specseed/", p.read_text(encoding="utf-8"))
+        # twice = no duplicate line
+        scaffold.ensure_repo_gitignored(self.root, ".specseed")
+        self.assertEqual(p.read_text(encoding="utf-8").count(".specseed/"), 1)
+
+    def test_preserves_existing_gitignore_content(self) -> None:
+        gi = self.root / ".gitignore"
+        gi.write_text("*.pyc\n", encoding="utf-8")
+        scaffold.ensure_repo_gitignored(self.root, "seedmeta")
+        text = gi.read_text(encoding="utf-8")
+        self.assertIn("*.pyc", text)
+        self.assertIn("seedmeta/", text)
+
+    @unittest.skipUnless(_HAS_GIT, "git not available")
+    def test_scaffold_target_ignores_by_default(self) -> None:
+        result = scaffold.scaffold_target(self.root, ".specseed", "main")
+        self.assertEqual(result["gitignore"], str(self.root / ".gitignore"))
+        self.assertIn(".specseed/", (self.root / ".gitignore").read_text(encoding="utf-8"))
+
+    @unittest.skipUnless(_HAS_GIT, "git not available")
+    def test_scaffold_target_skips_ignore_when_off(self) -> None:
+        result = scaffold.scaffold_target(self.root, ".specseed", "main", ignore_specseed=False)
+        self.assertIsNone(result["gitignore"])
+        self.assertFalse((self.root / ".gitignore").exists())
+
+
 if __name__ == "__main__":
     unittest.main()
