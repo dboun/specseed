@@ -260,6 +260,25 @@ class SchedulerTest(unittest.TestCase):
         self.assertEqual(self.db.get_task(task["task_id"])["status"], "pending")
         self.assertGreaterEqual(len(runner.calls), 1)
 
+    # -- dependency-gate requeue delay ----------------------------------- #
+    def test_requeue_with_delay_sets_future_not_before(self) -> None:
+        sched = self._scheduler()
+        self.db.enqueue("handle_label_added", post_id="1", payload={})
+        task = self.db.claim_next()
+        sched._requeue_with_delay(task["task_id"], 120)
+        row = self.db.get_task(task["task_id"])
+        self.assertEqual(row["status"], "pending")
+        self.assertIsNotNone(row["not_before"])  # delayed re-check, not immediate
+
+    def test_requeue_with_no_delay_is_immediate(self) -> None:
+        sched = self._scheduler()
+        self.db.enqueue("handle_label_added", post_id="1", payload={})
+        task = self.db.claim_next()
+        sched._requeue_with_delay(task["task_id"], None)
+        row = self.db.get_task(task["task_id"])
+        self.assertEqual(row["status"], "pending")
+        self.assertIsNone(row["not_before"])
+
     # -- out-of-band control file (CLI / web service) -------------------- #
     def test_control_file_drives_state_and_heartbeat(self) -> None:
         from specseed_runtime.executing import runner_control

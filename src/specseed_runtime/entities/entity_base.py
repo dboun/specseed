@@ -19,12 +19,44 @@ Only Python stdlib is used.
 
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass, field
 from typing import ClassVar, Optional
 
 
 TIER_LABEL_PREFIX = "tier:"
 STATUS_LABEL_PREFIX = "status:"
+
+# Dependencies are written in the post body (remote-posts.md), e.g.
+#   <!-- Ticket: #41   Depends on: #61, #62 -->
+# or a plain "Depends on: #61" line. We extract the `#NN` ids after the phrase.
+_DEPENDS_ON_RE = re.compile(r"depends\s+on\s*:?\s*(.+)", re.IGNORECASE)
+_ID_TOKEN_RE = re.compile(r"#\s*([0-9]+|[A-Za-z]+-[0-9]+)")
+
+
+def parse_depends_on(body: Optional[str]) -> list[str]:
+    """Extract dependency post ids from a post body.
+
+    Reads every ``Depends on: ...`` segment (HTML comment or plain line) and pulls
+    the ``#NN`` / ``#FEAT-0001`` ids after it, up to the end of that segment
+    (newline or the closing ``-->``). Returns ids without the ``#``, de-duped,
+    order preserved. Empty when there are none.
+    """
+    if not body:
+        return []
+    ids: list[str] = []
+    for m in _DEPENDS_ON_RE.finditer(body):
+        segment = m.group(1)
+        # stop at the comment close or end of line - don't bleed into later text
+        for stop in ("-->", "\n"):
+            idx = segment.find(stop)
+            if idx != -1:
+                segment = segment[:idx]
+        for tok in _ID_TOKEN_RE.findall(segment):
+            tok = tok.strip()
+            if tok and tok not in ids:
+                ids.append(tok)
+    return ids
 
 # The canonical work vocabulary actually seeded on the tracker (see
 # tracking/supported_values.py, tracking/populate_defaults.py and

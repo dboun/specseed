@@ -15,7 +15,7 @@ from pathlib import Path
 import threading
 from typing import Any, Optional
 
-from specseed_runtime.entities.entity_base import Entity
+from specseed_runtime.entities.entity_base import Entity, parse_depends_on
 from specseed_runtime.executing.agent_runner import (
     AgentRunner,
     DEFAULT_AGENT_TIMEOUT_S,
@@ -71,5 +71,8 @@ def load_entity(ctx: ExecutionContext, post_id: Optional[str]) -> tuple[Optional
     # Attach entry-level reactions so the approval system can read a 👍/👎 on the
     # post itself (state_machines.base.approved_by / rejected_by).
     entity.reactions = list(getattr(details, "reactions", []) or [])
+    # Dependencies are body links (remote-posts.md); parse them so the dispatcher
+    # can hold an issue until the issues it depends on are done.
+    entity.depends_on = parse_depends_on(getattr(details, "body", None))
     comments = list(getattr(details, "comments", []) or [])
     return entity, comments

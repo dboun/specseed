@@ -89,6 +89,9 @@ class HandlerOutcome:
     error: Optional[str] = None
     detail: str = ""
     retryable: bool = False
+    # When requeued, delay re-running by this many seconds (db not_before). Used by
+    # the dependency gate to re-check a held issue next poll instead of busy-looping.
+    requeue_after_s: Optional[float] = None
     # Provider quota hit (every runner spec quota-blocked). The scheduler opens a
     # circuit breaker: requeue this task, park the loop until ``quota_until``, and
     # do NOT run failure recovery (no error post, no resolver - it shares the quota).
@@ -664,6 +667,32 @@ def _merge_done_issue(ctx: ExecutionContext, entity: Any, branch: Optional[str],
     return "merge conflict on {0} unresolved; aborted, branch left for a human".format(branch)
 
 
+def _unmet_dependencies(ctx: ExecutionContext, entity: Any) -> list[tuple[str, str]]:
+    """Issue deps (body ``Depends on: #NN``) that are not yet ``done``.
+
+    Returns ``[(dep_id, status)]`` for each blocking dependency. Only numeric
+    provider-id deps are enforced (the remote-posts convention); a dep we cannot
+    resolve in the local mirror counts as not-done (likely just not synced yet) so
+    we wait rather than race ahead. Non-numeric (human-id) tokens are skipped.
+    """
+    unmet: list[tuple[str, str]] = []
+    for dep in getattr(entity, "depends_on", []) or []:
+        if not str(dep).isdigit():
+            continue
+        dep_entity, _ = context_mod.load_entity(ctx, str(dep))
+        status = getattr(dep_entity, "status", None) if dep_entity else None
+        if status != "done":
+            unmet.append((str(dep), status or "unknown"))
+    return unmet
+
+
+def _poll_interval_s(ctx: ExecutionContext) -> float:
+    try:
+        return float((getattr(ctx, "config", {}) or {}).get("poll_interval_seconds") or 45)
+    except (TypeError, ValueError):
+        return 45.0
+
+
 def _run_work(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
     """Common path for every work handler: load entity, judge state, run agent."""
     post_id = task.get("post_id")
@@ -797,6 +826,26 @@ def _run_work(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
                 detail=detail,
             )
             return HandlerOutcome(success=True, detail=detail)
+
+    # Dependency gate: hold an issue until the issues it depends on are done. Body
+    # links carry deps (remote-posts.md). Requeue with a poll-interval delay so the
+    # held issue is re-checked next poll (no busy loop), instead of running early
+    # and clobbering shared foundations a dependency was meant to lay down first.
+    if intent == AgentIntent.IMPLEMENT:
+        unmet = _unmet_dependencies(ctx, entity)
+        if unmet:
+            detail = "held: waiting on {0}".format(
+                ", ".join("#{0}({1})".format(d, s) for d, s in unmet)
+            )
+            platform_log.log_event(
+                "work_held_on_deps",
+                task_id=task.get("task_id"),
+                post_id=post_id,
+                unmet=[d for d, _ in unmet],
+            )
+            return HandlerOutcome(
+                success=True, requeue=True, requeue_after_s=_poll_interval_s(ctx), detail=detail
+            )
 
     if intent == AgentIntent.SPEC_CHANGE and _has_pending_spec_change_run(ctx, post_id):
         platform_log.log_event(

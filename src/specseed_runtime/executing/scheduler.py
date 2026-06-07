@@ -363,6 +363,18 @@ class Scheduler:
             quota_until=outcome.quota_until,
         )
 
+    def _requeue_with_delay(self, task_id: int, delay_s: Optional[float]) -> None:
+        """Requeue a task, optionally not before ``delay_s`` from now (the
+        dependency gate uses this to re-check a held issue next poll, not at once)."""
+        not_before = None
+        if delay_s and delay_s > 0:
+            nxt = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(seconds=delay_s)
+            not_before = nxt.isoformat().replace("+00:00", "Z")
+        try:
+            self.db.requeue(task_id, not_before=not_before) if not_before else self.db.requeue(task_id)
+        except TypeError:  # a db double without not_before support
+            self.db.requeue(task_id)
+
     def _quota_park(self, quota_until: Optional[str]) -> tuple[float, str]:
         """Return (park_seconds, not_before_iso) from an optional ISO reset hint."""
         from specseed_runtime.executing.quota import DEFAULT_PARK_S, MIN_PARK_S
@@ -541,7 +553,7 @@ class Scheduler:
             if getattr(outcome, "quota", False):
                 self._open_quota_circuit(task_id, outcome)
             else:
-                self.db.requeue(task_id)
+                self._requeue_with_delay(task_id, getattr(outcome, "requeue_after_s", None))
             platform_log.log_event(
                 "task_requeued",
                 task_id=task_id,

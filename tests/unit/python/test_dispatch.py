@@ -613,6 +613,42 @@ from specseed_runtime.executing import git_ops as _git_ops
 _HAS_GIT = shutil.which("git") is not None
 
 
+class DependencyGateTest(DispatchTestBase):
+    """An issue is held until the issues it depends on are done."""
+
+    def _seed_with_body(self, title, labels, body):
+        for label in labels:
+            self.local.create_label(label)
+        return self.local.add_entry(title, body=body, labels=labels).data.id
+
+    def test_held_while_dependency_not_done(self) -> None:
+        dep = self._seed_with_body("Dep", ["tier:issue", "status:todo"], "")
+        issue = self._seed_with_body(
+            "FEAT-0002 Dependent", ["tier:issue", "status:todo"],
+            "Depends on: #{0}".format(dep),
+        )
+        out = dispatch(
+            self.ctx,
+            {"action": "handle_label_added", "post_id": str(issue), "payload": {"label": "status:todo"}},
+        )
+        self.assertTrue(out.requeue)
+        self.assertIn("held", out.detail)
+        self.assertEqual(len(self.runner.calls), 0)  # agent never ran
+
+    def test_runs_when_dependency_done(self) -> None:
+        dep = self._seed_with_body("Dep", ["tier:issue", "status:done"], "")
+        issue = self._seed_with_body(
+            "FEAT-0002 Dependent", ["tier:issue", "status:todo"],
+            "Depends on: #{0}".format(dep),
+        )
+        out = dispatch(
+            self.ctx,
+            {"action": "handle_label_added", "post_id": str(issue), "payload": {"label": "status:todo"}},
+        )
+        self.assertFalse(out.requeue)
+        self.assertEqual(len(self.runner.calls), 1)  # dep done -> agent ran
+
+
 class _FileWritingRunner(FakeAgentRunner):
     """Fake runner that writes a file into cwd (simulating an agent's edits) then
     returns the given result."""
