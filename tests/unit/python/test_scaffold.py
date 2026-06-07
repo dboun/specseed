@@ -61,6 +61,10 @@ class InstructionFilesTest(unittest.TestCase):
         )
         body = (self.root / ".specseed" / "AGENTS_INSTRUCTIONS_IMPL.md").read_text(encoding="utf-8")
         self.assertIn("OFF-LIMITS", body)
+        # repo orientation: read the spec first, vision before sad
+        self.assertIn(".specseed/spec/vision.md", body)
+        self.assertIn(".specseed/spec/sad.md", body)
+        self.assertLess(body.index("vision.md"), body.index("sad.md"))
 
 
 class RouterBlockTest(unittest.TestCase):

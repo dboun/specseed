@@ -14,6 +14,7 @@ from specseed_runtime.executing.permissions import (
 )
 from specseed_runtime.executing.prompts import (
     build_implement_prompt,
+    build_review_prompt,
     render_action_gates,
     render_git_policy,
 )
@@ -133,6 +134,16 @@ class RenderActionGatesTest(unittest.TestCase):
         self.assertIn("Action gates", prompt)
         for category in AGENT_CATEGORIES:
             self.assertIn(category, prompt)
+
+    def test_implement_prompt_points_at_vision_and_sad(self) -> None:
+        prompt = build_implement_prompt(_Entity(), _Ctx({"specseed_dir": ".specseed"}))
+        self.assertIn(".specseed/spec/vision.md", prompt)
+        self.assertIn(".specseed/spec/sad.md", prompt)
+
+    def test_review_prompt_points_at_vision_and_sad(self) -> None:
+        prompt = build_review_prompt(_Entity(), _Ctx({"specseed_dir": ".specseed"}))
+        self.assertIn(".specseed/spec/vision.md", prompt)
+        self.assertIn(".specseed/spec/sad.md", prompt)
 
 
 class _GitCtx:

@@ -84,18 +84,27 @@ def ensure_git_repo(repo_root: str | Path, primary_branch: str = "main") -> list
 
 
 def _instruction_body(repo_root: Path, specseed_dir: str, kind: str) -> str:
+    spec = f"{specseed_dir}/spec"
     return (
         f"# specseed agent rules ({kind})\n\n"
         "**Your target is THIS repository** (the directory this file's repo root lives in). "
-        "Build only what the spec under "
-        f"`{specseed_dir}/spec/` describes, here, scoped to the issue you were given.\n\n"
+        f"Build only what the spec under `{spec}/` describes, here, scoped to the issue you "
+        "were given.\n\n"
+        "**Read the spec FIRST, in this order, before you touch anything** (saves you "
+        "re-deriving the project cold every run):\n"
+        f"1. `{spec}/vision.md` - what this project is, who it serves, why it exists.\n"
+        f"2. `{spec}/sad.md` - system architecture: the shape, components, and the "
+        "authoritative project layout. Match it; do not invent your own directory structure.\n"
+        f"3. The SDD/SRS for the area you are touching (`{spec}/*-sdd.md`, `{spec}/*-srs.md`) "
+        f"plus `{spec}/reqs.json` and `{spec}/adr.csv` for decisions already made.\n"
+        "Read only what is relevant to your issue past step 2; do not boil the ocean.\n\n"
         "**The specseed engine is OFF-LIMITS.** The `specseed_runtime` package is on your "
         "PYTHONPATH only as read-only tooling that drives you. NEVER create, edit, move, or "
         "delete anything under it, the specseed engine checkout, or anywhere outside this "
         "repository. If a task seems to ask you to change the engine, it does not - it means "
         "build the equivalent in THIS repo.\n\n"
         "**An empty or near-empty target at the start is normal.** Do not go looking for an "
-        "existing app to modify; create it.\n\n"
+        "existing app to modify; create it - following the layout the spec defines.\n\n"
         "**Git:** work on a branch forked from the primary branch; never commit straight onto it. "
         "The runtime never runs git for you - you do.\n"
     )
