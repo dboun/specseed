@@ -49,7 +49,7 @@ SPECSEED_CLI = ENGINE_ROOT / "src" / "specseed"
 DATA = Path(__file__).resolve().parent / "data"
 SCRIPT = json.loads((DATA / "fake_agent" / "script.json").read_text(encoding="utf-8"))
 
-DRAFT_TITLE = "Draft: describe what you want specseed to do"
+DRAFT_TITLE = "Describe what you want specseed to do"
 BOOTSTRAP_BODY = (
     "# Bootstrap: taskling\n\n"
     "Build a tiny todo CLI: capture tasks, list them, mark done, remove. "

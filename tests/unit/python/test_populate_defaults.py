@@ -111,6 +111,34 @@ class PopulateDefaultsTest(unittest.TestCase):
         self.assertNotIn("Current sprint", titles)
         self.assertEqual(self.entry("CURRENT SPRINT").id, legacy_id)  # same post, renamed
 
+    def test_legacy_draft_post_renamed_not_duplicated(self) -> None:
+        from specseed_runtime.tracking.populate_defaults import LEGACY_BODY_REFRESH
+
+        old_body = LEGACY_BODY_REFRESH[FIRST_ADAPT_DRAFT_TITLE][0]
+        legacy_id = self.remote.add_entry(
+            "Draft: describe what you want specseed to do",
+            body=old_body,
+            labels=["draft", "spec-change:adapt", "spec-change:status:open"],
+        ).data.id
+        populate_defaults("remote_local", tracker=self.remote)
+        titles = [entry.title for entry in self.remote.list_entries().data]
+        self.assertIn(FIRST_ADAPT_DRAFT_TITLE, titles)
+        self.assertNotIn("Draft: describe what you want specseed to do", titles)
+        self.assertEqual(self.entry(FIRST_ADAPT_DRAFT_TITLE).id, legacy_id)  # same post, renamed
+        # old default body swapped for the current one
+        body = self.remote.get_entry(legacy_id).data.body
+        self.assertIn("Describe in a comment", body)
+        self.assertNotIn("Draft adapt request", body)
+
+    def test_legacy_draft_post_custom_body_preserved(self) -> None:
+        legacy_id = self.remote.add_entry(
+            "Draft: describe what you want specseed to do",
+            body="my own words",
+            labels=["draft", "spec-change:adapt", "spec-change:status:open"],
+        ).data.id
+        populate_defaults("remote_local", tracker=self.remote)
+        self.assertEqual(self.remote.get_entry(legacy_id).data.body, "my own words")
+
     def test_second_run_is_idempotent(self) -> None:
         first = populate_defaults("remote_local", tracker=self.remote)
         second = populate_defaults("remote_local", tracker=self.remote)

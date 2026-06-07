@@ -180,18 +180,32 @@ CURRENT_SPRINT_BODY = (
     "open that post with a short help request.\n"
 )
 
-FIRST_ADAPT_DRAFT_TITLE = "Draft: describe what you want specseed to do"
+FIRST_ADAPT_DRAFT_TITLE = "Describe what you want specseed to do"
 FIRST_ADAPT_DRAFT_BODY = (
-    "# Draft adapt request\n\n"
-    "Describe what you want to build, change, or plan next. Keep the `draft` label "
-    "while you are still editing.\n\n"
-    "When this is ready, remove the `draft` label and save the post. Specseed will "
-    "run `spec-change:adapt` from this request.\n"
+    "Describe in a comment what you want to build, change, or plan next.\n\n"
+    "When this is ready, remove the `draft` label. Specseed will run "
+    "`spec-change:adapt` from this request.\n"
 )
 
 # Permanent posts whose title changed across versions; renamed in place at seed
 # time so existing trackers don't strand a duplicate under the old title.
-LEGACY_POST_RENAMES = {"Current sprint": "CURRENT SPRINT"}
+LEGACY_POST_RENAMES = {
+    "Current sprint": "CURRENT SPRINT",
+    "Draft: describe what you want specseed to do": FIRST_ADAPT_DRAFT_TITLE,
+}
+
+# Old default bodies rewritten in place at seed time. Only an EXACT match of the
+# old default is replaced - a user-edited body is never clobbered.
+LEGACY_BODY_REFRESH = {
+    FIRST_ADAPT_DRAFT_TITLE: (
+        "# Draft adapt request\n\n"
+        "Describe what you want to build, change, or plan next. Keep the `draft` label "
+        "while you are still editing.\n\n"
+        "When this is ready, remove the `draft` label and save the post. Specseed will "
+        "run `spec-change:adapt` from this request.\n",
+        FIRST_ADAPT_DRAFT_BODY,
+    ),
+}
 
 DEFAULT_POSTS = [
     ("SCHEDULE", SCHEDULE_BODY, ["management"], True),
@@ -253,6 +267,7 @@ def populate_defaults(
         summary["ensured_labels"].append(spec.name)
 
     _rename_legacy_posts(tracker)
+    _refresh_legacy_bodies(tracker)
 
     for title, body, labels, should_pin in DEFAULT_POSTS:
         entry_id, created = _ensure_default_post(tracker, title, body, labels)
@@ -292,6 +307,20 @@ def _rename_legacy_posts(tracker: TrackingBase) -> None:
         legacy = next((entry for entry in entries if entry.title == old), None)
         if legacy is not None:
             _require_ok(tracker.edit_entry(legacy.id, title=new), f"rename {old} -> {new}")
+
+
+def _refresh_legacy_bodies(tracker: TrackingBase) -> None:
+    """Swap an old default body for the current one (idempotent). Bodies the user
+    edited don't match the old default exactly and are left alone."""
+    entries = _entries(tracker)
+    for title, (old_body, new_body) in LEGACY_BODY_REFRESH.items():
+        entry = next((e for e in entries if e.title == title), None)
+        if entry is None:
+            continue
+        detail = tracker.get_entry(entry.id)
+        _require_ok(detail, f"get {title}")
+        if (detail.data.body or "") == old_body:
+            _require_ok(tracker.edit_entry(entry.id, body=new_body), f"refresh body of {title}")
 
 
 def _ensure_default_post(

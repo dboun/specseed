@@ -572,19 +572,40 @@ export function createTracker({ repo, ctx }) {
     );
   }
 
-  // Auto-refresh the list ONLY when it is safe: no drawer open (would clobber a
-  // viewed/edited post), no modal open (new-post form), and the tab is visible.
-  // Single-flight, and it repaints just the list + quick toggles — never the
-  // filter bar — so search text, open dropdowns and scroll are untouched.
+  // Auto-refresh, single-flight, only while the tab is visible and no modal is up.
+  // List view: repaints just the list + quick toggles — never the filter bar — so
+  // search text, open dropdowns and scroll are untouched. Open post: re-fetches it
+  // so new comments/labels show up live (guarded by drawerBusy below).
   let timer = null;
   let polling = false;
+  // A drawer repaint rebuilds its DOM: it would wipe an edit form, a half-typed
+  // comment, and steal focus. Refresh the open post only when none of that is live.
+  function drawerBusy() {
+    if (state.editing) return true;
+    const drawer = document.querySelector("[data-drawer]");
+    if (!drawer) return false;
+    if (drawer.contains(document.activeElement)) return true;
+    return [...drawer.querySelectorAll("input, textarea")].some((el) => el.value.trim());
+  }
   async function autoRefresh() {
-    if (state.external || polling || state.selectedId) return;
+    if (state.external || polling) return;
     if (document.querySelector("[data-modal]") || document.hidden) return;
     polling = true;
     try {
-      await reloadPosts();
-      repaintList();
+      if (state.selectedId) {
+        if (drawerBusy()) return;
+        const id = state.selectedId;
+        const fresh = await api.getPost(repo.id, id);
+        // re-check after the await: the user may have started typing or switched posts
+        if (String(state.selectedId) !== String(id) || drawerBusy()) return;
+        if (JSON.stringify(fresh) !== JSON.stringify(state.selected)) {
+          state.selected = fresh;
+          repaintDrawer();
+        }
+      } else {
+        await reloadPosts();
+        repaintList();
+      }
     } catch {
       /* transient; next tick retries */
     } finally {
