@@ -97,6 +97,31 @@ class RouterBlockTest(unittest.TestCase):
         self.assertTrue((self.root / "CLAUDE.md").exists())
 
 
+class CustomInstructionStubsTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+
+    def test_seeds_four_files(self) -> None:
+        written = scaffold.write_custom_instruction_stubs(self.root, ".specseed")
+        names = {Path(p).name for p in written}
+        self.assertEqual(names, {
+            "CUSTOM_INSTRUCTIONS.md", "CUSTOM_INSTRUCTIONS_IMPL.md",
+            "CUSTOM_INSTRUCTIONS_SPEC.md", "CUSTOM_INSTRUCTIONS_REVIEW.md",
+        })
+
+    def test_never_overwrites_user_content(self) -> None:
+        d = self.root / ".specseed"
+        d.mkdir(parents=True)
+        mine = d / "CUSTOM_INSTRUCTIONS_IMPL.md"
+        mine.write_text("my rules\n", encoding="utf-8")
+        written = scaffold.write_custom_instruction_stubs(self.root, ".specseed")
+        # the existing file is untouched and not reported as written
+        self.assertEqual(mine.read_text(encoding="utf-8"), "my rules\n")
+        self.assertNotIn(str(mine), written)
+
+
 class RepoGitignoreTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()

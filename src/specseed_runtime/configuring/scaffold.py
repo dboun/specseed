@@ -133,6 +133,56 @@ def write_instruction_files(repo_root: str | Path, specseed_dir: str) -> list[Pa
     return written
 
 
+# User-owned custom-instruction files. Unlike the AGENTS_INSTRUCTIONS_* guardrails
+# (engine-owned, overwritten on refresh), these belong to the human: the runtime
+# only seeds an empty stub when absent and NEVER overwrites them. Each is appended
+# verbatim to the matching agent prompt. The "" key is the global file appended to
+# every step.
+CUSTOM_INSTRUCTION_FILES = {
+    "": "CUSTOM_INSTRUCTIONS.md",
+    "implement": "CUSTOM_INSTRUCTIONS_IMPL.md",
+    "spec_change": "CUSTOM_INSTRUCTIONS_SPEC.md",
+    "review": "CUSTOM_INSTRUCTIONS_REVIEW.md",
+}
+
+_CUSTOM_STUB_HEADER = (
+    "<!-- specseed: user-owned. Safe to edit. The runtime appends this file's "
+    "contents to the {scope} agent prompt verbatim, every run. -->\n\n"
+    "# Custom instructions ({scope})\n\n"
+    "Put project-specific guidance for the agent here (conventions, extra steps, "
+    "files to keep in sync, etc.). Leave empty for none.\n\n"
+    "Do NOT restate things specseed already handles - target/engine boundary, git "
+    "branch/commit policy, action gates, the scaffold, or reading the spec. Those "
+    "are injected automatically; duplicating them only adds noise.\n"
+)
+
+
+def write_custom_instruction_stubs(repo_root: str | Path, specseed_dir: str) -> list[Path]:
+    """Seed empty user-owned custom-instruction files, create-if-absent.
+
+    Never overwrites: an existing file (with the human's content) is left alone.
+    Returns the paths newly created.
+    """
+    target_dir = Path(repo_root) / specseed_dir
+    written: list[Path] = []
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return written
+    for scope, fname in CUSTOM_INSTRUCTION_FILES.items():
+        path = target_dir / fname
+        if path.exists():
+            continue
+        try:
+            path.write_text(
+                _CUSTOM_STUB_HEADER.format(scope=scope or "all steps"), encoding="utf-8"
+            )
+            written.append(path)
+        except OSError:
+            pass
+    return written
+
+
 def _router_block(specseed_dir: str) -> str:
     return (
         f"{_ROUTER_START}\n"
@@ -229,6 +279,7 @@ def scaffold_target(
     out = {
         "git": ensure_git_repo(repo_root, primary_branch),
         "instructions": [str(p) for p in write_instruction_files(repo_root, specseed_dir)],
+        "custom_instructions": [str(p) for p in write_custom_instruction_stubs(repo_root, specseed_dir)],
         "router": [str(p) for p in ensure_router_block(repo_root, specseed_dir)],
         "gitignore": None,
     }

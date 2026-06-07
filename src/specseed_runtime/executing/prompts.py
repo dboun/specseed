@@ -165,6 +165,53 @@ def render_identity_rule(ctx: Any, intent: str) -> str:
     )
 
 
+def render_custom_instructions(ctx: Any, intent: str) -> str:
+    """User-owned custom instructions appended to the agent prompt.
+
+    Reads the global ``CUSTOM_INSTRUCTIONS.md`` plus the per-step file for
+    ``intent`` from the target's specseed dir (seeded as empty stubs by
+    scaffold). A pristine, untouched stub is treated as empty and skipped, so a
+    user who set nothing adds nothing. Best-effort: a missing dir/file is silent.
+    """
+    from specseed_runtime.configuring import scaffold
+
+    storage = getattr(ctx, "storage", None)
+    if not storage:
+        return ""
+    base = Path(storage).parent  # <repo>/<specseed_dir>/storage -> specseed dir
+    parts: list[str] = []
+    for scope in ("", intent):
+        fname = scaffold.CUSTOM_INSTRUCTION_FILES.get(scope)
+        if not fname:
+            continue
+        try:
+            text = (base / fname).read_text(encoding="utf-8")
+        except OSError:
+            continue
+        pristine = scaffold._CUSTOM_STUB_HEADER.format(scope=scope or "all steps")
+        if text.strip() == pristine.strip():
+            continue  # untouched stub = no custom instructions
+        # drop the leading specseed HTML-comment marker line if present
+        body = "\n".join(
+            ln for ln in text.splitlines() if not ln.strip().startswith("<!-- specseed:")
+        ).strip()
+        if body:
+            parts.append(body)
+    if not parts:
+        return ""
+    return (
+        "USER CUSTOM INSTRUCTIONS (project-specific; honour these alongside the rules "
+        "above):\n\n" + "\n\n".join(parts)
+    )
+
+
+def _custom_block(ctx: Any, intent: str) -> str:
+    """Custom-instruction block (trailing blank line) or '' when none, for splicing
+    in just before the result-format instructions."""
+    text = render_custom_instructions(ctx, intent)
+    return text + "\n\n" if text else ""
+
+
 def build_spec_change_prompt(route: str, request_id: Any, entity: Any, ctx: Any) -> str:
     """Prompt for the specseed spec-change worker (one route, one request)."""
     specseed_dir = _specseed_dir(ctx)
@@ -188,6 +235,7 @@ def build_spec_change_prompt(route: str, request_id: Any, entity: Any, ctx: Any)
         "clarification round the human has now answered). Re-enqueueing it unchanged is a no-op "
         "and the human gets silence. ALWAYS rewrite plan.json + apply.py for what THIS run "
         "decided (carry forward plan.json bookkeeping like questions/apr), then enqueue.\n\n"
+        + _custom_block(ctx, agent_report.SPEC_CHANGE)
         + agent_report.result_instructions(agent_report.SPEC_CHANGE)
     )
 
@@ -213,6 +261,7 @@ def build_implement_prompt(entity: Any, ctx: Any) -> str:
         + "\n\n"
         + render_action_gates(ctx)
         + "\n\n"
+        + _custom_block(ctx, agent_report.IMPLEMENT)
         + agent_report.result_instructions(agent_report.IMPLEMENT)
     )
 
@@ -321,5 +370,6 @@ def build_review_prompt(entity: Any, ctx: Any) -> str:
         "are met. Do not merge, do not change "
         "workflow labels, and do not approve; the scheduler resolves the outcome "
         "programmatically from your verdict and the configured gates.\n\n"
+        + _custom_block(ctx, agent_report.REVIEW)
         + agent_report.result_instructions(agent_report.REVIEW)
     )
