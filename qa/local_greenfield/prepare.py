@@ -123,10 +123,11 @@ def main(argv: list[str] | None = None) -> int:
         cwd=root,
     )
 
-    print(f"prepared: {instance}")
-    print(f"target: {target}")
-    print("run this to start the runner on it: " + shlex.join([str(specseed), "start", "--target", str(target)]))
-    print("run this to start the ui: " + shlex.join([str(specseed), "serve", "--host", "0.0.0.0"]))
+    print(f"\n> prepared: \t {instance}")
+    print(f"> target: \t {target}\n")
+    print("> run this to start the runner on it: \n\t" + shlex.join([str(specseed), "start", "--target", str(target)]))
+    print("\n> run this to start the ui: \n\t" + shlex.join([str(specseed), "serve", "--host", "0.0.0.0"]))
+    print("")
     return 0
 
 
