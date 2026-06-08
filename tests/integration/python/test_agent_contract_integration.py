@@ -10,6 +10,7 @@ platform_error post or a resolver run. No agents, no network, no tokens.
 
 from __future__ import annotations
 
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -31,6 +32,16 @@ pytestmark = pytest.mark.integration
 class Harness:
     def __init__(self, root: Path, runner, review) -> None:
         cancellation.reset()
+        # Real git repo: the runtime owns git, and a merge gate only opens after the
+        # branch readies (prepare) - so the harness must be a repo. dbs/storage are
+        # gitignored so checkouts don't fight open sqlite handles.
+        (root / ".gitignore").write_text("*.db\n*.db-*\nstorage/\n", encoding="utf-8")
+        subprocess.run(["git", "init"], cwd=str(root), capture_output=True, text=True)
+        subprocess.run(["git", "symbolic-ref", "HEAD", "refs/heads/main"],
+                       cwd=str(root), capture_output=True, text=True)
+        subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                        "commit", "--allow-empty", "-m", "root"],
+                       cwd=str(root), capture_output=True, text=True)
         self.remote = TrackingRemoteLocal(db_path=root / "remote.db", author="alice")
         self.local = TrackingLocal(db_path=root / "local.db", author="agent")
         self.db = Database(db_path=root / "queue.db")

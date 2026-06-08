@@ -343,6 +343,53 @@ def merge_approved_by(
     return _dedupe(authors)
 
 
+def comment_reaction_users(comment: Any, kind: str, config: dict[str, Any]) -> list[str]:
+    """Approver-filtered users who reacted ``kind`` on a SINGLE comment.
+
+    Mirror of :func:`_entity_reaction_users` but scoped to one comment, so a merge
+    gate can read approval off its OWN gate comment instead of a durable post
+    reaction. A reaction on a superseded gate comment never bleeds into a new gate.
+    """
+    is_approver = _approver_predicate(config)
+    users: list[str] = []
+    for reaction in _field(comment, "reactions") or []:
+        if _field(reaction, "kind") != kind:
+            continue
+        for user in _field(reaction, "users") or []:
+            if user and is_approver(user):
+                users.append(str(user))
+    return _dedupe(users)
+
+
+def command_authors_for(
+    conversation: Optional[Iterable[Any]],
+    config: dict[str, Any],
+    target_ids: Iterable[Any],
+    parse_ids,
+) -> list[str]:
+    """Approver-filtered, non-platform authors whose command names one of ``target_ids``.
+
+    Like :func:`_command_authors` but against an EXPLICIT id set (a specific gate's
+    post id + APR id), not the union of every armed id across the post. So a stale
+    ``approve APR-0007`` on an old gate can't satisfy a new ``APR-0008`` gate.
+    """
+    is_approver = _approver_predicate(config)
+    bot_name = platform_username(config)
+    targets = {str(item).casefold() for item in target_ids if item}
+    authors: list[str] = []
+    for item in conversation or []:
+        body = _field(item, "body")
+        author = _field(item, "author")
+        if not body or not author or not is_approver(author):
+            continue
+        if is_platform_comment(author=author, body=body, username=bot_name):
+            continue
+        ids = {item_id.casefold() for item_id in parse_ids(str(body))}
+        if targets & ids:
+            authors.append(str(author))
+    return _dedupe(authors)
+
+
 def evaluate_entity_state(
     entity: Entity,
     config: dict[str, Any],

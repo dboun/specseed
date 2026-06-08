@@ -318,16 +318,35 @@ DONE = the post tells a human something they can act on. End your output with ex
 PLATFORM_ERROR_REPORTED"""
 
 
-def build_merge_conflict_prompt(entity: Any, branch: str, primary: str, files: list, ctx: Any) -> str:
-    """Prompt for resolving merge conflicts after the runtime hit them merging an
-    issue branch into the primary branch. The agent ONLY edits the conflicted
-    files; the runtime started the merge and completes it."""
+def build_merge_conflict_prompt(
+    entity: Any, branch: str, primary: str, files: list, ctx: Any, direction: str = "merge"
+) -> str:
+    """Prompt for resolving git merge conflicts. The agent ONLY edits the conflicted
+    files; the runtime started the merge and completes it.
+
+    ``direction`` says which way the merge runs, so the prompt is accurate:
+    ``"merge"`` = the final issue ``branch`` -> ``primary`` merge; ``"prepare"`` =
+    bringing ``primary`` INTO the issue ``branch`` to ready it before a gate.
+    """
     file_list = "\n".join("  - {0}".format(f) for f in (files or [])) or "  (see `git status`)"
+    if direction == "prepare":
+        situation = (
+            "The runtime is bringing the primary branch `{0}` INTO this issue's branch "
+            "`{1}` for issue {2} ({3!r}) to ready it for a later merge, and hit conflicts. "
+            "The repository is mid-merge on branch `{1}` right now.".format(
+                primary, branch, getattr(entity, "post_id", "?"), _title(entity)
+            )
+        )
+    else:
+        situation = (
+            "The runtime started merging the issue branch `{0}` into `{1}` for issue {2} "
+            "({3!r}) and hit conflicts. The repository is mid-merge right now.".format(
+                branch, primary, getattr(entity, "post_id", "?"), _title(entity)
+            )
+        )
     return (
         render_identity_rule(ctx, agent_report.IMPLEMENT) + "\n\n"
-        + "You are resolving git MERGE CONFLICTS. The runtime started merging the issue "
-        f"branch `{branch}` into `{primary}` for issue {getattr(entity, 'post_id', '?')} "
-        f"({_title(entity)!r}) and hit conflicts. The repository is mid-merge right now.\n\n"
+        + "You are resolving git MERGE CONFLICTS. " + situation + "\n\n"
         "Conflicted files:\n" + file_list + "\n\n"
         "Resolve every conflict by editing the files: keep both sides' intent where they "
         "are compatible, pick the correct result where they are not, and REMOVE all conflict "

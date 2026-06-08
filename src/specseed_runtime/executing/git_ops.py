@@ -173,6 +173,34 @@ def merge(repo_root: str | Path, branch: str, primary: str, message: Optional[st
     return MergeResult(ok=False, error=out.stderr.strip() or "merge failed")
 
 
+def prepare_merge(repo_root: str | Path, branch: str, primary: str) -> MergeResult:
+    """Bring ``primary`` INTO ``branch`` so a later ``branch``->``primary`` merge is clean.
+
+    Checks out ``branch`` and merges ``primary`` onto it. Clean -> ok, repo left back
+    on ``primary`` with the branch now containing primary (ready to merge). Conflict ->
+    ``conflicted``+files, LEFT mid-merge on ``branch`` for a resolver (the caller runs
+    the merge-conflicts agent then ``complete_merge``/``abort_merge``). Any other failure
+    -> ok=False with an error, nothing left half-done.
+
+    This is the readiness step: a gate is only opened once a branch prepares clean, so
+    the human never approves a merge that cannot run.
+    """
+    repo_root = Path(repo_root)
+    co = _run(repo_root, ["checkout", branch])
+    if co.returncode != 0:
+        return MergeResult(ok=False, error=co.stderr.strip() or f"checkout {branch} failed")
+    msg = f"specseed: merge {primary} into {branch} (prepare)"
+    out = _run(repo_root, [*_GIT_ENV_ARGS, "merge", "--no-ff", "-m", msg, primary])
+    if out.returncode == 0:
+        _run(repo_root, ["checkout", primary])  # leave repo on primary, branch ready
+        return MergeResult(ok=True, actions=[f"prepare {primary} -> {branch}"])
+    files = unmerged_files(repo_root)
+    if files:
+        return MergeResult(ok=False, conflicted=True, files=files)
+    _run(repo_root, ["merge", "--abort"])
+    return MergeResult(ok=False, error=out.stderr.strip() or "prepare merge failed")
+
+
 def _has_conflict_markers(path: Path) -> bool:
     try:
         text = path.read_text(encoding="utf-8", errors="ignore")

@@ -151,6 +151,19 @@ class _Base(unittest.TestCase):
     def _remote_details(self, eid):
         return self.remote.get_entry(eid).data
 
+    def _gate_comment(self, marker, apr="APR-0001", thumbs=(), heart=(), down=(), author="specseed"):
+        """A platform gate comment (its marker + APR token) with reactions ON it -
+        the merge-gate approval is read from this comment, not the post."""
+        reactions = []
+        if thumbs:
+            reactions.append({"kind": "thumbs_up", "users": list(thumbs)})
+        if heart:
+            reactions.append({"kind": "heart", "users": list(heart)})
+        if down:
+            reactions.append({"kind": "thumbs_down", "users": list(down)})
+        body = "gate\n{0}\n<!-- {1} {2} -->".format(marker, advance.APPROVAL_REQUEST_MARKER, apr)
+        return {"id": apr, "author": author, "body": body, "reactions": reactions}
+
 
 class ImplementTransitionTest(_Base):
     def test_implement_no_review_closes_done(self) -> None:
@@ -379,50 +392,106 @@ class ApprovalGateTest(_Base):
         self.assertTrue(t.merge)
         self.assertIn("merging", t.detail)
 
-    def test_completion_gate_opens_merge_gate_when_gated(self) -> None:
-        # merge gated: 👍 approves the WORK only and opens a pure merge gate (the
-        # merge becomes its own follow-up approval). No double approval - one 👍 here,
-        # one on the merge gate. Stays awaiting_approval; nothing merges yet.
-        eid = self._seed("Gate", ["issue", "issue:status:awaiting_approval"],
-                         comments=self._REVIEWED)
+    def test_combined_gate_work_approve_readies_merge(self) -> None:
+        # below-bar + merge gated = COMBINED gate. 👍 ON the gate comment approves the
+        # WORK and asks dispatch to ready a follow-up merge gate (prepare). No naked
+        # merge; a standing post 👍 would be inert.
+        eid = self._seed("Gate", ["issue", "issue:status:awaiting_approval"])
         ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
-        entity, conversation = _load(ctx, eid)
-        t = advance.resolve_approval(ctx, entity, _SR(["alice"]), conversation)
+        entity, _ = _load(ctx, eid)
+        conv = [self._gate_comment(advance.WORK_MERGE_GATE_MARKER, thumbs=["alice"])]
+        t = advance.resolve_approval(ctx, entity, _SR([]), conv, _REACT)
+        self.assertTrue(t.prepare)
         self.assertFalse(t.merge)
-        self.assertIn("merge gate", t.detail)
-        self.assertIn("issue:status:awaiting_approval", self._remote_labels(eid))
-        bodies = "\n".join(c.body for c in self._remote_details(eid).comments)
-        self.assertIn(advance.MERGE_GATE_MARKER, bodies)
+        self.assertIn("readying merge", t.detail)
 
     def test_combined_gate_heart_approves_and_merges(self) -> None:
-        # merge gated + work needs sign-off: ❤️ approves AND merges in one step.
-        eid = self._seed("Gate", ["issue", "issue:status:awaiting_approval"],
-                         comments=self._REVIEWED)
+        # ❤️ ON the combined gate comment approves the work AND readies+merges (prepare
+        # then merge in one step).
+        eid = self._seed("Gate", ["issue", "issue:status:awaiting_approval"])
         ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
-        entity, conversation = _load(ctx, eid)
-        t = advance.resolve_approval(ctx, entity, _SR(merge_approved_by=["alice"]), conversation)
+        entity, _ = _load(ctx, eid)
+        conv = [self._gate_comment(advance.WORK_MERGE_GATE_MARKER, heart=["alice"])]
+        t = advance.resolve_approval(ctx, entity, _SR([]), conv, _REACT)
+        self.assertTrue(t.prepare)
         self.assertTrue(t.merge)
-        self.assertIn("merge", t.detail)
+        self.assertIn("merging", t.detail)
 
     def test_pure_merge_gate_approved_signals_merge(self) -> None:
-        # On a pure merge gate (work already accepted) any approval authorizes the
-        # merge; dispatch runs it and closes.
-        eid = self._seed("Gate", ["issue", "issue:status:awaiting_approval"],
-                         comments=["Merge approval\n" + advance.MERGE_GATE_MARKER])
+        # 👍 ON the live pure-merge-gate comment authorizes the merge (re-ready + merge).
+        eid = self._seed("Gate", ["issue", "issue:status:awaiting_approval"])
         ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
-        entity, conversation = _load(ctx, eid)
-        t = advance.resolve_approval(ctx, entity, _SR(["alice"]), conversation)
+        entity, _ = _load(ctx, eid)
+        conv = [self._gate_comment(advance.MERGE_GATE_MARKER, thumbs=["alice"])]
+        t = advance.resolve_approval(ctx, entity, _SR([]), conv, _REACT)
         self.assertTrue(t.merge)
         self.assertIn("merge gate approved", t.detail)
 
-    def test_pure_merge_gate_declined_settles_done_unmerged(self) -> None:
-        # 👎 on a pure merge gate = decline the runtime merge: settle done, branch
-        # left intact for a manual merge. The human owns the branch; not a rework.
-        eid = self._seed("Gate", ["issue", "issue:status:awaiting_approval"],
-                         comments=["Merge approval\n" + advance.MERGE_GATE_MARKER])
+    def test_pure_merge_gate_post_reaction_is_inert(self) -> None:
+        # A 👍 on the POST (state_result), with NO reaction on the gate comment, must
+        # NOT merge - this was the loop's durable re-fire.
+        eid = self._seed("Gate", ["issue", "issue:status:awaiting_approval"])
         ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
-        entity, conversation = _load(ctx, eid)
-        t = advance.resolve_approval(ctx, entity, _SR(rejected_by=["alice"]), conversation, _REACT)
+        entity, _ = _load(ctx, eid)
+        conv = [self._gate_comment(advance.MERGE_GATE_MARKER)]
+        t = advance.resolve_approval(ctx, entity, _SR(["alice"]), conv, _REACT)
+        self.assertFalse(t.merge)
+        self.assertFalse(t.prepare)
+        self.assertIsNone(t.detail)
+
+    def test_stale_gate_comment_reaction_is_inert(self) -> None:
+        # A 👍 left on a SUPERSEDED gate comment (older APR) does not approve the live
+        # gate (the latest gate comment, no reaction).
+        eid = self._seed("Gate", ["issue", "issue:status:awaiting_approval"])
+        ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
+        entity, _ = _load(ctx, eid)
+        old = self._gate_comment(advance.MERGE_GATE_MARKER, apr="APR-0001", thumbs=["alice"])
+        new = self._gate_comment(advance.MERGE_GATE_MARKER, apr="APR-0002")
+        t = advance.resolve_approval(ctx, entity, _SR([]), [old, new], _REACT)
+        self.assertFalse(t.merge)
+        self.assertIsNone(t.detail)
+
+    def test_command_approves_the_live_gate(self) -> None:
+        # `approve <live APR>` from an approver hits the latest gate.
+        eid = self._seed("Gate", ["issue", "issue:status:awaiting_approval"])
+        ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
+        entity, _ = _load(ctx, eid)
+        gate = self._gate_comment(advance.MERGE_GATE_MARKER, apr="APR-0002")
+        cmd = {"author": "alice", "body": "approve APR-0002", "reactions": []}
+        t = advance.resolve_approval(ctx, entity, _SR([]), [gate, cmd], _COMMENT)
+        self.assertTrue(t.merge)
+
+    def test_command_for_superseded_gate_is_inert(self) -> None:
+        # `approve <old APR>` does not approve a newer gate (APR-0002 is live).
+        eid = self._seed("Gate", ["issue", "issue:status:awaiting_approval"])
+        ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
+        entity, _ = _load(ctx, eid)
+        old = self._gate_comment(advance.MERGE_GATE_MARKER, apr="APR-0001")
+        new = self._gate_comment(advance.MERGE_GATE_MARKER, apr="APR-0002")
+        cmd = {"author": "alice", "body": "approve APR-0001", "reactions": []}
+        t = advance.resolve_approval(ctx, entity, _SR([]), [old, new, cmd], _COMMENT)
+        self.assertFalse(t.merge)
+        self.assertIsNone(t.detail)
+
+    def test_open_merge_gate_ready_posts_fresh_gate(self) -> None:
+        eid = self._seed("Gate", ["issue", "issue:status:in_review"])
+        ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
+        entity, _ = _load(ctx, eid)
+        detail = advance.open_merge_gate_ready(ctx, entity)
+        self.assertIn("merge gate", detail)
+        self.assertIn("issue:status:awaiting_approval", self._remote_labels(eid))
+        bodies = "\n".join(c.body for c in self._remote_details(eid).comments)
+        self.assertIn(advance.MERGE_GATE_MARKER, bodies)
+        self.assertIn("APR-0001", bodies)  # first token minted from the storage counter
+
+    def test_pure_merge_gate_declined_settles_done_unmerged(self) -> None:
+        # 👎 ON the pure merge gate comment = decline the runtime merge: settle done,
+        # branch left intact for a manual merge. The human owns the branch; not a rework.
+        eid = self._seed("Gate", ["issue", "issue:status:awaiting_approval"])
+        ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
+        entity, _ = _load(ctx, eid)
+        conv = [self._gate_comment(advance.MERGE_GATE_MARKER, down=["alice"])]
+        t = advance.resolve_approval(ctx, entity, _SR([]), conv, _REACT)
         self.assertFalse(t.merge)
         self.assertIn("unmerged", t.detail)
         self.assertIn("issue:status:done", self._remote_labels(eid))
@@ -513,35 +582,49 @@ class ApprovalGateTest(_Base):
 
 
 class BlockedBypassTest(_Base):
-    def test_approve_forces_merge_auto_on(self) -> None:
-        # merge auto-on: 👍 over a block completes through the same merge as any
-        # finish - advance signals the merge, dispatch runs it and closes.
+    def _approve_cmd(self, eid, verb="approve"):
+        return [{"author": "alice", "body": "{0} {1}".format(verb, eid), "reactions": []}]
+
+    def test_approve_command_forces_merge_auto_on(self) -> None:
+        # merge auto-on: an `approve <id>` COMMAND over a block readies+merges and
+        # closes. A bare reaction no longer clears a block (the loop fix).
         eid = self._seed("Stuck", ["issue", "issue:status:blocked"])
         ctx = self._ctx(self._config(merge=True), FakeAgentRunner(AgentResult(ok=True)))
-        entity, conversation = _load(ctx, eid)
-        t = advance.resolve_blocked(ctx, entity, _SR(["alice"]), conversation, _REACT)
+        entity, _ = _load(ctx, eid)
+        t = advance.resolve_blocked(ctx, entity, _SR([]), self._approve_cmd(eid), _COMMENT)
         self.assertTrue(t.merge)
-        self.assertIn("completing", t.detail)
+        self.assertIn("merging", t.detail)
 
-    def test_approve_over_block_opens_merge_gate_when_gated(self) -> None:
-        # merge gated: 👍 over a block force-approves the work and opens a merge gate
-        # (the override never lands code on primary without a merge sign-off).
+    def test_approve_command_over_block_readies_merge_when_gated(self) -> None:
+        # merge gated: an `approve <id>` command over a block force-approves the work
+        # and readies a merge gate (override never lands code on primary unmerged).
         eid = self._seed("Stuck", ["issue", "issue:status:blocked"])
         ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
-        entity, conversation = _load(ctx, eid)
-        t = advance.resolve_blocked(ctx, entity, _SR(["alice"]), conversation, _REACT)
+        entity, _ = _load(ctx, eid)
+        t = advance.resolve_blocked(ctx, entity, _SR([]), self._approve_cmd(eid), _COMMENT)
         self.assertFalse(t.merge)
-        self.assertIn("merge gate", t.detail)
-        self.assertIn("issue:status:awaiting_approval", self._remote_labels(eid))
+        self.assertTrue(t.prepare)
+        self.assertIn("readying merge", t.detail)
 
-    def test_heart_over_block_merges_when_gated(self) -> None:
-        # ❤️ force-approves AND merges in one step even when merge is gated.
+    def test_merge_command_over_block_merges_when_gated(self) -> None:
+        # a `merge <id>` command force-approves AND merges in one step even when gated.
         eid = self._seed("Stuck", ["issue", "issue:status:blocked"])
         ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
-        entity, conversation = _load(ctx, eid)
-        t = advance.resolve_blocked(ctx, entity, _SR(merge_approved_by=["alice"]), conversation, _REACT)
+        entity, _ = _load(ctx, eid)
+        t = advance.resolve_blocked(ctx, entity, _SR([]), self._approve_cmd(eid, "merge"), _COMMENT)
         self.assertTrue(t.merge)
-        self.assertIn("completing", t.detail)
+        self.assertIn("merging", t.detail)
+
+    def test_standing_post_reaction_does_not_clear_block(self) -> None:
+        # The loop fix: a durable post 👍 + a reaction event must NOT move a block.
+        eid = self._seed("Stuck", ["issue", "issue:status:blocked"])
+        ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
+        entity, _ = _load(ctx, eid)
+        t = advance.resolve_blocked(ctx, entity, _SR(["alice"]), [], _REACT)
+        self.assertIsNone(t.detail)
+        self.assertFalse(t.merge)
+        self.assertFalse(t.prepare)
+        self.assertIn("issue:status:blocked", self._remote_labels(eid))
 
     def test_guidance_comment_reopens_to_todo(self) -> None:
         eid = self._seed("Stuck", ["issue", "issue:status:blocked"],

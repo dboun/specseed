@@ -156,5 +156,72 @@ class MergeTest(unittest.TestCase):
         self.assertFalse(git_ops.unmerged_files(self.root))
 
 
+@unittest.skipUnless(_HAS_GIT, "git not available")
+class PrepareMergeTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self._git("init")
+        self._git("symbolic-ref", "HEAD", "refs/heads/main")
+        (self.root / "base.txt").write_text("base\n", encoding="utf-8")
+        self._git("add", "-A")
+        self._git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "root")
+
+    def _git(self, *args) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", *args], cwd=str(self.root),
+                              capture_output=True, text=True)
+
+    def test_prepare_clean_then_branch_merges_clean(self) -> None:
+        # branch touches a.txt; primary moves on a DIFFERENT file -> no conflict.
+        git_ops.ensure_on_branch(self.root, "feat-1-a", "main")
+        (self.root / "a.txt").write_text("a\n", encoding="utf-8")
+        git_ops.commit_all(self.root, "branch add a")
+        git_ops.checkout(self.root, "main")
+        (self.root / "b.txt").write_text("b\n", encoding="utf-8")
+        git_ops.commit_all(self.root, "main add b")
+
+        prep = git_ops.prepare_merge(self.root, "feat-1-a", "main")
+        self.assertTrue(prep.ok)
+        self.assertFalse(prep.conflicted)
+        # left on primary, branch now carries b.txt (primary merged in)
+        self.assertEqual(git_ops.current_branch(self.root), "main")
+        git_ops.checkout(self.root, "feat-1-a")
+        self.assertTrue((self.root / "b.txt").exists())
+        git_ops.checkout(self.root, "main")
+        # the real merge into primary is now clean
+        res = git_ops.merge(self.root, "feat-1-a", "main")
+        self.assertTrue(res.ok)
+
+    def test_prepare_conflict_left_on_branch_then_resolved(self) -> None:
+        git_ops.ensure_on_branch(self.root, "feat-1-c", "main")
+        (self.root / "base.txt").write_text("branch side\n", encoding="utf-8")
+        git_ops.commit_all(self.root, "branch edit")
+        git_ops.checkout(self.root, "main")
+        (self.root / "base.txt").write_text("main side\n", encoding="utf-8")
+        git_ops.commit_all(self.root, "main edit")
+
+        prep = git_ops.prepare_merge(self.root, "feat-1-c", "main")
+        self.assertFalse(prep.ok)
+        self.assertTrue(prep.conflicted)
+        self.assertIn("base.txt", prep.files)
+        # mid-merge on the branch, ready for a resolver
+        self.assertEqual(git_ops.current_branch(self.root), "feat-1-c")
+        (self.root / "base.txt").write_text("resolved\n", encoding="utf-8")
+        done = git_ops.complete_merge(self.root)
+        self.assertTrue(done.ok)
+        self.assertFalse(git_ops.unmerged_files(self.root))
+
+    def test_prepare_already_current_is_noop_ok(self) -> None:
+        git_ops.ensure_on_branch(self.root, "feat-1-x", "main")
+        (self.root / "x.txt").write_text("x\n", encoding="utf-8")
+        git_ops.commit_all(self.root, "branch add x")
+        git_ops.checkout(self.root, "main")
+        # primary has not moved past the branch base -> nothing to bring in
+        prep = git_ops.prepare_merge(self.root, "feat-1-x", "main")
+        self.assertTrue(prep.ok)
+        self.assertEqual(git_ops.current_branch(self.root), "main")
+
+
 if __name__ == "__main__":
     unittest.main()

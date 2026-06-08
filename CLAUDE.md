@@ -130,20 +130,26 @@ tests/integration/python/            # opt-in integration tests (marker: integra
   Reject -> closed, nothing created. Deterministic, no agent. The skill never writes `settled`; adapt is the only
   route that reopens a settled doc. A mechanical run (clarification round, sprint label shuffle) skips propose and
   enqueues `run_spec_change_script` directly.
-- **merge gate** (`advance.WorkTransition` + `_settle_or_merge`/`_open_merge_gate`, run by `dispatch._execute_merge`)
-  - advance owns remote STATE + decides whether a finished issue's branch may merge NOW; dispatch owns git +
-    runs it. An issue is NOT done until its code is on primary, so an unmerged issue never reads done/closed.
-    `merge_to_primary` ON -> advance returns `WorkTransition(merge=True)`, dispatch merges (conflict ->
-    resolver agent; unresolved/failed -> park `blocked`, branch intact) then closes done + rolls up. `merge_to_primary`
-    OFF (default) -> a finish parks `awaiting_approval` as a GATE instead of closing. Two gate shapes, one APR/approval
-    mechanism (`state_machines/base.py`, no dedicated label): a PURE merge gate (work already accepted) -
-    👍/`approve` merges, 👎 declines (settle done, branch left for a manual merge); a COMBINED work+merge gate (review
-    under the confidence bar AND merge gated) - ❤️/`merge` (heart, `merge_approved_by`) approves AND merges in one
-    step, 👍 approves the work only + opens a follow-up pure merge gate, 👎 rejects. So no double-approval: the human's
-    single sign-off either covers the merge (❤️) or the merge is the only approval. Markers `MERGE_GATE_MARKER` /
-    `WORK_MERGE_GATE_MARKER` tag the gate comment; the UI approval box (`ui/features/tracker.js`) renders 3 buttons
-    for a combined gate. specseed does NOT open PRs/MRs yet (provider plumbing kept, `make_prs` config dropped at
-    0.13.0); the issue-branch merge is the unit.
+- **merge gate** (`advance.WorkTransition{prepare,merge}` + `_settle_or_merge`/`open_merge_gate_ready`, run by
+    `dispatch._run_gate_action`/`_prepare_and_gate`/`_execute_merge`) - advance owns remote STATE + decides whether a
+    finished issue READIES/merges NOW; dispatch owns git + runs it. An issue is NOT done until its code is on primary,
+    so an unmerged issue never reads done/closed. `merge_to_primary` ON -> `WorkTransition(merge=True)`, dispatch merges.
+    OFF (default) -> `WorkTransition(prepare=True)`: a GATE only opens once the branch READIES clean. **Readiness-first
+    (0.15.0):** dispatch `prepare_merge` brings primary INTO the branch first; a conflict runs the **merge-conflicts
+    agent** (`AgentIntent.MERGE_CONFLICTS` -> `merge_conflicts` chain); if it can't be readied -> park `blocked`, no
+    gate (the human never approves a merge that can't run). So the approve->checkout-fails->reopen LOOP is gone. **Approval
+    is bound to the LIVE gate COMMENT, not the post:** `advance._gate_signals` reads reactions ON the latest
+    `MERGE_GATE_MARKER`/`WORK_MERGE_GATE_MARKER` comment (+ `approve/merge APR-<id>` naming that comment's minted APR).
+    A re-opened gate is a NEW comment with no reactions, so a standing 👍 / a superseded gate's approval is dead - the
+    consume mechanism, no extra storage. PURE gate (work accepted) - 👍/❤️ on the comment re-readies + merges, 👎 declines
+    (settle done, branch left for a manual merge). COMBINED gate (review under the bar AND merge gated) - ❤️/`merge`
+    approves work + readies + merges; 👍/`approve` approves work + opens a follow-up pure merge gate; 👎/prose reworks.
+    Plain HITL/below-bar gates keep POST-reaction approval (`_resolve_plain_gate`). **Invalidate-on-primary-change:** after
+    a successful merge `_reprepare_after_primary_change` re-readies every OTHER open merge gate against the new primary
+    (new gate comment = fresh APR, conflict -> merge-conflicts agent, can't ready -> blocked). `resolve_blocked` clears a
+    block ONLY on a fresh explicit `approve/merge <id>` COMMENT (never a durable post reaction). UI merge-gate buttons
+    react on the gate comment (`data-gate-react`/`reactComment`). specseed does NOT open PRs/MRs yet; the issue-branch
+    merge is the unit.
 
 ## Testing (enforced)
 

@@ -105,15 +105,17 @@ class AgentIntent:
     SPEC_CHANGE = "spec_change"
     IMPLEMENT = "implement"
     REVIEW = "review"
+    MERGE_CONFLICTS = "merge_conflicts"
     PLATFORM_ERROR = "platform_error"
     NONE = "none"
 
 
-# intent -> runner function (the chain to run). merge_conflicts has no intent.
+# intent -> runner function (the chain to run).
 _INTENT_FUNCTION = {
     AgentIntent.SPEC_CHANGE: "spec",
     AgentIntent.IMPLEMENT: "implementation",
     AgentIntent.REVIEW: "review",
+    AgentIntent.MERGE_CONFLICTS: "merge_conflicts",
     AgentIntent.PLATFORM_ERROR: "resolve_platform_errors",
 }
 
@@ -625,7 +627,9 @@ def _execute_merge(ctx: ExecutionContext, entity: Any, branch: Optional[str], ta
     )
     if res.ok:
         _merge_comment(ctx, post_id, "Merged branch `{0}` into `{1}`.".format(branch, primary))
-        return "merged {0} -> {1}; {2}".format(branch, primary, advance.close_issue_done(ctx, entity))
+        closed = advance.close_issue_done(ctx, entity)
+        _reprepare_after_primary_change(ctx, post_id, task)
+        return "merged {0} -> {1}; {2}".format(branch, primary, closed)
     if not res.conflicted:
         advance.park_unmerged(ctx, entity)
         _merge_comment(
@@ -635,9 +639,11 @@ def _execute_merge(ctx: ExecutionContext, entity: Any, branch: Optional[str], ta
         )
         return "merge of {0} failed: {1}; parked blocked".format(branch, res.error)
 
-    # Conflict -> resolver agent (edits only; runtime completes).
-    prompt = prompts.build_merge_conflict_prompt(entity, branch, primary, res.files, ctx)
-    resolver = _run_agent(ctx, prompt, AgentIntent.IMPLEMENT, task_id=task.get("task_id"))
+    # Conflict -> the merge-conflicts agent (edits only; runtime completes). Should be
+    # rare now: the gate is only opened after a clean prepare, so this is a backstop
+    # for a primary move between prepare and merge.
+    prompt = prompts.build_merge_conflict_prompt(entity, branch, primary, res.files, ctx, direction="merge")
+    resolver = _run_agent(ctx, prompt, AgentIntent.MERGE_CONFLICTS, task_id=task.get("task_id"))
     complete = (
         git_ops.complete_merge(ctx.repo_root)
         if getattr(resolver, "ok", False)
@@ -652,9 +658,9 @@ def _execute_merge(ctx: ExecutionContext, entity: Any, branch: Optional[str], ta
             ctx, post_id,
             "Merged branch `{0}` into `{1}` after auto-resolving conflicts.".format(branch, primary),
         )
-        return "merged {0} -> {1} after conflict resolution; {2}".format(
-            branch, primary, advance.close_issue_done(ctx, entity)
-        )
+        closed = advance.close_issue_done(ctx, entity)
+        _reprepare_after_primary_change(ctx, post_id, task)
+        return "merged {0} -> {1} after conflict resolution; {2}".format(branch, primary, closed)
     git_ops.abort_merge(ctx.repo_root)
     advance.park_unmerged(ctx, entity)
     _merge_comment(
@@ -666,30 +672,161 @@ def _execute_merge(ctx: ExecutionContext, entity: Any, branch: Optional[str], ta
     return "merge conflict on {0} unresolved; aborted, parked blocked".format(branch)
 
 
+def _resolve_prepare_conflict(
+    ctx: ExecutionContext, entity: Any, branch: str, primary: str, files: list, task: dict
+) -> bool:
+    """Run the merge-conflicts agent on a branch mid-prepare (primary->branch). Returns
+    True if the conflicts were resolved and the prepare merge committed (left on primary)."""
+    post_id = getattr(entity, "post_id", None)
+    prompt = prompts.build_merge_conflict_prompt(entity, branch, primary, files, ctx, direction="prepare")
+    resolver = _run_agent(ctx, prompt, AgentIntent.MERGE_CONFLICTS, task_id=task.get("task_id"))
+    complete = (
+        git_ops.complete_merge(ctx.repo_root)
+        if getattr(resolver, "ok", False)
+        else git_ops.GitResult(ok=False, error="resolver agent did not finish")
+    )
+    platform_log.log_event(
+        "git_prepare_conflict_resolution", post_id=post_id, branch=branch,
+        resolver_ok=getattr(resolver, "ok", False), completed=complete.ok, error=complete.error,
+    )
+    if complete.ok:
+        git_ops.checkout(ctx.repo_root, primary)  # leave on primary, branch readied
+        return True
+    git_ops.abort_merge(ctx.repo_root)
+    return False
+
+
+def _prepare_and_gate(
+    ctx: ExecutionContext, entity: Any, transition: Any, branch: Optional[str], task: dict
+) -> str:
+    """Ready the issue branch (bring primary in, resolve conflicts), then open a merge
+    gate - or, when ``transition.merge`` is also set, merge straight through.
+
+    A branch that cannot be readied parks ``blocked`` with no gate (the human never
+    approves a merge that cannot run)."""
+    post_id = getattr(entity, "post_id", None)
+    primary = _primary_branch(ctx)
+    if branch is None:
+        branch = _merge_branch_for(entity)
+    prep = git_ops.prepare_merge(ctx.repo_root, branch, primary)
+    platform_log.log_event(
+        "git_prepare_merge", post_id=post_id, branch=branch, primary=primary,
+        ok=prep.ok, conflicted=prep.conflicted, files=prep.files, error=prep.error,
+    )
+    if prep.conflicted:
+        if not _resolve_prepare_conflict(ctx, entity, branch, primary, prep.files, task):
+            git_ops.checkout(ctx.repo_root, primary)
+            advance.park_unmerged(ctx, entity)
+            _merge_comment(
+                ctx, post_id,
+                "Could not ready branch `{0}` for merge into `{1}`: conflicts I could not "
+                "resolve automatically. Parked `blocked`; the branch is intact for you.".format(
+                    branch, primary
+                ),
+            )
+            return "prepare of {0} unresolved; parked blocked".format(branch)
+    elif not prep.ok:
+        git_ops.checkout(ctx.repo_root, primary)
+        advance.park_unmerged(ctx, entity)
+        _merge_comment(
+            ctx, post_id,
+            "Could not ready branch `{0}` for merge into `{1}`: {2}. Parked `blocked`; the "
+            "branch is intact for you.".format(branch, primary, prep.error or "unknown error"),
+        )
+        return "prepare of {0} failed: {1}; parked blocked".format(branch, prep.error)
+    # Readied clean (repo back on primary).
+    if transition.merge:
+        return _execute_merge(ctx, entity, branch, task)
+    return advance.open_merge_gate_ready(ctx, entity)
+
+
+def _open_merge_gate_issue_ids(ctx: ExecutionContext, exclude: Any) -> list[str]:
+    """Open issues parked at a merge gate (awaiting_approval + a merge-gate comment)."""
+    from specseed_runtime.entities.entity_base import Entity
+
+    res = ctx.remote.list_entries(is_open=True)
+    out: list[str] = []
+    for summary in getattr(res, "data", None) or []:
+        sid = str(getattr(summary, "id", "") or "")
+        if not sid or sid == str(exclude):
+            continue
+        names = [str(getattr(lbl, "name", lbl)) for lbl in getattr(summary, "labels", []) or []]
+        if Entity.tier_from_labels(names) != "issue":
+            continue
+        if Entity.status_from_labels(names) != "awaiting_approval":
+            continue
+        _ent, conv = context_mod.load_entity(ctx, sid)
+        if advance._latest_marker_comment(conv, advance.MERGE_GATE_MARKER) is not None:
+            out.append(sid)
+    return out
+
+
+def _reprepare_after_primary_change(ctx: ExecutionContext, merged_id: Any, task: dict) -> None:
+    """Primary just moved: invalidate every other open merge gate and re-ready it.
+
+    A standing approval on an old gate is dead once we post a fresh gate comment; each
+    sibling branch is re-merged against the new primary (merge-conflicts agent on a
+    conflict) so its gate only stands if it STILL merges clean. Best-effort: one
+    sibling's trouble never aborts the merge that triggered this."""
+    try:
+        ids = _open_merge_gate_issue_ids(ctx, merged_id)
+    except Exception as exc:
+        platform_log.log_event("reprepare_scan_error", merged_id=str(merged_id), error=repr(exc))
+        return
+    primary = _primary_branch(ctx)
+    for sid in ids:
+        try:
+            sib, _conv = context_mod.load_entity(ctx, sid)
+            if sib is None:
+                continue
+            _merge_comment(
+                ctx, sid,
+                "`{0}` moved on. Re-checking whether this branch still merges clean before "
+                "its approval stands.".format(primary),
+            )
+            _prepare_and_gate(
+                ctx, sib, advance.WorkTransition("reprepare after primary change", prepare=True),
+                None, task,
+            )
+        except Exception as exc:
+            platform_log.log_event("reprepare_error", post_id=sid, error=repr(exc))
+
+
 def _merge_branch_for(entity: Any) -> str:
     """The git branch name an issue's work lives on (pure; no git calls)."""
     return git_ops.branch_name(entity)
 
 
-def _run_gate_merge(ctx: ExecutionContext, entity: Any, transition: Any, task: dict) -> Optional[str]:
-    """Fold an authorized merge (``transition.merge``) into the transition detail.
+def _run_gate_action(
+    ctx: ExecutionContext, entity: Any, transition: Any, branch: Optional[str], task: dict
+) -> Optional[str]:
+    """Run the git side of a transition: ready+gate/merge (``prepare``) or a direct
+    merge (``merge``). Returns a human note, or None if there is nothing to run."""
+    if transition.prepare:
+        return _prepare_and_gate(ctx, entity, transition, branch, task)
+    if transition.merge:
+        return _execute_merge(ctx, entity, branch, task)
+    return None
 
-    advance owns remote STATE and decides whether the branch may merge now (auto-on,
-    or a human just approved the merge gate); dispatch owns git and runs it here. The
-    branch name is recomputed (``_merge_branch_for``) since the gate-resolution path
-    has no live ``branch`` var - it is the same deterministic name the implement run
-    used. Best-effort: a merge hiccup is a note, never reopens the resolved gate.
-    """
+
+def _run_gate_merge(ctx: ExecutionContext, entity: Any, transition: Any, task: dict) -> Optional[str]:
+    """Fold an authorized prepare/merge into the transition detail.
+
+    advance owns remote STATE and decides whether the branch may ready/merge now;
+    dispatch owns git and runs it here. The branch name is recomputed
+    (``_merge_branch_for``) since the gate-resolution path has no live ``branch`` var -
+    it is the same deterministic name the implement run used. Best-effort: a git hiccup
+    is a note, never reopens the resolved gate."""
     detail = transition.detail
-    if not transition.merge:
+    if not (transition.prepare or transition.merge):
         return detail
     try:
-        merged = _execute_merge(ctx, entity, _merge_branch_for(entity), task)
+        note = _run_gate_action(ctx, entity, transition, _merge_branch_for(entity), task)
     except Exception as exc:
         return "{0}; merge failed: {1!r}".format(detail, exc) if detail else "merge failed: {0!r}".format(exc)
-    if not merged:
+    if not note:
         return detail
-    return "{0}; {1}".format(detail, merged) if detail else merged
+    return "{0}; {1}".format(detail, note) if detail else note
 
 
 def _dep_status(ctx: ExecutionContext, dep_id: str) -> Optional[str]:
@@ -741,9 +878,21 @@ def _poll_interval_s(ctx: ExecutionContext) -> float:
         return 45.0
 
 
+# Comment-keyed events: their task post_id is the COMMENT id, so they must be
+# resolved to the owning entry before any entity work (a 👍 on a merge-gate comment).
+_COMMENT_REACTION_ACTIONS = {"handle_reaction_added", "handle_reaction_removed"}
+
+
 def _run_work(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
     """Common path for every work handler: load entity, judge state, run agent."""
     post_id = task.get("post_id")
+    # A comment reaction (merge-gate approval) is keyed on the comment; map it to the
+    # entry that owns it so the gate on the parent issue is the thing we resolve.
+    if task.get("action") in _COMMENT_REACTION_ACTIONS:
+        resolver = getattr(ctx.local, "entry_id_for_comment", None)
+        owning = resolver(post_id) if callable(resolver) else None
+        if owning is not None:
+            post_id = str(owning)
     entity, conversation = context_mod.load_entity(ctx, post_id)
     if entity is None:
         platform_log.log_event(
@@ -818,8 +967,8 @@ def _run_work(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
     # otherwise fall through to the no-action path.
     if _spec_change_route(entity) is None and getattr(entity, "status", None) == "blocked":
         transition = advance.resolve_blocked(ctx, entity, state_result, conversation, action)
-        # detail None AND no merge = nothing applied; fall through to the work path.
-        if transition.detail is not None or transition.merge:
+        # nothing applied (no detail/prepare/merge) = fall through to the work path.
+        if transition.detail is not None or transition.merge or transition.prepare:
             detail = _run_gate_merge(ctx, entity, transition, task)
             platform_log.log_event(
                 "blocked_resolved",
@@ -980,15 +1129,15 @@ def _run_work(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
             except Exception as exc:  # never lose the successful run over a write hiccup
                 detail = "{0}; transition failed: {1!r}".format(detail, exc)
             else:
-                # advance decided whether the branch merges now (merge auto-on);
-                # gated merges park a gate instead and merge later via resolve_*.
-                # dispatch owns git: run the authorized merge, which closes the issue
-                # on success. Best-effort: a merge problem is a note, never reopens it.
-                if transition.merge:
+                # advance decided what happens to the branch now: merge auto-on -> a
+                # direct merge; merge gated -> ready it (prepare) and open a gate.
+                # dispatch owns git and runs it. Best-effort: a git problem is a note,
+                # never reopens the resolved transition.
+                if transition.prepare or transition.merge:
                     try:
-                        merged = _execute_merge(ctx, entity, branch, task)
-                        if merged:
-                            detail = "{0}; {1}".format(detail, merged)
+                        note = _run_gate_action(ctx, entity, transition, branch, task)
+                        if note:
+                            detail = "{0}; {1}".format(detail, note)
                     except Exception as exc:
                         detail = "{0}; merge failed: {1!r}".format(detail, exc)
         return HandlerOutcome(success=True, detail=detail)

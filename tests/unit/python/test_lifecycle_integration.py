@@ -121,7 +121,7 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(st, "awaiting_approval")  # parked at the merge gate
         self.assertTrue(is_open)
         bodies = [c.body for c in remote.get_entry(eid).data.comments]
-        self.assertTrue(any("Merge approval" in (b or "") for b in bodies))
+        self.assertTrue(any("Merge ready" in (b or "") for b in bodies))
         # human approves the merge
         remote.add_entry_comment(eid, "approve {0}".format(eid))
         for _ in range(4):
@@ -131,6 +131,40 @@ class LifecycleTest(unittest.TestCase):
         self.assertFalse(is_open)
         bodies = [c.body for c in remote.get_entry(eid).data.comments]
         self.assertTrue(any("Merged branch" in (b or "") for b in bodies))
+
+    def test_merge_gate_reaction_on_gate_comment_merges(self) -> None:
+        # End-to-end: a 👍 ON the gate comment (not the post) routes through the
+        # comment->entry resolution, authorizes the merge, and closes done.
+        from specseed_runtime.executing.advance import MERGE_GATE_MARKER
+
+        sched, remote, eid = self._build(self._runner([]), {"enabled": False})
+        for _ in range(4):
+            sched.run_once()
+        self.assertEqual(self._status(remote, eid)[0], "awaiting_approval")
+        gate = next(c for c in remote.get_entry(eid).data.comments
+                    if MERGE_GATE_MARKER in (c.body or ""))
+        remote.add_entry_comment_reaction(eid, gate.id, "thumbs_up")  # author "alice" (approver)
+        for _ in range(4):
+            sched.run_once()
+        st, is_open = self._status(remote, eid)
+        self.assertEqual(st, "done")
+        self.assertFalse(is_open)
+        bodies = [c.body for c in remote.get_entry(eid).data.comments]
+        self.assertTrue(any("Merged branch" in (b or "") for b in bodies))
+
+    def test_merge_gate_post_reaction_does_not_merge(self) -> None:
+        # A 👍 on the POST (the old durable signal) must NOT merge a gate - it stays
+        # parked. This is the loop fix.
+        sched, remote, eid = self._build(self._runner([]), {"enabled": False})
+        for _ in range(4):
+            sched.run_once()
+        self.assertEqual(self._status(remote, eid)[0], "awaiting_approval")
+        remote.add_entry_reaction(eid, "thumbs_up")  # post-level reaction
+        for _ in range(4):
+            sched.run_once()
+        st, is_open = self._status(remote, eid)
+        self.assertEqual(st, "awaiting_approval")
+        self.assertTrue(is_open)
 
     def test_persistent_failure_with_recommend_escalates_to_single_draft(self) -> None:
         # Reviewer recommends a spec change -> exhausting the loop opens ONE draft

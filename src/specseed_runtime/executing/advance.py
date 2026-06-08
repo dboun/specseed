@@ -56,11 +56,14 @@ from specseed_runtime.scheduling.spec_change import (
     enqueue_spec_change_run,
     spec_change_dir,
 )
+from specseed_runtime.state_machines import base as sm
 from specseed_runtime.state_machines.base import (
     APPROVAL_COMMAND_RE,
     ID_SPLIT_RE,
     REJECT_COMMAND_RE,
 )
+from specseed_runtime.state_machines.approvals import apr_ids_in_text
+from specseed_runtime.executing.approvals import APPROVAL_REQUEST_MARKER, next_apr_id
 
 
 # Hidden marker stamped on every review comment so attempts can be counted from
@@ -165,19 +168,18 @@ WORK_MERGE_GATE_MARKER = "<!-- specseed:work-merge-gate -->"
 
 @dataclass
 class WorkTransition:
-    """Outcome of a lifecycle transition. ``merge`` tells ``dispatch`` to run the
-    issue-branch merge into primary now - advance owns remote STATE, dispatch owns
-    git. ``detail`` is the human-readable line for the HandlerOutcome (None when
-    nothing was applied / still waiting on a human)."""
+    """Outcome of a lifecycle transition - advance owns remote STATE, dispatch owns git.
+
+    ``prepare`` tells dispatch to ready the issue branch (bring primary in, resolve
+    conflicts via the merge-conflicts agent), then either open a merge gate or - when
+    ``merge`` is ALSO set - merge straight through (an approved one-step merge).
+    ``merge`` alone tells dispatch to run the branch->primary merge now. ``detail`` is
+    the human-readable line for the HandlerOutcome (None when nothing was applied /
+    still waiting on a human)."""
 
     detail: Optional[str]
     merge: bool = False
-
-
-def _item_body(item: Any) -> Optional[str]:
-    if isinstance(item, dict):
-        return item.get("body")
-    return getattr(item, "body", None)
+    prepare: bool = False
 
 
 def _primary_branch_name(ctx: Any) -> str:
@@ -197,15 +199,6 @@ def _issue_has_branch(entity: Any) -> bool:
     return getattr(entity, "tier", None) == "issue"
 
 
-def _pure_merge_gate(conversation: Any) -> bool:
-    """The active awaiting_approval is a PURE merge gate (work already accepted)."""
-    for item in conversation or []:
-        body = _item_body(item)
-        if body and MERGE_GATE_MARKER in str(body):
-            return True
-    return False
-
-
 def close_issue_done(ctx: Any, entity: Any) -> str:
     """Settle an issue as done: set the label, close the entry, roll up the parent."""
     _set_status(ctx, entity, "done")
@@ -220,39 +213,106 @@ def park_unmerged(ctx: Any, entity: Any) -> None:
     _set_status(ctx, entity, "blocked")
 
 
-def _merge_gate_comment(ctx: Any, entity: Any) -> str:
+def _merge_gate_ready_comment(ctx: Any, entity: Any, apr_id: str) -> str:
+    """The gate comment posted once the branch is readied and merges clean.
+
+    Approval is bound to THIS comment: react on it, or use its `APR` token. A new
+    gate is a new comment with no reactions, so a past go-ahead never carries over.
+    """
     primary = _primary_branch_name(ctx)
     return (
-        "**Merge approval** — the work is complete and committed on this issue's "
-        "branch. Merging into `{0}` is gated, so it needs your go-ahead:\n\n"
-        "- react 👍 (or comment `approve {1}`) to merge into `{0}` now, or\n"
-        "- react 👎 (or comment `reject {1}`) to leave the branch unmerged for you "
-        "to merge manually.\n\n"
-        "Until then this stays `awaiting_approval`.\n\n{2}".format(
-            primary, entity.post_id, MERGE_GATE_MARKER
+        "**Merge ready.** I brought `{0}` into this issue's branch and it merges "
+        "clean, so it is safe to merge into `{0}` now:\n\n"
+        "- react 👍 on this comment (or comment `approve {1}`) to merge into `{0}`, or\n"
+        "- react 👎 (or comment `reject {1}`) to leave the branch unmerged for you to "
+        "merge by hand.\n\n"
+        "React on THIS comment, not the post. Until then this stays "
+        "`awaiting_approval`.\n\n{2}\n<!-- {3} {1} -->".format(
+            primary, apr_id, MERGE_GATE_MARKER, APPROVAL_REQUEST_MARKER
         )
     )
 
 
-def _open_merge_gate(ctx: Any, entity: Any, reason: str) -> WorkTransition:
-    """Park the issue awaiting_approval as a pure merge gate (merge pending)."""
-    _set_status(ctx, entity, "awaiting_approval")
-    _comment(ctx, entity.post_id, _merge_gate_comment(ctx, entity))
-    return WorkTransition(
-        "{0} -> awaiting_approval (merge gate; merge pending)".format(reason)
-    )
+def open_merge_gate_ready(ctx: Any, entity: Any) -> str:
+    """Open a PURE merge gate after the branch was readied (merges clean).
+
+    Mints a fresh `APR` id and posts a new gate comment, so any earlier gate's
+    approval is dead - approval counts only on the latest gate comment. Returns the
+    detail string. dispatch calls this once `prepare_merge` succeeds.
+    """
+    apr_id = next_apr_id(ctx.storage)
+    # Skip the label swap when already parked (a re-ready sweep) - no needless churn.
+    if getattr(entity, "status", None) != "awaiting_approval":
+        _set_status(ctx, entity, "awaiting_approval")
+    _comment(ctx, entity.post_id, _merge_gate_ready_comment(ctx, entity, apr_id))
+    return "branch readied -> awaiting_approval (merge gate {0})".format(apr_id)
 
 
 def _settle_or_merge(ctx: Any, entity: Any, reason: str) -> WorkTransition:
-    """Reach the end of work: close now (no branch / merge auto-on closes after the
-    merge), open a merge gate (merge gated), or hand dispatch the merge (auto-on)."""
+    """Reach the end of work: close now (no branch), ready+gate the merge (merge
+    gated), or hand dispatch the merge (auto-on)."""
     if not _issue_has_branch(entity):
         return WorkTransition("{0} -> {1}".format(reason, close_issue_done(ctx, entity)))
     if _merge_gated(ctx):
-        return _open_merge_gate(ctx, entity, reason)
+        # Don't open a gate blind: dispatch first readies the branch (prepare), and
+        # only opens the gate if it merges clean - so the human never approves a merge
+        # that cannot run.
+        return WorkTransition("{0} -> readying merge".format(reason), prepare=True)
     # Auto-merge: leave the status as-is; dispatch merges then closes on success, so
     # the issue never shows `done` with code still off primary.
     return WorkTransition("{0} -> merging into primary".format(reason), merge=True)
+
+
+# --------------------------------------------------------------------------- #
+# merge-gate approval signals (scoped to the LIVE gate comment)
+# --------------------------------------------------------------------------- #
+@dataclass
+class _GateSignals:
+    """Approval read off ONE gate comment, never a durable post reaction."""
+
+    comment: Any
+    apr_id: Optional[str]
+    approve: list[str]
+    merge: list[str]
+    reject: list[str]
+
+
+def _latest_marker_comment(conversation: Any, marker: str) -> Any:
+    """The LAST comment in the conversation whose body carries ``marker`` (or None)."""
+    found = None
+    for item in conversation or []:
+        body = str(_comment_field(item, "body") or "")
+        if marker in body:
+            found = item
+    return found
+
+
+def _gate_signals(ctx: Any, entity: Any, conversation: Any, marker: str) -> Optional[_GateSignals]:
+    """Approval signals for the live gate comment bearing ``marker``, or None.
+
+    Reads reactions ON that comment plus `approve/merge/reject` commands that name
+    the comment's own `APR` id (or the post id) - so a standing post 👍 and a stale
+    superseded gate's approval are both inert.
+    """
+    comment = _latest_marker_comment(conversation, marker)
+    if comment is None:
+        return None
+    cfg = getattr(ctx, "config", {}) or {}
+    apr_ids = apr_ids_in_text(str(_comment_field(comment, "body") or ""))
+    apr_id = apr_ids[0] if apr_ids else None
+    targets = {str(entity.post_id)}
+    if apr_id:
+        targets.add(apr_id)
+    approve = sm.comment_reaction_users(comment, sm.APPROVE_REACTION, cfg) + sm.command_authors_for(
+        conversation, cfg, targets, sm.approval_ids_from_body
+    )
+    merge = sm.comment_reaction_users(comment, sm.MERGE_REACTION, cfg) + sm.command_authors_for(
+        conversation, cfg, targets, sm.merge_ids_from_body
+    )
+    reject = sm.comment_reaction_users(comment, sm.REJECT_REACTION, cfg) + sm.command_authors_for(
+        conversation, cfg, targets, sm.reject_ids_from_body
+    )
+    return _GateSignals(comment, apr_id, sm._dedupe(approve), sm._dedupe(merge), sm._dedupe(reject))
 
 
 # --------------------------------------------------------------------------- #
@@ -563,15 +623,22 @@ def _below_confidence_comment(ctx: Any, entity: Any, confidence: float, threshol
         "human sign-off.".format(confidence, threshold)
     )
     if _merge_gated(ctx) and _issue_has_branch(entity):
-        # Combined gate: the work needs sign-off AND the merge is gated.
+        # Combined gate: the work needs sign-off AND the merge is gated. Approval is
+        # bound to THIS comment (its reactions / its APR token), so a standing post
+        # reaction can't sign it off. A 👍/approve readies a follow-up merge gate;
+        # ❤️/merge readies and merges in one step.
         primary = _primary_branch_name(ctx)
+        apr_id = next_apr_id(ctx.storage)
         return (
-            "{0}\n\nMerging into `{1}` is also gated, so you have three choices:\n\n"
+            "{0}\n\nMerging into `{1}` is also gated, so you have three choices "
+            "(react on THIS comment, not the post):\n\n"
             "- react ❤️ (or comment `merge {2}`) to approve AND merge into `{1}` in one step,\n"
             "- react 👍 (or comment `approve {2}`) to approve the work now and leave the "
             "merge as a follow-up gate, or\n"
             "- reply with what to change to revise, or comment `retry` to re-review.\n\n"
-            "{3}".format(base, primary, entity.post_id, WORK_MERGE_GATE_MARKER)
+            "{3}\n<!-- {4} {2} -->".format(
+                base, primary, apr_id, WORK_MERGE_GATE_MARKER, APPROVAL_REQUEST_MARKER
+            )
         )
     return (
         "{0} Comment `approve {1}` (or 👍) to complete, reply with what to change to "
@@ -628,87 +695,125 @@ def resolve_approval(
     """Resolve an ``awaiting_approval`` entity from a human's signal.
 
     Returns a ``WorkTransition`` (``detail`` None = nothing applied / still waiting;
-    ``merge`` True = dispatch should now run the issue-branch merge).
+    ``prepare``/``merge`` tell dispatch to ready/merge the branch).
 
-    Reaction vocabulary: 👍 approves the single primary gate; ❤️ approves every
-    stacked gate at once (work AND merge); 👎 rejects. So:
+    MERGE gates read approval off the LIVE gate comment (its reactions / its `APR`
+    token), never a durable post reaction - so a standing 👍 can't re-fire and a
+    superseded gate's approval is dead:
 
-    * COMBINED work+merge gate (review under the bar AND merge gated): ❤️ signs off
-      and merges; 👍 signs off the work only and opens a pure merge gate; 👎 rejects.
-    * PURE merge gate (work already accepted): 👍/❤️ authorize the merge; 👎 declines
-      it and settles the issue done with the branch left for a manual merge.
-    * plain completion gate (merge auto-on): 👍 completes (+ dispatch merges).
-    * pre-work HITL gate: 👍 resumes the issue to ``todo``.
-    * prose / ``retry`` -> ``todo`` to revise (work gate only); bare reject / 👎 with
-      no guidance -> post the options prompt once and wait.
+    * PURE merge gate (work accepted): 👍/❤️ on the gate comment -> ready + merge;
+      👎 -> decline, settle done, branch left for a manual merge.
+    * COMBINED work+merge gate (review under the bar AND merge gated): ❤️ -> approve
+      work + ready + merge; 👍 -> approve work + ready a follow-up merge gate; 👎/prose
+      -> rework.
+
+    Plain gates (pre-work HITL, below-bar with merge auto-on) keep post-reaction
+    approval: 👍 resumes/completes; prose/``retry`` -> ``todo``; bare 👎 -> options.
     """
     if entity.status != "awaiting_approval":
         return WorkTransition(None)
+    if not _can_write(ctx):
+        return WorkTransition(None)
+
+    pure = _gate_signals(ctx, entity, conversation, MERGE_GATE_MARKER)
+    combined = None if pure is not None else _gate_signals(ctx, entity, conversation, WORK_MERGE_GATE_MARKER)
     approved = getattr(state_result, "approved_by", None)
     merge_approved = getattr(state_result, "merge_approved_by", None)
     rejected = getattr(state_result, "rejected_by", None)
     is_comment = action in _COMMENT_ACTIONS
+
+    def _has(sig: Optional[_GateSignals]) -> bool:
+        return bool(sig and (sig.approve or sig.merge or sig.reject))
+
     # Nothing to act on (a bare label re-sync, say): bow out before any remote read.
-    if not approved and not merge_approved and not rejected and not is_comment:
-        return WorkTransition(None)
-    if not _can_write(ctx):
+    if not _has(pure) and not _has(combined) and not approved and not merge_approved \
+            and not rejected and not is_comment:
         return WorkTransition(None)
     if _is_stale(ctx, entity):
         return WorkTransition("stale event; remote already advanced past awaiting_approval")
 
-    pure_merge = _pure_merge_gate(conversation)
-    primary = _primary_branch_name(ctx)
+    if pure is not None:
+        return _resolve_pure_merge_gate(ctx, entity, pure)
+    if combined is not None:
+        return _resolve_combined_gate(ctx, entity, combined, conversation, is_comment)
+    return _resolve_plain_gate(
+        ctx, entity, approved, merge_approved, rejected, conversation, is_comment
+    )
 
-    # Approval wins over a stray rejection if somehow both are present.
+
+def _resolve_pure_merge_gate(ctx: Any, entity: Any, sig: _GateSignals) -> WorkTransition:
+    """A readied pure merge gate: approve -> re-ready + merge; reject -> decline."""
+    primary = _primary_branch_name(ctx)
+    if sig.approve or sig.merge:
+        approver = (sig.merge or sig.approve)[0]
+        _comment(
+            ctx, entity.post_id,
+            "Merge approved by {0}; readying and merging into `{1}`.".format(approver, primary),
+        )
+        # re-ready (idempotent) then merge, folding any primary move since the gate opened.
+        return WorkTransition(
+            "merge gate approved by {0} -> merging".format(approver), prepare=True, merge=True
+        )
+    if sig.reject:
+        detail = close_issue_done(ctx, entity)
+        _comment(
+            ctx, entity.post_id,
+            "Merge declined by {0}; issue marked done with the branch left unmerged for "
+            "you to merge by hand.".format(sig.reject[0]),
+        )
+        return WorkTransition("merge gate declined -> {0} (unmerged)".format(detail))
+    return WorkTransition(None)
+
+
+def _resolve_combined_gate(
+    ctx: Any, entity: Any, sig: _GateSignals, conversation: Any, is_comment: bool
+) -> WorkTransition:
+    """Work needs sign-off AND merge gated. Approval signs off the work; the merge
+    then runs through readiness."""
+    primary = _primary_branch_name(ctx)
+    if sig.merge:
+        approver = sig.merge[0]
+        _comment(
+            ctx, entity.post_id,
+            "Work approved by {0}; readying and merging into `{1}`.".format(approver, primary),
+        )
+        return WorkTransition(
+            "combined gate approved+merge by {0} -> merging".format(approver),
+            prepare=True, merge=True,
+        )
+    if sig.approve:
+        approver = sig.approve[0]
+        _comment(ctx, entity.post_id, "Work approved by {0}; readying the merge.".format(approver))
+        return WorkTransition(
+            "combined gate work-approved by {0} -> readying merge".format(approver), prepare=True
+        )
+    return _resolve_directive(ctx, entity, conversation, is_comment, rejected=bool(sig.reject))
+
+
+def _resolve_plain_gate(
+    ctx: Any, entity: Any, approved: Any, merge_approved: Any, rejected: Any,
+    conversation: Any, is_comment: bool,
+) -> WorkTransition:
+    """A non-merge gate (pre-work HITL, or below-bar with merge auto-on): post-reaction
+    approval, the original behavior."""
     if approved or merge_approved:
         approver = (merge_approved or approved)[0]
-        # Pure merge gate: the work is already accepted; any approval authorizes the
-        # merge. dispatch runs it then closes on success.
-        if pure_merge:
-            _comment(
-                ctx, entity.post_id,
-                "Merge approved by {0}; merging into `{1}`.".format(approver, primary),
-            )
-            return WorkTransition("merge gate approved by {0} -> merging".format(approver), merge=True)
-        # Completion gate (work was reviewed). Pre-work/HITL gates (0 attempts) keep
-        # the original resume-to-todo behavior.
         if _count_review_attempts(conversation) > 0:
-            if merge_approved:
-                # ❤️ : approve the work AND merge in one step.
-                _comment(
-                    ctx, entity.post_id,
-                    "Approved + merge by {0}; merging into `{1}`.".format(approver, primary),
-                )
-                return WorkTransition(
-                    "approval gate approved+merge by {0} -> merging".format(approver), merge=True
-                )
-            # 👍 : approve the work only. Merge gated -> open a pure merge gate.
-            if _merge_gated(ctx) and _issue_has_branch(entity):
-                _comment(ctx, entity.post_id, "Work approved by {0}.".format(approver))
-                return _open_merge_gate(ctx, entity, "approval gate approved by {0}".format(approver))
-            # Merge auto-on (or nothing to merge): complete now.
             settle = _settle_or_merge(ctx, entity, "approval gate approved by {0}".format(approver))
             _comment(ctx, entity.post_id, "Approved by {0}; completing.".format(approver))
             return settle
         _set_status(ctx, entity, "todo")
         _comment(ctx, entity.post_id, "Approved by {0}; work may proceed.".format(approver))
         return WorkTransition("approval gate -> todo (resume work)")
+    return _resolve_directive(ctx, entity, conversation, is_comment, rejected=bool(rejected))
 
-    # Rejection on a PURE merge gate = decline the runtime merge: settle done with the
-    # branch left for a manual merge (the human owns it). Not a rework.
-    if pure_merge and rejected:
-        detail = close_issue_done(ctx, entity)
-        _comment(
-            ctx, entity.post_id,
-            "Merge declined by {0}; issue marked done with the branch left unmerged for "
-            "you to merge manually.".format(rejected[0]),
-        )
-        return WorkTransition("merge gate declined -> {0} (unmerged)".format(detail))
 
-    # Not approved. A directive only counts off a fresh comment, never a stale one
-    # surfaced by a label/reaction event. On a pure merge gate prose is not a rework.
+def _resolve_directive(
+    ctx: Any, entity: Any, conversation: Any, is_comment: bool, rejected: bool
+) -> WorkTransition:
+    """Shared non-approval tail: prose/``retry`` -> todo; bare reject -> options once."""
     kind, _text = (None, None)
-    if is_comment and not pure_merge:
+    if is_comment:
         kind, _text = _human_directive(conversation, getattr(ctx, "config", {}))
     if kind == "retry":
         _set_status(ctx, entity, "todo")
@@ -721,62 +826,73 @@ def resolve_approval(
             "Taking your comment as change guidance; re-running implementation.",
         )
         return WorkTransition("approval gate -> todo (revise with guidance)")
-
-    # Bare reject / 👎 with no guidance: ask what to do (once), then wait.
     if (kind == "reject_bare" or rejected) and not _options_already_posted(ctx, entity.post_id):
         _post_reject_options(ctx, entity)
         return WorkTransition("approval gate: rejected without guidance -> options prompt posted")
     return WorkTransition(None)
 
 
+def _override_command(body: Optional[str], post_id: Any) -> Optional[str]:
+    """If ``body`` is an approve/merge command naming this issue, return its kind."""
+    if not body:
+        return None
+    target = str(post_id).casefold()
+    if target in {item.casefold() for item in sm.merge_ids_from_body(body)}:
+        return "merge"
+    if target in {item.casefold() for item in sm.approval_ids_from_body(body)}:
+        return "approve"
+    return None
+
+
 def resolve_blocked(
     ctx: Any, entity: Any, state_result: Any, conversation: Any = None, action: Any = None
 ) -> WorkTransition:
-    """Human bypass for a ``blocked`` issue (e.g. parked by a spec-change recommend).
+    """Human bypass for a ``blocked`` issue (e.g. parked by a failed merge or a
+    spec-change recommend).
 
-    The recommendation is a suggestion, never a forced path: a human can still
-    approve the work (force done) or hand the implementer guidance (re-run). Returns
-    a ``WorkTransition`` (``detail`` None = nothing applied; ``merge`` True = dispatch
-    should run the merge). A force-approve routes through the same merge gate as any
-    other completion, so an overridden block never lands code on primary unreviewed.
+    A block moves only on an EXPLICIT, FRESH human comment - an approve/merge command
+    (``approve <id>``) or guidance/``retry``. A durable post reaction must NOT clear a
+    block: that was the merge loop (a standing 👍 re-firing every poll). A force-approve
+    routes through readiness (``prepare``), so an overridden block never lands code on
+    primary without a clean merge.
     """
     if getattr(entity, "status", None) != "blocked":
         return WorkTransition(None)
-    approved = getattr(state_result, "approved_by", None)
-    merge_approved = getattr(state_result, "merge_approved_by", None)
-    is_comment = action in _COMMENT_ACTIONS
-    # Only a human approval or a fresh comment can move a block; skip otherwise.
-    if not approved and not merge_approved and not is_comment:
+    if action not in _COMMENT_ACTIONS:
         return WorkTransition(None)
     if not _can_write(ctx):
         return WorkTransition(None)
     if _is_stale(ctx, entity):
         return WorkTransition("stale event; remote already advanced past blocked")
+
+    cfg = getattr(ctx, "config", {}) or {}
     primary = _primary_branch_name(ctx)
-    if approved or merge_approved:
-        approver = (merge_approved or approved)[0]
+    author, body = _latest_human_comment(conversation, cfg)
+    # Override only when the LATEST human comment is an approver's approve/merge command
+    # (a stale earlier one is never the latest, so it can't re-fire).
+    over = _override_command(body, entity.post_id)
+    if over == "merge" and not sm.command_authors_for(conversation, cfg, {str(entity.post_id)}, sm.merge_ids_from_body):
+        over = None
+    if over == "approve" and not sm.command_authors_for(conversation, cfg, {str(entity.post_id)}, sm.approval_ids_from_body):
+        over = None
+    if over:
         no_branch = not _issue_has_branch(entity)
-        # ❤️ authorizes the merge outright (bypasses the gate); 👍 with merge gated
-        # opens a merge gate first (an override must still get a merge sign-off before
-        # code lands on primary); 👍 with merge auto-on (or no branch) completes now.
-        if merge_approved or no_branch or not _merge_gated(ctx):
-            if no_branch:
-                detail = close_issue_done(ctx, entity)
-                _comment(ctx, entity.post_id, "Approved by {0} over the block; completing.".format(approver))
-                return WorkTransition("blocked -> human override by {0} -> {1}".format(approver, detail))
+        if no_branch:
+            detail = close_issue_done(ctx, entity)
+            _comment(ctx, entity.post_id, "Approved by {0} over the block; completing.".format(author))
+            return WorkTransition("blocked -> override by {0} -> {1}".format(author, detail))
+        if over == "merge" or not _merge_gated(ctx):
             _comment(
                 ctx, entity.post_id,
-                "Approved by {0} over the block; merging into `{1}`.".format(approver, primary),
+                "Approved by {0} over the block; readying and merging into `{1}`.".format(author, primary),
             )
             return WorkTransition(
-                "blocked -> human override by {0} -> merging into primary; completing".format(approver),
-                merge=True,
+                "blocked -> override by {0} -> merging".format(author), prepare=True, merge=True
             )
-        _comment(ctx, entity.post_id, "Approved by {0} over the block.".format(approver))
-        return _open_merge_gate(ctx, entity, "blocked -> human override by {0}".format(approver))
-    kind, _text = (None, None)
-    if is_comment:
-        kind, _text = _human_directive(conversation, getattr(ctx, "config", {}))
+        _comment(ctx, entity.post_id, "Approved by {0} over the block; readying the merge.".format(author))
+        return WorkTransition("blocked -> override by {0} -> readying merge".format(author), prepare=True)
+
+    kind, _text = _human_directive(conversation, cfg)
     if kind in ("retry", "guidance"):
         _set_status(ctx, entity, "todo")
         note = (

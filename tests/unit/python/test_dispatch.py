@@ -793,6 +793,119 @@ class RuntimeGitLifecycleTest(DispatchTestBase):
         self.assertTrue((self.root / "y.py").exists())
         self.assertIn("merged", out.detail)
 
+    # -- readiness (prepare) + invalidation sweep ----------------------------- #
+    def _commit(self, *args) -> None:
+        self._git("-c", "user.email=t@t", "-c", "user.name=t", "commit", *args)
+
+    def _conflicting_branch(self, branch, file, base, branch_side, main_side) -> None:
+        """A branch and primary that BOTH edit ``file`` -> primary->branch prepare conflicts."""
+        (self.root / file).write_text(base, encoding="utf-8")
+        self._git("add", "-A")
+        self._commit("-m", "seed {0}".format(file))
+        self._git("checkout", "-b", branch)
+        (self.root / file).write_text(branch_side, encoding="utf-8")
+        self._git("add", "-A")
+        self._commit("-m", "branch edit")
+        self._git("checkout", "main")
+        (self.root / file).write_text(main_side, encoding="utf-8")
+        self._git("add", "-A")
+        self._commit("-m", "main edit")
+
+    def _recording_resolver(self, writes=None):
+        """A RunnerChains whose merge_conflicts runner records its prompts and may
+        write a file (to simulate resolving the conflict)."""
+        root = self.root
+
+        class _Rec(FakeAgentRunner):
+            def __init__(self) -> None:
+                super().__init__(AgentResult(ok=True, returncode=0))
+                self.prompts = []
+
+            def run(self, prompt, *, cwd, **kwargs):
+                self.prompts.append(prompt)
+                if writes is not None:
+                    (root / writes[0]).write_text(writes[1], encoding="utf-8")
+                return AgentResult(ok=True, returncode=0)
+
+        rec = _Rec()
+        return rec, RunnerChains({"implementation": [rec], "merge_conflicts": [rec]})
+
+    def test_prepare_conflict_unresolved_parks_blocked(self) -> None:
+        from specseed_runtime.executing import advance
+        from specseed_runtime.executing.context import load_entity
+
+        eid = self._seed_both("FEAT-0005 Conflict", ["tier:issue", "status:awaiting_approval"])
+        branch = "feat-0005-conflict"
+        self._conflicting_branch(branch, "base.txt", "base\n", "branch\n", "main\n")
+        rec, chains = self._recording_resolver(writes=None)  # resolver leaves the markers
+        self.ctx.runner = chains
+        entity, _ = load_entity(self.ctx, str(eid))
+        note = dispatch_mod._prepare_and_gate(
+            self.ctx, entity, advance.WorkTransition("x", prepare=True), branch, {"task_id": None}
+        )
+        self.assertIn("parked blocked", note)
+        self.assertIn("issue:status:blocked", {l.name for l in self.remote.get_entry(eid).data.labels})
+        self.assertEqual(_git_ops.current_branch(self.root), "main")
+        # the merge-conflicts chain (not implement) handled it
+        self.assertTrue(any("MERGE CONFLICTS" in p for p in rec.prompts))
+        self.assertEqual(self._git("rev-parse", "--verify", "refs/heads/" + branch).returncode, 0)
+
+    def test_prepare_conflict_resolved_opens_gate(self) -> None:
+        from specseed_runtime.executing import advance
+        from specseed_runtime.executing.context import load_entity
+
+        # in_review is the realistic pre-gate status (a finished review readies the merge).
+        eid = self._seed_both("FEAT-0005 Conflict", ["tier:issue", "status:in_review"])
+        branch = "feat-0005-conflict"
+        self._conflicting_branch(branch, "base.txt", "base\n", "branch\n", "main\n")
+        rec, chains = self._recording_resolver(writes=("base.txt", "resolved\n"))
+        self.ctx.runner = chains
+        entity, _ = load_entity(self.ctx, str(eid))
+        note = dispatch_mod._prepare_and_gate(
+            self.ctx, entity, advance.WorkTransition("x", prepare=True), branch, {"task_id": None}
+        )
+        self.assertIn("merge gate", note)
+        labels = {l.name for l in self.remote.get_entry(eid).data.labels}
+        self.assertIn("issue:status:awaiting_approval", labels)
+        bodies = "\n".join(c.body for c in self.remote.get_entry(eid).data.comments)
+        self.assertIn(advance.MERGE_GATE_MARKER, bodies)
+        self.assertEqual(_git_ops.current_branch(self.root), "main")
+
+    def test_merge_reprepares_open_sibling_gate(self) -> None:
+        # Merging one issue re-readies every OTHER open merge gate with a FRESH gate
+        # comment, so a standing approval can't ride a moved primary.
+        from specseed_runtime.executing import advance
+        from specseed_runtime.executing.context import load_entity
+
+        (self.root / "base.txt").write_text("base\n", encoding="utf-8")
+        self._git("add", "-A")
+        self._commit("-m", "base")
+        a = self._seed_both("FEAT-0006 A", ["tier:issue", "status:awaiting_approval"])
+        b = self._seed_both("FEAT-0007 B", ["tier:issue", "status:awaiting_approval"])
+        for branch, fn in (("feat-0006-a", "a.txt"), ("feat-0007-b", "b.txt")):
+            self._git("checkout", "-b", branch)
+            (self.root / fn).write_text("x\n", encoding="utf-8")
+            self._git("add", "-A")
+            self._commit("-m", "work on " + branch)
+            self._git("checkout", "main")
+        # B is parked at a merge gate (the comment lives in BOTH mirrors).
+        gate = "Merge ready\n{0}\n<!-- specseed:approval-request APR-0001 -->".format(
+            advance.MERGE_GATE_MARKER
+        )
+        self.local.add_entry_comment(b, gate)
+        self.remote.add_entry_comment(b, gate)
+
+        entity_a, _ = load_entity(self.ctx, str(a))
+        note = dispatch_mod._execute_merge(self.ctx, entity_a, "feat-0006-a", {"task_id": None})
+        self.assertIn("merged", note)
+        # B got a SECOND gate comment (re-readied) -> its earlier approval is invalidated.
+        gate_comments = [
+            c for c in self.remote.get_entry(b).data.comments
+            if advance.MERGE_GATE_MARKER in (c.body or "")
+        ]
+        self.assertGreaterEqual(len(gate_comments), 2)
+        self.assertEqual(_git_ops.current_branch(self.root), "main")
+
 
 if __name__ == "__main__":
     unittest.main()

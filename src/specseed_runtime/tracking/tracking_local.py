@@ -1193,6 +1193,18 @@ class TrackingLocal(TrackingBase):
             (entry_id,),
         ).fetchone()
 
+    def entry_id_for_comment(self, comment_id: int | str) -> int | str | None:
+        """The entry that owns ``comment_id`` (or None). Lets a comment-scoped event
+        (e.g. a reaction on a merge-gate comment) route work to its parent issue."""
+        try:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT entry_id FROM comments WHERE id = ?", (comment_id,)
+                ).fetchone()
+        except Exception:
+            return None
+        return row["entry_id"] if row is not None else None
+
     def _comment_row(
         self, conn: sqlite3.Connection, entry_id: int | str, comment_id: int | str
     ) -> sqlite3.Row | None:
