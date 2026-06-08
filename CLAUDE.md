@@ -4,6 +4,7 @@
 filler. Style ref: `skills/specseed/references_ext/caveman.md`. Spec PROSE
 the skill *emits* (vision/SAD/SDD/entity bodies/ADR) ALSO gets the humanizer pass + em-dash ban:
 `references_ext/humanizer.md`. Tell spawned agents the same. This rule saves tokens on every edit.
+Memory: when asking for feedback/clarifications, use `skills/specseed/references/question-protocol.md`.
 
 ## What this repo is
 
