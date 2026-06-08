@@ -43,6 +43,7 @@ for _parent in HERE.parents:
 from specseed_runtime.executing import agent_report  # noqa: E402
 from specseed_runtime.executing.advance import REVIEW_MARKER  # noqa: E402
 from specseed_runtime.executing.approvals import next_apr_id  # noqa: E402
+from specseed_runtime.entities.entity_base import Entity, parse_depends_on  # noqa: E402
 from specseed_runtime.tracking.resolve_remote import resolve_local  # noqa: E402
 
 SCRIPT = json.loads((HERE / "script.json").read_text(encoding="utf-8"))
@@ -132,10 +133,16 @@ def main():
         return ids.get(str(post), post)
 
     def subst(text):
+        title_to_id = {spec["title"]: ids[str(spec["key"])] for spec in plan.get("creates", []) if str(spec.get("key")) in ids}
+        text = re.sub(
+            r"\{id:([^}]+)\}",
+            lambda m: str(title_to_id[m.group(1)]),
+            text or "",
+        )
         return re.sub(
             r"@([A-Za-z0-9_]+)@",
             lambda m: "#{0}".format(ids[m.group(1)]),
-            text or "",
+            text,
         )
 
     for spec in plan.get("creates", []):
@@ -233,15 +240,19 @@ def _work_creates(sprint: int) -> tuple[list[dict], list[str]]:
                 }
             )
     issue_keys: list[str] = []
+    title_by_key = {issue["key"]: issue["title"] for issue in SCRIPT["issues"]}
     for issue in SCRIPT["issues"]:
         if issue["sprint"] != sprint:
             continue
         issue_keys.append(issue["key"])
+        body = issue["body"]
+        for key, title in title_by_key.items():
+            body = body.replace("Depends on: @{0}@".format(key), "Depends on: #{{id:{0}}}".format(title))
         creates.append(
             {
                 "key": issue["key"],
                 "title": issue["title"],
-                "body": issue["body"],
+                "body": body,
                 # Plan-first: issues are born `todo`. The per-issue human gate is the
                 # runtime's implement-approval (auto_implement_issue off), not a
                 # breakdown-time APR marker.
@@ -250,6 +261,20 @@ def _work_creates(sprint: int) -> tuple[list[dict], list[str]]:
             }
         )
     return creates, issue_keys
+
+
+def _assert_deps_done(local, post_id: str, title: str) -> None:
+    details = local.get_entry(post_id).data
+    body = str(getattr(details, "body", "") or "")
+    if "Depends on:" in body and not parse_depends_on(body):
+        raise SystemExit(f"dependency link malformed for {title}: {body}")
+    for dep_id in parse_depends_on(body):
+        dep = local.get_entry(dep_id)
+        if not dep.ok or dep.data is None:
+            raise SystemExit(f"dependency #{dep_id} for {title} not found")
+        labels = [lbl.name for lbl in getattr(dep.data, "labels", []) or []]
+        if Entity.status_from_labels(labels) != "done":
+            raise SystemExit(f"dependency #{dep_id} for {title} is not done yet")
 
 
 def _title_ids(local, titles: list[str]) -> dict[str, object]:
@@ -376,6 +401,8 @@ def run_implement(prompt: str) -> int:
     match = re.search(r"remote post (\S+) titled '([^']*)'", prompt)
     post_id, title = match.groups()
     storage = _storage_from(prompt)
+    local = resolve_local(storage=storage)
+    _assert_deps_done(local, post_id, title)
     _log(storage, kind="implement", post_id=post_id, title=title)
     summary = (f"Implemented issue #{post_id} ({title}). No code changes were needed "
                "for this e2e scenario; the tree builds and tests pass.")

@@ -48,6 +48,15 @@ def _run(repo_root: Path, args: list[str]) -> subprocess.CompletedProcess:
     )
 
 
+def _exclude_pathspecs(exclude_paths: Optional[list[str | Path]]) -> list[str]:
+    out: list[str] = []
+    for raw in exclude_paths or []:
+        entry = Path(raw).as_posix().strip("/")
+        if entry and entry != ".":
+            out.append(":(exclude){0}".format(entry))
+    return out
+
+
 def _slug(text: str) -> str:
     s = _SLUG_RE.sub("-", (text or "").strip().lower()).strip("-")
     return s[:_MAX_SLUG].strip("-")
@@ -93,6 +102,12 @@ def has_changes(repo_root: str | Path) -> bool:
     return bool(out.stdout.strip())
 
 
+def has_staged_changes(repo_root: str | Path) -> bool:
+    """True when the index has something to commit."""
+    out = _run(Path(repo_root), ["diff", "--cached", "--quiet"])
+    return out.returncode == 1
+
+
 def checkout(repo_root: str | Path, ref: str) -> GitResult:
     repo_root = Path(repo_root)
     out = _run(repo_root, ["checkout", ref])
@@ -126,14 +141,20 @@ def ensure_on_branch(repo_root: str | Path, branch: str, base: str) -> GitResult
     return GitResult(ok=True, actions=actions)
 
 
-def commit_all(repo_root: str | Path, message: str) -> GitResult:
-    """Stage everything and commit. No-op (ok) when the tree is clean."""
+def commit_all(
+    repo_root: str | Path,
+    message: str,
+    exclude_paths: Optional[list[str | Path]] = None,
+) -> GitResult:
+    """Stage everything except excluded dirs and commit. No-op when nothing stages."""
     repo_root = Path(repo_root)
     if not has_changes(repo_root):
         return GitResult(ok=True, detail="nothing to commit")
-    add = _run(repo_root, ["add", "-A"])
+    add = _run(repo_root, ["add", "-A", "--", ".", *_exclude_pathspecs(exclude_paths)])
     if add.returncode != 0:
         return GitResult(ok=False, error=add.stderr.strip() or "git add failed")
+    if not has_staged_changes(repo_root):
+        return GitResult(ok=True, detail="nothing to commit after exclusions")
     commit = _run(repo_root, [*_GIT_ENV_ARGS, "commit", "-m", message])
     if commit.returncode != 0:
         return GitResult(ok=False, error=commit.stderr.strip() or "git commit failed")
@@ -211,7 +232,11 @@ def _has_conflict_markers(path: Path) -> bool:
     return "<<<<<<<" in text and ">>>>>>>" in text
 
 
-def complete_merge(repo_root: str | Path, message: Optional[str] = None) -> GitResult:
+def complete_merge(
+    repo_root: str | Path,
+    message: Optional[str] = None,
+    exclude_paths: Optional[list[str | Path]] = None,
+) -> GitResult:
     """Finish an in-progress merge after conflicts were resolved in the worktree.
 
     A resolver agent edits files but never runs git, so conflicted paths stay in
@@ -223,9 +248,11 @@ def complete_merge(repo_root: str | Path, message: Optional[str] = None) -> GitR
     for rel in unmerged_files(repo_root):
         if _has_conflict_markers(repo_root / rel):
             return GitResult(ok=False, error="unresolved conflicts remain in {0}".format(rel))
-    add = _run(repo_root, ["add", "-A"])
+    add = _run(repo_root, ["add", "-A", "--", ".", *_exclude_pathspecs(exclude_paths)])
     if add.returncode != 0:
         return GitResult(ok=False, error=add.stderr.strip() or "git add failed")
+    if not has_staged_changes(repo_root):
+        return GitResult(ok=False, error="merge resolved but nothing staged")
     args = [*_GIT_ENV_ARGS, "commit", "--no-edit"]
     if message:
         args = [*_GIT_ENV_ARGS, "commit", "-m", message]

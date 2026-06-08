@@ -155,7 +155,14 @@ def run_agent_job(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
         return HandlerOutcome(success=False, error="work_run: unknown intent {0!r}".format(intent))
 
     # Runtime owns git: branch before the agent edits anything.
-    branch = dispatch._prepare_git_branch(ctx, entity, intent)
+    branch, branch_error = dispatch._prepare_git_branch(ctx, entity, intent)
+    if branch_error:
+        return HandlerOutcome(
+            success=False,
+            error="git branch prep failed for {0}: {1}".format(branch, branch_error),
+            detail="intent {0} stopped before agent".format(intent),
+            retryable=True,
+        )
     result = dispatch._run_agent(ctx, prompt, intent, task_id=task.get("task_id"))
     # Commit the work (implement) and always return to the primary branch, however
     # the run ended, so WIP is never stranded on a feature branch.
@@ -293,7 +300,12 @@ def process_work_result(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
         try:
             detail = dispatch._enqueue_spec_change_followup(ctx, entity, post_id)
         except Exception as exc:
-            detail = "spec-change follow-up enqueue failed: {0!r}".format(exc)
+            return HandlerOutcome(
+                success=False,
+                error="spec-change follow-up failed: {0!r}".format(exc),
+                detail="spec-change follow-up failed",
+                retryable=True,
+            )
         platform_log.log_event(
             "work_result_processed", task_id=task.get("task_id"), post_id=post_id, intent=intent, detail=detail
         )

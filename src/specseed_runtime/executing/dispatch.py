@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -631,15 +632,20 @@ def _primary_branch(ctx: ExecutionContext) -> str:
     return (getattr(ctx, "config", {}) or {}).get("specseed_primary_branch") or "main"
 
 
-def _prepare_git_branch(ctx: ExecutionContext, entity: Any, intent: str) -> Optional[str]:
+def _specseed_dir(ctx: ExecutionContext) -> str:
+    return str((getattr(ctx, "config", {}) or {}).get("specseed_dir") or ".specseed")
+
+
+def _prepare_git_branch(
+    ctx: ExecutionContext, entity: Any, intent: str
+) -> tuple[Optional[str], Optional[str]]:
     """Runtime owns git: put the work on the issue's branch before the agent runs.
 
-    Returns the branch name (None for non-code intents). The branch is created off
-    the primary branch the first time and reused after (review bounce continues the
-    same branch). Best-effort + logged; a git hiccup never aborts the work.
+    Returns (branch, error). A git hiccup must stop the agent: running on the wrong
+    branch is worse than retrying with a visible platform error.
     """
     if intent not in (AgentIntent.IMPLEMENT, AgentIntent.REVIEW):
-        return None
+        return None, None
     branch = git_ops.branch_name(entity)
     res = git_ops.ensure_on_branch(ctx.repo_root, branch, _primary_branch(ctx))
     platform_log.log_event(
@@ -651,7 +657,9 @@ def _prepare_git_branch(ctx: ExecutionContext, entity: Any, intent: str) -> Opti
         actions=res.actions,
         error=res.error,
     )
-    return branch
+    if not res.ok:
+        return branch, (res.error or "git branch preparation failed")
+    return branch, None
 
 
 def _finalize_git_branch(ctx: ExecutionContext, entity: Any, intent: str, branch: Optional[str]) -> None:
@@ -665,7 +673,7 @@ def _finalize_git_branch(ctx: ExecutionContext, entity: Any, intent: str, branch
     if intent == AgentIntent.IMPLEMENT:
         message = "specseed: {0}".format(getattr(entity, "title", None) or "work on issue {0}".format(
             getattr(entity, "post_id", "?")))
-        commit = git_ops.commit_all(ctx.repo_root, message)
+        commit = git_ops.commit_all(ctx.repo_root, message, exclude_paths=[_specseed_dir(ctx)])
         platform_log.log_event(
             "git_commit",
             post_id=getattr(entity, "post_id", None),
@@ -731,7 +739,7 @@ def _execute_merge(ctx: ExecutionContext, entity: Any, branch: Optional[str], ta
     prompt = prompts.build_merge_conflict_prompt(entity, branch, primary, res.files, ctx, direction="merge")
     resolver = _run_agent(ctx, prompt, AgentIntent.MERGE_CONFLICTS, task_id=task.get("task_id"))
     complete = (
-        git_ops.complete_merge(ctx.repo_root)
+        git_ops.complete_merge(ctx.repo_root, exclude_paths=[_specseed_dir(ctx)])
         if getattr(resolver, "ok", False)
         else git_ops.GitResult(ok=False, error="resolver agent did not finish")
     )
@@ -767,7 +775,7 @@ def _resolve_prepare_conflict(
     prompt = prompts.build_merge_conflict_prompt(entity, branch, primary, files, ctx, direction="prepare")
     resolver = _run_agent(ctx, prompt, AgentIntent.MERGE_CONFLICTS, task_id=task.get("task_id"))
     complete = (
-        git_ops.complete_merge(ctx.repo_root)
+        git_ops.complete_merge(ctx.repo_root, exclude_paths=[_specseed_dir(ctx)])
         if getattr(resolver, "ok", False)
         else git_ops.GitResult(ok=False, error="resolver agent did not finish")
     )
@@ -1212,6 +1220,37 @@ def _read_plan(ctx: ExecutionContext, request_id: Any) -> Optional[dict]:
 # approved. ``edits``/``labels``/``comments`` are judged per-target below (a
 # clarification round touches only the request itself, which never gates).
 _PROPOSE_PLAN_KEYS = ("creates", "settle_docs", "closes", "deletes")
+_PLAN_DEPENDS_RE = re.compile(r"depends\s+on\s*:?\s*(.+)", re.IGNORECASE)
+_PLAN_VALID_DEP_RE = re.compile(r"^#\s*(?:[0-9]+|[A-Za-z]+-[0-9]+|\{id:[^}]+\})$")
+
+
+def _validate_depends_on_links(plan: dict) -> None:
+    """Reject dependency refs the runtime would not enforce.
+
+    Dependency lines must hold parseable links (`#9`, `#FEAT-0001`) or a staged
+    create placeholder with the `#` already present (`#{id:Title}`). Bare ids are
+    too easy for agents to emit and the dependency gate ignores them.
+    """
+    bad: list[str] = []
+    entries = list(plan.get("creates") or []) + list(plan.get("edits") or [])
+    for entry in entries:
+        title = str(entry.get("title") or entry.get("post_id") or entry.get("post") or "?")
+        body = str(entry.get("body") or "")
+        for m in _PLAN_DEPENDS_RE.finditer(body):
+            segment = m.group(1)
+            for stop in ("-->", "\n"):
+                idx = segment.find(stop)
+                if idx != -1:
+                    segment = segment[:idx]
+            refs = [part.strip() for part in segment.split(",") if part.strip()]
+            for ref in refs:
+                if not _PLAN_VALID_DEP_RE.match(ref):
+                    bad.append("{0}: {1}".format(title, ref))
+    if bad:
+        raise ValueError(
+            "dependency links must use # refs, e.g. `Depends on: #{id:Title}`; bad: "
+            + "; ".join(bad[:5])
+        )
 
 
 def _touches_other_posts(plan: dict, request_id: Any) -> bool:
@@ -1249,6 +1288,7 @@ def _classify_spec_change(ctx: ExecutionContext, request_id: Any) -> str:
     plan = _read_plan(ctx, request_id)
     if plan is None:
         return "none"
+    _validate_depends_on_links(plan)
     needs_approval = bool(staged_spec_files(request_id, ctx.storage)) or any(
         plan.get(key) for key in _PROPOSE_PLAN_KEYS
     ) or _touches_other_posts(plan, request_id)

@@ -6,6 +6,7 @@ FakeAgentRunner only; TrackingRemoteLocal/TrackingLocal mirrors. No GitHub/GitLa
 from __future__ import annotations
 
 import json
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -49,6 +50,15 @@ class DispatchTestBase(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
+        subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
+        subprocess.run(["git", "symbolic-ref", "HEAD", "refs/heads/main"], cwd=self.root, check=True)
+        (self.root / ".gitignore").write_text("*.db\n*.db-*\nstorage/\n", encoding="utf-8")
+        subprocess.run(["git", "add", ".gitignore"], cwd=self.root, check=True)
+        subprocess.run(
+            ["git", "-c", "user.email=t@t", "-c", "user.name=t",
+             "commit", "-m", "root"],
+            cwd=self.root, check=True, capture_output=True,
+        )
         self.remote = TrackingRemoteLocal(db_path=self.root / "remote.db", author="alice")
         self.local = TrackingLocal(db_path=self.root / "local.db", author="agent")
         self.db = Database(db_path=self.root / "queue.db")
@@ -461,6 +471,21 @@ class SpecChangeGateDecisionTest(DispatchTestBase):
         self._write_plan(rid, {"creates": [{"title": "FEAT-0001"}]})
         self.assertEqual(dispatch_mod._classify_spec_change(self.ctx, str(rid)), "propose")
 
+    def test_classify_rejects_bare_dependency_refs(self) -> None:
+        rid = self._seed_local_entry("Adapt", ["spec-change:adapt"])
+        self._write_plan(rid, {
+            "creates": [{"title": "FEAT-0002", "body": "Depends on: {id:FEAT-0001}"}],
+        })
+        with self.assertRaises(ValueError):
+            dispatch_mod._classify_spec_change(self.ctx, str(rid))
+
+    def test_classify_accepts_hash_dependency_placeholders(self) -> None:
+        rid = self._seed_local_entry("Adapt", ["spec-change:adapt"])
+        self._write_plan(rid, {
+            "creates": [{"title": "FEAT-0002", "body": "Depends on: #{id:FEAT-0001}"}],
+        })
+        self.assertEqual(dispatch_mod._classify_spec_change(self.ctx, str(rid)), "propose")
+
     def test_classify_propose_on_staged_spec(self) -> None:
         rid = self._seed_local_entry("Adapt", ["spec-change:adapt"])
         self._write_plan(rid, {})  # no work keys at all
@@ -752,7 +777,6 @@ class RunSpecChangeScriptFinalizeTest(DispatchTestBase):
 
 
 import shutil
-import subprocess
 from specseed_runtime.executing import git_ops as _git_ops
 
 _HAS_GIT = shutil.which("git") is not None

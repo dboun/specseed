@@ -16,9 +16,11 @@ real agent.
 from __future__ import annotations
 
 import tempfile
+import subprocess
 import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from specseed_runtime.db.database import Database, LANE_CONTROL, LANE_WORK
 from specseed_runtime.executing import priorities
@@ -41,6 +43,15 @@ class WorkRunnerBase(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
+        subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
+        subprocess.run(["git", "symbolic-ref", "HEAD", "refs/heads/main"], cwd=self.root, check=True)
+        (self.root / ".gitignore").write_text("*.db\n*.db-*\nstorage/\n", encoding="utf-8")
+        subprocess.run(["git", "add", ".gitignore"], cwd=self.root, check=True)
+        subprocess.run(
+            ["git", "-c", "user.email=t@t", "-c", "user.name=t",
+             "commit", "-m", "root"],
+            cwd=self.root, check=True, capture_output=True,
+        )
         self.remote = TrackingRemoteLocal(db_path=self.root / "remote.db", author="alice")
         self.local = TrackingLocal(db_path=self.root / "local.db", author="agent")
         self.db = Database(db_path=self.root / "queue.db")
@@ -137,6 +148,26 @@ class RunAgentJobTest(WorkRunnerBase):
         self.assertFalse(out.success)
         self.assertTrue(out.retryable)
         self.assertIsNone(work_runner.read_work_outcome(ctx, 4))
+
+    def test_branch_prep_failure_stops_before_agent(self) -> None:
+        eid = self._seed_local("Do it", ["issue", "issue:status:in_progress"])
+        runner = FakeAgentRunner(result=AgentResult(ok=True, report={"status": "done"}))
+        ctx = self._ctx(runner)
+
+        with mock.patch(
+            "specseed_runtime.executing.dispatch._prepare_git_branch",
+            return_value=("feat-x", "checkout failed"),
+        ):
+            out = work_runner.run_agent_job(
+                ctx, {"task_id": 8, "action": work_lane.WORK_RUN, "post_id": str(eid),
+                      "payload": {"intent": "implement", "post_id": str(eid)}}
+            )
+
+        self.assertFalse(out.success)
+        self.assertTrue(out.retryable)
+        self.assertIn("checkout failed", out.error)
+        self.assertEqual(runner.calls, [])
+        self.assertIsNone(work_runner.read_work_outcome(ctx, 8))
 
     def _all_tasks(self):
         return [t for t in (self.db.get_task(i) for i in range(1, 50)) if t is not None]

@@ -57,7 +57,9 @@ class ReclaimTest(unittest.TestCase):
         self.addCleanup(lambda: proc.poll() is None and proc.kill())
         task_id = self.db.enqueue("handle_entry_created", post_id="1", payload={})
         self.db.claim_next()  # -> in_progress
-        inflight.record(self.storage, task_id, proc.pid, sys.executable)
+        # Empty binary skips the recycled-pid command check; sandboxed test
+        # runners may forbid `ps`, but this still covers killing a recorded child.
+        inflight.record(self.storage, task_id, proc.pid, "")
 
         summary = inflight.reclaim(self.storage, self.db)
 

@@ -86,6 +86,19 @@ class GitLifecycleTest(unittest.TestCase):
         self.assertTrue(c2.ok)
         self.assertEqual(c2.detail, "nothing to commit")
 
+    def test_commit_all_excludes_specseed_dir(self) -> None:
+        git_ops.ensure_on_branch(self.root, "feat-0001-x", "main")
+        (self.root / ".specseed" / "storage").mkdir(parents=True)
+        (self.root / ".specseed" / "storage" / "platform.log").write_text("runtime\n", encoding="utf-8")
+        (self.root / "app.py").write_text("print('ok')\n", encoding="utf-8")
+
+        c = git_ops.commit_all(self.root, "specseed: work", exclude_paths=[".specseed"])
+
+        self.assertTrue(c.ok)
+        tracked = self._git("ls-files").stdout.splitlines()
+        self.assertIn("app.py", tracked)
+        self.assertNotIn(".specseed/storage/platform.log", tracked)
+
     def test_work_isolated_on_branch_not_on_primary(self) -> None:
         # simulate a full implement cycle: branch, edit, commit, return to main
         branch = "feat-0001-x"

@@ -150,6 +150,26 @@ class RepoGitignoreTest(unittest.TestCase):
         self.assertEqual(result["gitignore"], str(self.root / ".gitignore"))
         self.assertIn(".specseed/", (self.root / ".gitignore").read_text(encoding="utf-8"))
 
+    @unittest.skipUnless(_HAS_GIT, "git not available")
+    def test_scaffold_target_commits_gitignore_without_sweeping_other_files(self) -> None:
+        (self.root / "note.txt").write_text("user work\n", encoding="utf-8")
+
+        result = scaffold.scaffold_target(self.root, ".specseed", "main")
+
+        self.assertIn("commit .gitignore", result["gitignore_commit"])
+        show = subprocess.run(
+            ["git", "show", "HEAD:.gitignore"],
+            cwd=self.root, capture_output=True, text=True,
+        )
+        self.assertEqual(show.returncode, 0)
+        self.assertIn(".specseed/", show.stdout)
+        tracked = subprocess.run(
+            ["git", "ls-files"],
+            cwd=self.root, capture_output=True, text=True,
+        ).stdout.splitlines()
+        self.assertIn(".gitignore", tracked)
+        self.assertNotIn("note.txt", tracked)
+
     def test_absolute_dir_inside_repo_uses_relative_entry(self) -> None:
         # An absolute specseed dir under the repo is ignored by its repo-relative path.
         p = scaffold.ensure_repo_gitignored(self.root, self.root / "state")

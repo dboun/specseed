@@ -54,6 +54,7 @@ from specseed_runtime.migrating import m_0_12_0__0_13_0
 from specseed_runtime.migrating import m_0_13_0__0_14_0
 from specseed_runtime.migrating import m_0_14_0__0_16_0
 from specseed_runtime.migrating import m_0_16_0__0_18_0
+from specseed_runtime.migrating import m_0_18_0__0_19_0
 from specseed_runtime.storage_paths import (
     default_specseed_dir,
     default_storage_dir,
@@ -66,7 +67,7 @@ from specseed_runtime.storage_paths import (
 BASELINE_VERSION = "0.3.0"
 
 # Ordered hop chain, oldest first. Append new hops here; never edit shipped ones.
-MIGRATIONS = (m_0_3_0__0_3_1, m_0_3_1__0_4_0, m_0_4_0__0_5_0, m_0_5_0__0_7_0, m_0_7_0__0_9_0, m_0_9_0__0_11_0, m_0_11_0__0_12_0, m_0_12_0__0_13_0, m_0_13_0__0_14_0, m_0_14_0__0_16_0, m_0_16_0__0_18_0)
+MIGRATIONS = (m_0_3_0__0_3_1, m_0_3_1__0_4_0, m_0_4_0__0_5_0, m_0_5_0__0_7_0, m_0_7_0__0_9_0, m_0_9_0__0_11_0, m_0_11_0__0_12_0, m_0_12_0__0_13_0, m_0_13_0__0_14_0, m_0_14_0__0_16_0, m_0_16_0__0_18_0, m_0_18_0__0_19_0)
 
 
 def parse_version(text: str) -> tuple[int, ...]:

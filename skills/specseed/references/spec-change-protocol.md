@@ -95,8 +95,11 @@ are born `issue:status:todo`, never `awaiting_approval`** — the plan approval 
 no post exists until it is approved.
 
 **Cross-references between creates:** post ids don't exist until `apply.py` runs, so
-a child body references its parent as `{id:<parent title>}` — the template below
-substitutes the real id at create time. Never hardcode guessed ids (`#1`, `#2`).
+a child body references its parent as `#{id:<parent title>}` — the template below
+substitutes the real id at create time while preserving the leading `#`. Never hardcode
+guessed ids (`#1`, `#2`). For dependency lines, the `#` is mandatory; bare
+`Depends on: {id:...}` / `Depends on: 9` is invalid because the dependency gate will
+not enforce it.
 
 `apply.py` reads `plan.json` and applies it — but only AFTER approval (see the gate).
 Keeping the data and the executor separate means a human can eyeball the delta and the
@@ -175,6 +178,8 @@ def main() -> int:
         body = spec.get("body") or ""
         for parent_title, parent_id in created.items():
             body = body.replace("{id:" + parent_title + "}", str(parent_id))
+        if "Depends on:" in body and "Depends on: #" not in body:
+            raise SystemExit(f"FAILED create {title!r}: dependency refs must use # links")
         # .data is a TrackingPostId-shaped object - the id lives at .id
         new = _ok(remote.add_entry(title, body=body, labels=spec.get("labels")),
                   f"create {title!r}")

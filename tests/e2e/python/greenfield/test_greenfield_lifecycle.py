@@ -279,6 +279,9 @@ def _approve_issue_batch(harness: Greenfield, boss, titles: list[str]) -> dict[s
     for title in titles:
         post = harness.wait_for(lambda t=title: find_post(boss, t), f"issue post {title!r}")
         ids[title] = post.id
+        body = details_of(boss, post.id).body or ""
+        if "Depends on:" in body:
+            assert "Depends on: #" in body, f"dependency link must be a parseable # ref: {body}"
         harness.wait_for(
             lambda pid=post.id: "issue:status:awaiting_approval" in labels_of(boss, pid),
             f"issue {title!r} parked awaiting implement approval",

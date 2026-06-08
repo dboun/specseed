@@ -83,6 +83,41 @@ def ensure_git_repo(repo_root: str | Path, primary_branch: str = "main") -> list
     return actions
 
 
+def ensure_gitignore_committed(repo_root: str | Path, gitignore_path: str | Path | None) -> list[str]:
+    """Commit only the repo .gitignore when it has staged-relevant changes.
+
+    Runtime state must be ignored on the primary history before issue branches are
+    cut. Stage only ``.gitignore``: unrelated dirty files stay in the worktree.
+    """
+    if gitignore_path is None:
+        return []
+    repo_root = Path(repo_root)
+    path = Path(gitignore_path)
+    try:
+        rel = path.resolve().relative_to(repo_root.resolve()).as_posix()
+    except ValueError:
+        return []
+    if rel != ".gitignore" or not path.exists() or not is_git_repo(repo_root) or not _has_head(repo_root):
+        return []
+    add = _run_git(repo_root, ["add", "--", rel])
+    if add.returncode != 0:
+        return []
+    staged = _run_git(repo_root, ["diff", "--cached", "--quiet", "--", rel])
+    if staged.returncode == 0:
+        return []
+    res = _run_git(
+        repo_root,
+        [
+            "-c", "user.email=specseed@local",
+            "-c", "user.name=specseed",
+            "commit", "-m", "specseed: ignore runtime state",
+        ],
+    )
+    if res.returncode == 0:
+        return ["commit .gitignore"]
+    return []
+
+
 def _instruction_body(repo_root: Path, specseed_dir: str, kind: str) -> str:
     spec = f"{specseed_dir}/spec"
     return (
@@ -288,11 +323,14 @@ def scaffold_target(
     gets it. ``ensure_repo_gitignored`` no-ops when the dir lives outside the repo
     (already excluded). Best-effort throughout.
     """
+    git_actions = ensure_git_repo(repo_root, primary_branch)
     gi = ensure_repo_gitignored(repo_root, specseed_dir)
+    gi_commit = ensure_gitignore_committed(repo_root, gi)
     return {
-        "git": ensure_git_repo(repo_root, primary_branch),
+        "git": git_actions,
         "instructions": [str(p) for p in write_instruction_files(repo_root, specseed_dir)],
         "custom_instructions": [str(p) for p in write_custom_instruction_stubs(repo_root, specseed_dir)],
         "router": [str(p) for p in ensure_router_block(repo_root, specseed_dir)],
         "gitignore": str(gi) if gi is not None else None,
+        "gitignore_commit": gi_commit,
     }

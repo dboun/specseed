@@ -8,6 +8,8 @@ marker, then run again and assert nothing changes (idempotency).
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -19,6 +21,9 @@ from specseed_runtime.migrating import m_0_4_0__0_5_0
 from specseed_runtime.migrating import m_0_5_0__0_7_0
 from specseed_runtime.migrating import migrate
 from specseed_runtime import storage_paths
+
+
+_HAS_GIT = shutil.which("git") is not None
 
 
 def _fixture_tree(root: Path, version: str = "0.3.1") -> tuple[Path, Path]:
@@ -73,7 +78,7 @@ class RunMigrationsTest(unittest.TestCase):
                 ["m_0_3_0__0_3_1", "m_0_3_1__0_4_0", "m_0_4_0__0_5_0",
                  "m_0_5_0__0_7_0", "m_0_7_0__0_9_0", "m_0_9_0__0_11_0",
                  "m_0_11_0__0_12_0", "m_0_12_0__0_13_0", "m_0_13_0__0_14_0",
-                 "m_0_14_0__0_16_0", "m_0_16_0__0_18_0"],
+                 "m_0_14_0__0_16_0", "m_0_16_0__0_18_0", "m_0_18_0__0_19_0"],
             )
             self.assertEqual(migrate.storage_version(storage), migrate.code_version())
 
@@ -652,6 +657,43 @@ class Hop0130To0140Test(unittest.TestCase):
             specseed_dir, storage = _fixture_tree(Path(tmp), version="0.13.0")
             storage.mkdir(parents=True, exist_ok=True)
             self.assertEqual(m_0_13_0__0_14_0.run(storage, specseed_dir), [])
+
+
+@unittest.skipUnless(_HAS_GIT, "git not available")
+class Hop0180To0190Test(unittest.TestCase):
+    """0.19.0: ensure the specseed dir ignore rule is committed."""
+
+    def test_commits_specseed_gitignore_rule(self) -> None:
+        from specseed_runtime.migrating import m_0_18_0__0_19_0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            specseed_dir, storage = _fixture_tree(root, version="0.18.0")
+            storage.mkdir(parents=True, exist_ok=True)
+            (storage / "configuration.json").write_text(
+                json.dumps({"specseed_primary_branch": "main"}) + "\n", encoding="utf-8"
+            )
+
+            m_0_18_0__0_19_0.run(storage, specseed_dir)
+
+            show = subprocess.run(
+                ["git", "show", "HEAD:.gitignore"],
+                cwd=root, capture_output=True, text=True,
+            )
+            self.assertEqual(show.returncode, 0)
+            self.assertIn(".specseed/", show.stdout)
+
+            # Idempotent: second run has nothing new to commit.
+            before = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=root, capture_output=True, text=True,
+            ).stdout.strip()
+            m_0_18_0__0_19_0.run(storage, specseed_dir)
+            after = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=root, capture_output=True, text=True,
+            ).stdout.strip()
+            self.assertEqual(before, after)
 
 
 if __name__ == "__main__":
