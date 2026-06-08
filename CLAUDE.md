@@ -75,7 +75,7 @@ src/
     platform_identity.py             #   who the platform is on the tracker: platform_username + "specseed: " comment prefix (self-retrigger guard)
     executing/                       #   scheduler(poll loop) + dispatch + advance + agent_runner + control + permissions + runner_control(control.json/runner.json) + recovery(retries + platform_error posts) + inflight(orphan reclaim)
     entities/                        #   epic/ticket/issue = meaning over neutral entries (tier/status/links). EntityRef
-    state_machines/                  #   legal status transitions + approvals (👍/👎 reactions, approve/reject cmds)
+    state_machines/                  #   legal status transitions + approvals. 0.15.0: a gate's 👍/👎/❤️ counts on its REQUEST COMMENT (latest platform comment w/ the approval-request marker), NOT the post — `_gate_reaction_users`; post reactions only when no request comment (post body is the ask). approve/reject/merge cmds still scoped to live APR/post id
     configuring/                     #   configure.py interactive setup -> config
     migrating/                       #   storage migrations (hops); 0.3.1->0.4.0 deletes copied code; 0.4.0->0.5.0 + 0.5.0->0.7.0 drop the seed marker so new labels re-seed; 0.5.0->0.7.0 also adds tasks.not_before; 0.11.0->0.12.0 renames dev_branch->specseed_primary_branch (+ merge_to_primary/push_primary); 0.12.0->0.13.0 drops the dead permissions.remote.make_prs switch
   ui/                  # the SHARED web UI (vanilla JS modules, no deps): server.py (multi-repo API) + shell/ + features/{repos,monitor,tracker,configuration} + theme.css
@@ -147,9 +147,10 @@ tests/integration/python/            # opt-in integration tests (marker: integra
     Plain HITL/below-bar gates keep POST-reaction approval (`_resolve_plain_gate`). **Invalidate-on-primary-change:** after
     a successful merge `_reprepare_after_primary_change` re-readies every OTHER open merge gate against the new primary
     (new gate comment = fresh APR, conflict -> merge-conflicts agent, can't ready -> blocked). `resolve_blocked` clears a
-    block ONLY on a fresh explicit `approve/merge <id>` COMMENT (never a durable post reaction). UI merge-gate buttons
-    react on the gate comment (`data-gate-react`/`reactComment`). specseed does NOT open PRs/MRs yet; the issue-branch
-    merge is the unit.
+    block ONLY on a fresh explicit `approve/merge <id>` COMMENT (never a durable post reaction). UI gate buttons react on
+    the request comment (`data-gate-react`/`reactComment`) for EVERY gate. A comment reaction syncs keyed on the COMMENT,
+    so `dispatch._run_work` maps it to the owning entry via `TrackingLocal.entry_id_for_comment` before resolving.
+    specseed does NOT open PRs/MRs yet; the issue-branch merge is the unit.
 
 ## Testing (enforced)
 

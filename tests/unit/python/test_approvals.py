@@ -173,6 +173,51 @@ class ApprovedByTest(unittest.TestCase):
         self.assertEqual(approved_by(_entity(), cfg, convo), [])
 
 
+def _request_comment(apr="APR-0001", up=(), heart=(), down=()):
+    """A platform approval-REQUEST comment (carries the marker) with reactions ON it."""
+    from specseed_runtime.platform_identity import platform_comment
+
+    reactions = []
+    if up:
+        reactions.append(TrackingReaction("thumbs_up", len(up), list(up)))
+    if heart:
+        reactions.append(TrackingReaction("heart", len(heart), list(heart)))
+    if down:
+        reactions.append(TrackingReaction("thumbs_down", len(down), list(down)))
+    body = platform_comment(approvals.approval_request_comment(apr, "ready"))
+    return {"author": "specseed", "body": body, "reactions": reactions}
+
+
+class RequestCommentScopedTest(unittest.TestCase):
+    """Unified rule: a reaction counts on the request COMMENT, not the post."""
+
+    cfg = {"approvals": {"approver_usernames": ["alice"]}}
+
+    def test_reaction_on_request_comment_approves(self) -> None:
+        convo = [_request_comment(up=["alice"])]
+        self.assertEqual(approved_by(_entity(), self.cfg, convo), ["alice"])
+
+    def test_post_reaction_inert_when_request_comment_exists(self) -> None:
+        # a 👍 on the POST is ignored once a request comment is on the thread.
+        convo = [_request_comment()]  # no reaction on the request comment
+        entity = _entity([TrackingReaction("thumbs_up", 1, ["alice"])])  # post 👍
+        self.assertEqual(approved_by(entity, self.cfg, convo), [])
+
+    def test_reaction_on_superseded_request_comment_inert(self) -> None:
+        old = _request_comment(apr="APR-0001", up=["alice"])
+        new = _request_comment(apr="APR-0002")  # latest gate, no reaction
+        self.assertEqual(approved_by(_entity(), self.cfg, [old, new]), [])
+
+    def test_reject_reaction_on_request_comment(self) -> None:
+        convo = [_request_comment(down=["alice"])]
+        self.assertEqual(rejected_by(_entity(), self.cfg, convo), ["alice"])
+
+    def test_post_reaction_fallback_when_no_request_comment(self) -> None:
+        # no request comment on the thread -> the post body is the ask; post 👍 counts.
+        entity = _entity([TrackingReaction("thumbs_up", 1, ["alice"])])
+        self.assertEqual(approved_by(entity, self.cfg, []), ["alice"])
+
+
 class RejectedByTest(unittest.TestCase):
     def test_reject_comment_and_thumbs_down(self) -> None:
         cfg = {}
@@ -276,6 +321,35 @@ class DispatchReactionApprovalTest(_Base):
             ctx,
             {"action": "handle_entry_reaction_added", "post_id": str(eid), "payload": {}},
         )
+        self.assertTrue(out.success)
+        self.assertIn("issue:status:awaiting_approval", self._remote_labels(eid))
+
+    def _seed_with_request_comment(self):
+        from specseed_runtime.platform_identity import platform_comment
+
+        eid = self._seed_awaiting()
+        body = platform_comment(approvals.approval_request_comment("APR-0001", "ready"))
+        cid = self.local.add_entry_comment(eid, body).data.id
+        return eid, cid
+
+    def test_reaction_on_request_comment_resolves_gate(self) -> None:
+        # The unified rule end-to-end: a 👍 ON the request comment routes through the
+        # comment->entry lookup and clears the gate.
+        eid, cid = self._seed_with_request_comment()
+        human = TrackingLocal(db_path=self.root / "local.db", author="human")
+        human.add_entry_comment_reaction(eid, cid, "thumbs_up")
+        ctx = self._ctx(self._config())
+        out = dispatch(ctx, {"action": "handle_reaction_added", "post_id": str(cid), "payload": {}})
+        self.assertTrue(out.success)
+        self.assertIn("issue:status:todo", self._remote_labels(eid))
+
+    def test_post_reaction_inert_when_request_comment_present(self) -> None:
+        # With a request comment on the thread, a 👍 on the POST does NOT clear the gate.
+        eid, _cid = self._seed_with_request_comment()
+        human = TrackingLocal(db_path=self.root / "local.db", author="human")
+        human.add_entry_reaction(eid, "thumbs_up")
+        ctx = self._ctx(self._config())
+        out = dispatch(ctx, {"action": "handle_entry_reaction_added", "post_id": str(eid), "payload": {}})
         self.assertTrue(out.success)
         self.assertIn("issue:status:awaiting_approval", self._remote_labels(eid))
 

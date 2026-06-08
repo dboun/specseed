@@ -324,11 +324,11 @@ export function createTracker({ repo, ctx }) {
   }
 
   // The approval request is a comment; surface it as a box with approve/reject.
-  // A plain work/HITL gate votes with 👍/👎 on the POST. The two MERGE gates vote on
-  // the gate COMMENT instead (so a new gate comment needs a fresh vote and a standing
-  // reaction can't re-merge): a pure merge gate (👍 merges, 👎 leaves the branch for a
-  // manual merge) and a combined work+merge gate (❤️ approves AND merges, 👍 approves
-  // the work only, 👎 rejects).
+  // EVERY gate votes on its request COMMENT (not the post), so a new gate comment needs
+  // a fresh vote and a standing reaction can't re-fire. Kinds: a plain work/HITL gate
+  // (👍 approve, 👎 reject); a pure merge gate (👍 merges, 👎 leaves the branch for a
+  // manual merge); a combined work+merge gate (❤️ approves AND merges, 👍 approves the
+  // work only, 👎 rejects).
   const MERGE_GATE_MARKER = "<!-- specseed:merge-gate -->";
   const WORK_MERGE_GATE_MARKER = "<!-- specseed:work-merge-gate -->";
 
@@ -349,28 +349,21 @@ export function createTracker({ repo, ctx }) {
   function approvalResolution(post, comment) {
     const names = (post.labels || []).map((l) => l.name);
     // Terminal labels win (the runtime moved the issue on).
-    if (names.some((n) => n.endsWith(":status:done"))) return "approved";
+    if (names.some((n) => n.endsWith(":status:done") || n.endsWith(":status:approved"))) return "approved";
     if (names.some((n) => n.endsWith(":status:rejected"))) return "rejected";
-    const kind = comment ? gateType(comment) : "work";
-    if (kind === "merge" || kind === "combined") {
-      // Merge gates read the vote off THIS gate comment, not the post — a new gate is
-      // a new comment with no reactions, so an old approval never carries over.
-      const reacted = (k) => (comment.reactions || []).some((r) => r.kind === k && r.count > 0);
-      if (reacted("thumbs_up") || reacted("heart")) return "approved";
-      if (reacted("thumbs_down")) return "rejected";
-      return null;
-    }
-    const reacted = (k) => (post.reactions || []).some((r) => r.kind === k && r.count > 0);
-    if (names.some((n) => n.endsWith(":status:approved")) || reacted("thumbs_up") || reacted("heart")) return "approved";
-    if (names.some((n) => n.endsWith(":status:rejected")) || reacted("thumbs_down")) return "rejected";
+    // Every gate reads the vote off ITS request comment, never the post — a new gate
+    // is a new comment with no reactions, so an old approval never carries over.
+    const reacted = (k) => ((comment && comment.reactions) || []).some((r) => r.kind === k && r.count > 0);
+    if (reacted("thumbs_up") || reacted("heart")) return "approved";
+    if (reacted("thumbs_down")) return "rejected";
     return null;
   }
 
   function approvalButtons(comment) {
     const kind = gateType(comment);
     const cid = escapeHtml(String(comment.id));
+    // Every gate votes on THIS request comment (data-gate-react), never the post.
     if (kind === "combined") {
-      // Merge involved -> react on the gate COMMENT (data-gate-react), not the post.
       // ❤️ approve+merge, 👍 approve work only, 👎 reject.
       return `
         <button type="button" class="btn btn-primary" data-gate-react="heart" data-gate-comment="${cid}">Approve &amp; merge</button>
@@ -383,10 +376,10 @@ export function createTracker({ repo, ctx }) {
         <button type="button" class="btn btn-primary" data-gate-react="thumbs_up" data-gate-comment="${cid}">Approve merge</button>
         <button type="button" class="btn btn-danger" data-gate-react="thumbs_down" data-gate-comment="${cid}">Decline</button>`;
     }
-    // plain work / HITL gate: a post reaction is fine (it never loops).
+    // plain work / HITL / spec-change gate.
     return `
-      <button type="button" class="btn btn-primary" data-approve>Approve</button>
-      <button type="button" class="btn btn-danger" data-reject>Reject</button>`;
+      <button type="button" class="btn btn-primary" data-gate-react="thumbs_up" data-gate-comment="${cid}">Approve</button>
+      <button type="button" class="btn btn-danger" data-gate-react="thumbs_down" data-gate-comment="${cid}">Reject</button>`;
   }
 
   function approvalBox(comment, post) {
@@ -501,9 +494,6 @@ export function createTracker({ repo, ctx }) {
     if (t.closest("[data-remove-draft]")) return mutate(() => api.updateLabel(repo.id, state.selectedId, "remove", "draft"));
     const gr = t.closest("[data-gate-react]");
     if (gr) return mutate(() => api.reactComment(repo.id, state.selectedId, gr.dataset.gateComment, gr.dataset.gateReact));
-    if (t.closest("[data-approve-merge]")) return mutate(() => api.reactPost(repo.id, state.selectedId, "heart"));
-    if (t.closest("[data-approve]")) return mutate(() => api.reactPost(repo.id, state.selectedId, "thumbs_up"));
-    if (t.closest("[data-reject]")) return mutate(() => api.reactPost(repo.id, state.selectedId, "thumbs_down"));
     const stateSeg = t.closest("[data-state]");
     if (stateSeg) {
       state.stateFilter = stateSeg.dataset.state;

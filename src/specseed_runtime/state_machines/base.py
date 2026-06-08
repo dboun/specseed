@@ -14,7 +14,11 @@ from typing import Any, Iterable, Optional
 
 from specseed_runtime.entities.entity_base import Entity
 from specseed_runtime.platform_identity import is_platform_comment, platform_username
-from specseed_runtime.state_machines.approvals import apr_ids_in_text, requested_apr_ids
+from specseed_runtime.state_machines.approvals import (
+    APPROVAL_REQUEST_MARKER,
+    apr_ids_in_text,
+    requested_apr_ids,
+)
 
 
 DEFAULT_STATE = "todo"
@@ -230,6 +234,36 @@ def _entity_reaction_users(entity: Entity, kind: str) -> list[str]:
     return users
 
 
+def _request_comment(conversation: Optional[Iterable[Any]], config: dict[str, Any]) -> Any:
+    """The latest PLATFORM comment that ASKS for approval (carries the approval-request
+    marker). Approval reactions are read HERE, not on the post - a new gate is a new
+    comment, so a standing reaction never carries to the next gate. Returns None when no
+    request comment exists (the ask is the post body -> read post reactions)."""
+    bot_name = platform_username(config)
+    found = None
+    for item in conversation or []:
+        body = _field(item, "body")
+        if not body or APPROVAL_REQUEST_MARKER not in str(body):
+            continue
+        if not is_platform_comment(author=_field(item, "author"), body=str(body), username=bot_name):
+            continue
+        found = item
+    return found
+
+
+def _gate_reaction_users(
+    entity: Entity, kind: str, config: dict[str, Any], conversation: Optional[Iterable[Any]]
+) -> list[str]:
+    """Approver-filtered users who reacted ``kind`` toward the gate: on the request
+    comment if there is one, else on the post (the post body is the ask)."""
+    conv = _conversation_items(entity, conversation)
+    request = _request_comment(conv, config)
+    if request is not None:
+        return comment_reaction_users(request, kind, config)
+    is_approver = _approver_predicate(config)
+    return _dedupe([user for user in _entity_reaction_users(entity, kind) if is_approver(user)])
+
+
 def _live_gate_targets(
     entity: Entity,
     config: dict[str, Any],
@@ -300,11 +334,8 @@ def approved_by(
       so reactions need no platform guard).
     """
 
-    is_approver = _approver_predicate(config)
     authors = _command_authors(entity, config, conversation, approval_ids_from_body)
-    for user in _entity_reaction_users(entity, APPROVE_REACTION):
-        if is_approver(user):
-            authors.append(user)
+    authors += _gate_reaction_users(entity, APPROVE_REACTION, config, conversation)
     return _dedupe(authors)
 
 
@@ -315,11 +346,8 @@ def rejected_by(
 ) -> list[str]:
     """Find approvers who rejected this entity (``reject <id>`` or 👎)."""
 
-    is_approver = _approver_predicate(config)
     authors = _command_authors(entity, config, conversation, reject_ids_from_body)
-    for user in _entity_reaction_users(entity, REJECT_REACTION):
-        if is_approver(user):
-            authors.append(user)
+    authors += _gate_reaction_users(entity, REJECT_REACTION, config, conversation)
     return _dedupe(authors)
 
 
@@ -335,11 +363,8 @@ def merge_approved_by(
     approves the work, leaving the merge for a follow-up gate).
     """
 
-    is_approver = _approver_predicate(config)
     authors = _command_authors(entity, config, conversation, merge_ids_from_body)
-    for user in _entity_reaction_users(entity, MERGE_REACTION):
-        if is_approver(user):
-            authors.append(user)
+    authors += _gate_reaction_users(entity, MERGE_REACTION, config, conversation)
     return _dedupe(authors)
 
 

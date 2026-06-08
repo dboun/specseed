@@ -523,10 +523,13 @@ def _advance_after_implement(
         return WorkTransition("implement done -> in_review")
     if getattr(state_result, "hitl_required", False):
         _set_status(ctx, entity, "awaiting_approval")
+        apr_id = next_apr_id(ctx.storage)
         _comment(
             ctx, entity.post_id,
-            "Implementation finished; human sign-off required. An approver must "
-            "comment `approve {0}` to complete.".format(entity.post_id),
+            "Implementation finished; human sign-off required. React 👍 on this comment "
+            "(or comment `approve {0}`) to complete.\n\n<!-- {1} {2} -->".format(
+                entity.post_id, APPROVAL_REQUEST_MARKER, apr_id
+            ),
         )
         return WorkTransition("implement done -> awaiting_approval")
     return _settle_or_merge(ctx, entity, "implement done")
@@ -640,9 +643,12 @@ def _below_confidence_comment(ctx: Any, entity: Any, confidence: float, threshol
                 base, primary, apr_id, WORK_MERGE_GATE_MARKER, APPROVAL_REQUEST_MARKER
             )
         )
+    apr_id = next_apr_id(ctx.storage)
     return (
-        "{0} Comment `approve {1}` (or 👍) to complete, reply with what to change to "
-        "revise, or comment `retry` to re-review.".format(base, entity.post_id)
+        "{0} React 👍 on this comment (or comment `approve {1}`) to complete, reply with "
+        "what to change to revise, or comment `retry` to re-review.\n\n<!-- {2} {3} -->".format(
+            base, entity.post_id, APPROVAL_REQUEST_MARKER, apr_id
+        )
     )
 
 
@@ -681,10 +687,13 @@ def park_for_implement_approval(ctx: Any, entity: Any) -> str:
     if _is_stale(ctx, entity):
         return "stale event; remote already advanced past {0}".format(entity.status)
     _set_status(ctx, entity, "awaiting_approval")
+    apr_id = next_apr_id(ctx.storage)
     _comment(
         ctx, entity.post_id,
-        "Implementation requires human approval (`auto_implement_issue` is off). An "
-        "approver must comment `approve {0}` before work begins.".format(entity.post_id),
+        "Implementation requires human approval (`auto_implement_issue` is off). React 👍 "
+        "on this comment (or comment `approve {0}`) before work begins.\n\n<!-- {1} {2} -->".format(
+            entity.post_id, APPROVAL_REQUEST_MARKER, apr_id
+        ),
     )
     return "todo -> awaiting_approval (implement approval required)"
 
