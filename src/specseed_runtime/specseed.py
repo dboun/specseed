@@ -162,8 +162,6 @@ def _configure(args: argparse.Namespace) -> int:
         argv += ["--use-config-file", args.use_config_file]
     if args.use_remote_file:
         argv += ["--use-remote-file", args.use_remote_file]
-    if args.no_gitignore:
-        argv.append("--no-gitignore")
     with _in_dir(target):
         return configure.main(argv)
 
@@ -354,7 +352,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     configure_parser.add_argument("--use-config-file", default=None, help="use this configuration.json file")
     configure_parser.add_argument("--use-remote-file", default=None, help="use this remote.json file")
-    configure_parser.add_argument("--no-gitignore", action="store_true", help="do not add specseed dir to .gitignore")
     configure_parser.set_defaults(func=_configure)
 
     run_parser = sub.add_parser("run", help="run the scheduler (foreground worker)")

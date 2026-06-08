@@ -72,7 +72,7 @@ class RunMigrationsTest(unittest.TestCase):
                 applied,
                 ["m_0_3_0__0_3_1", "m_0_3_1__0_4_0", "m_0_4_0__0_5_0",
                  "m_0_5_0__0_7_0", "m_0_7_0__0_9_0", "m_0_9_0__0_11_0",
-                 "m_0_11_0__0_12_0", "m_0_12_0__0_13_0"],
+                 "m_0_11_0__0_12_0", "m_0_12_0__0_13_0", "m_0_13_0__0_14_0"],
             )
             self.assertEqual(migrate.storage_version(storage), migrate.code_version())
 
@@ -532,6 +532,54 @@ class Hop0120To0130Test(unittest.TestCase):
             specseed_dir, storage = _fixture_tree(Path(tmp), version="0.12.0")
             storage.mkdir(parents=True, exist_ok=True)
             self.assertEqual(m_0_12_0__0_13_0.run(storage, specseed_dir), [])
+
+
+class Hop0130To0140Test(unittest.TestCase):
+    """0.14.0: drop the ``gitignore_specseed_dir`` toggle (always on now)."""
+
+    def _cfg(self, storage, cfg):
+        storage.mkdir(parents=True, exist_ok=True)
+        (storage / "configuration.json").write_text(
+            json.dumps(cfg) + "\n", encoding="utf-8"
+        )
+
+    def test_drops_toggle_keeps_other_keys(self) -> None:
+        from specseed_runtime.migrating import m_0_13_0__0_14_0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            specseed_dir, storage = _fixture_tree(Path(tmp), version="0.13.0")
+            self._cfg(storage, {
+                "specseed_dir": ".specseed",
+                "gitignore_specseed_dir": False,
+            })
+
+            changed = m_0_13_0__0_14_0.run(storage, specseed_dir)
+
+            self.assertEqual([p.name for p in changed], ["configuration.json"])
+            out = json.loads((storage / "configuration.json").read_text(encoding="utf-8"))
+            self.assertNotIn("gitignore_specseed_dir", out)
+            self.assertEqual(out["specseed_dir"], ".specseed")  # other keys untouched
+
+    def test_idempotent_and_noop_when_absent(self) -> None:
+        from specseed_runtime.migrating import m_0_13_0__0_14_0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            specseed_dir, storage = _fixture_tree(Path(tmp), version="0.13.0")
+            self._cfg(storage, {"specseed_dir": ".specseed"})
+
+            self.assertEqual(m_0_13_0__0_14_0.run(storage, specseed_dir), [])
+            self._cfg(storage, {"gitignore_specseed_dir": True})
+            self.assertEqual([p.name for p in m_0_13_0__0_14_0.run(storage, specseed_dir)],
+                             ["configuration.json"])
+            self.assertEqual(m_0_13_0__0_14_0.run(storage, specseed_dir), [])
+
+    def test_missing_config_is_noop(self) -> None:
+        from specseed_runtime.migrating import m_0_13_0__0_14_0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            specseed_dir, storage = _fixture_tree(Path(tmp), version="0.13.0")
+            storage.mkdir(parents=True, exist_ok=True)
+            self.assertEqual(m_0_13_0__0_14_0.run(storage, specseed_dir), [])
 
 
 if __name__ == "__main__":

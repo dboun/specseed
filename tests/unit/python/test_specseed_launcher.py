@@ -196,7 +196,6 @@ class MainTest(unittest.TestCase):
                     str(config_path),
                     "--use-remote-file",
                     str(remote_path),
-                    "--no-gitignore",
                 ]
             )
 
@@ -207,7 +206,8 @@ class MainTest(unittest.TestCase):
             self.assertEqual(cfg["poll_interval_seconds"], 12)
             self.assertEqual(cfg["specseed_primary_branch"], "develop")
             self.assertEqual(remote["repo"], "local/example")
-            self.assertFalse((target / ".gitignore").exists())
+            # specseed dir lives in-tree -> always gitignored (no opt-out anymore).
+            self.assertIn(".specseed/", (target / ".gitignore").read_text(encoding="utf-8"))
 
 class ManagementTest(unittest.TestCase):
     """add / list / start / pause over the global registry (isolated home)."""

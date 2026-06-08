@@ -16,8 +16,7 @@ from specseed_runtime.configuring import configure
 def _local_answers(*, specseed="seedmeta", primary_branch="", write=""):
     """Answer sequence for the local-only interactive flow (all defaults)."""
     answers = [
-        specseed,    # specseed dir
-        "",          # append to .gitignore
+        specseed,    # specseed dir (always gitignored - no prompt)
         "",          # local only (yes)
     ]
     # runner: per function, primary spec = provider/model/effort/data_dir (4) +
@@ -75,7 +74,8 @@ class ConfigureSpecseedDirTest(unittest.TestCase):
                 os.chdir(old_cwd)
             self.assertEqual(rc, 0)
             cfg = json.loads((storage / "configuration.json").read_text(encoding="utf-8"))
-            self.assertTrue(cfg["gitignore_specseed_dir"])
+            # toggle is gone (always on); the .gitignore entry must still be written.
+            self.assertNotIn("gitignore_specseed_dir", cfg)
             self.assertIn(".specseed/", (root / ".gitignore").read_text(encoding="utf-8"))
 
     def test_abort_does_not_gitignore_specseed_dir(self) -> None:

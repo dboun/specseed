@@ -145,15 +145,21 @@ class RepoGitignoreTest(unittest.TestCase):
         self.assertIn("seedmeta/", text)
 
     @unittest.skipUnless(_HAS_GIT, "git not available")
-    def test_scaffold_target_ignores_by_default(self) -> None:
+    def test_scaffold_target_always_ignores(self) -> None:
         result = scaffold.scaffold_target(self.root, ".specseed", "main")
         self.assertEqual(result["gitignore"], str(self.root / ".gitignore"))
         self.assertIn(".specseed/", (self.root / ".gitignore").read_text(encoding="utf-8"))
 
-    @unittest.skipUnless(_HAS_GIT, "git not available")
-    def test_scaffold_target_skips_ignore_when_off(self) -> None:
-        result = scaffold.scaffold_target(self.root, ".specseed", "main", ignore_specseed=False)
-        self.assertIsNone(result["gitignore"])
+    def test_absolute_dir_inside_repo_uses_relative_entry(self) -> None:
+        # An absolute specseed dir under the repo is ignored by its repo-relative path.
+        p = scaffold.ensure_repo_gitignored(self.root, self.root / "state")
+        self.assertEqual(p, self.root / ".gitignore")
+        self.assertIn("state/", p.read_text(encoding="utf-8"))
+
+    def test_dir_outside_repo_is_noop(self) -> None:
+        # A dir outside the repo is already excluded - nothing in-tree to ignore.
+        outside = self.root.parent / "elsewhere-storage"
+        self.assertIsNone(scaffold.ensure_repo_gitignored(self.root, outside))
         self.assertFalse((self.root / ".gitignore").exists())
 
 

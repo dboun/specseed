@@ -238,11 +238,22 @@ def ensure_repo_gitignored(repo_root: str | Path, specseed_dir: str | Path) -> P
     """Append the specseed dir to the repo .gitignore, unless already listed.
 
     The specseed dir holds storage (dbs, tokens, logs) + the generated spec; none
-    of it belongs in the target's history. Best-effort and idempotent. Returns the
-    .gitignore path (created if needed), or None when the dir is empty/unwritable.
+    of it belongs in the target's history - tracked storage breaks every checkout
+    the merge gate needs (it never merges). Best-effort and idempotent. Returns the
+    .gitignore path (created if needed), or None when there is nothing in-tree to
+    ignore (dir empty, or absolute and OUTSIDE the repo - already excluded) or it is
+    unwritable.
     """
-    entry = Path(specseed_dir).as_posix().strip("/")
-    if not entry:
+    repo_root = Path(repo_root)
+    p_dir = Path(specseed_dir)
+    if p_dir.is_absolute():
+        try:
+            entry = p_dir.resolve().relative_to(repo_root.resolve()).as_posix().strip("/")
+        except ValueError:
+            return None  # outside the repo - nothing in-tree to ignore
+    else:
+        entry = p_dir.as_posix().strip("/")
+    if not entry or entry == ".":
         return None
     entry = f"{entry}/"
     p = repo_gitignore_file(repo_root)
@@ -267,23 +278,21 @@ def scaffold_target(
     repo_root: str | Path,
     specseed_dir: str,
     primary_branch: str = "main",
-    ignore_specseed: bool = True,
 ) -> dict:
     """Do all four: git, instruction files, router block, repo .gitignore.
 
-    ``ignore_specseed`` (default on) adds ``<specseed_dir>/`` to the target's
-    .gitignore. This runs on EVERY entry path (configure / add / startup repair),
-    so a repo registered without the interactive flow still gets its storage and
-    secrets kept out of git. Best-effort throughout.
+    ALWAYS adds ``<specseed_dir>/`` to the target's .gitignore - no opt-out. The
+    dir holds storage (dbs, tokens, logs); tracking it leaves the tree perpetually
+    dirty and breaks every merge-gate checkout. Runs on EVERY entry path (configure
+    / add / startup repair), so a repo registered without the interactive flow still
+    gets it. ``ensure_repo_gitignored`` no-ops when the dir lives outside the repo
+    (already excluded). Best-effort throughout.
     """
-    out = {
+    gi = ensure_repo_gitignored(repo_root, specseed_dir)
+    return {
         "git": ensure_git_repo(repo_root, primary_branch),
         "instructions": [str(p) for p in write_instruction_files(repo_root, specseed_dir)],
         "custom_instructions": [str(p) for p in write_custom_instruction_stubs(repo_root, specseed_dir)],
         "router": [str(p) for p in ensure_router_block(repo_root, specseed_dir)],
-        "gitignore": None,
+        "gitignore": str(gi) if gi is not None else None,
     }
-    if ignore_specseed:
-        gi = ensure_repo_gitignored(repo_root, specseed_dir)
-        out["gitignore"] = str(gi) if gi is not None else None
-    return out
