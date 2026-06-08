@@ -6,6 +6,7 @@ const POLL_MS = 3000;
 const PAGE = { queue: 25, errors: 25, log: 100 };
 // queue stat card says "queued"; the db status is "pending" - keep wording aligned
 const STATUS_LABEL = { pending: "queued" };
+const LANES = ["control", "work"];
 
 export function createMonitor({ repo, ctx, refreshTopbar }) {
   let data = null;
@@ -55,6 +56,16 @@ export function createMonitor({ repo, ctx, refreshTopbar }) {
     return r.alive ? r.state || "stopped" : "stopped";
   }
 
+  function laneCounts(lane) {
+    return data?.counts?.lanes?.[lane] || {};
+  }
+
+  function runnerLaneCurrent(lane) {
+    const r = data?.runner || {};
+    const key = lane === "control" ? "current_control_task_id" : "current_work_task_id";
+    return r[key] ?? null;
+  }
+
   function controls() {
     const st = runnerState();
     const btn = (action, label, cls = "btn-ghost") =>
@@ -66,10 +77,11 @@ export function createMonitor({ repo, ctx, refreshTopbar }) {
 
   function statCards() {
     const c = data?.counts || {};
-    const r = data?.runner || {};
     const cards = [
-      ["queued", c.pending || 0, "accent"],
-      ["in progress", c.in_progress || 0, "live"],
+      ["control queued", laneCounts("control").pending || 0, "accent"],
+      ["work queued", laneCounts("work").pending || 0, "accent"],
+      ["control active", laneCounts("control").in_progress || 0, "live"],
+      ["work active", laneCounts("work").in_progress || 0, "live"],
       ["done", c.success || 0, "ok"],
       ["failed", c.failed || 0, c.failed ? "bad" : "muted"],
     ];
@@ -93,7 +105,8 @@ export function createMonitor({ repo, ctx, refreshTopbar }) {
       // last poll is only meaningful while the runner is live; a stopped runner's
       // value is frozen and would otherwise just keep aging from its last sync.
       ["last poll", alive && r.last_poll_at ? formatTime(r.last_poll_at) : "—"],
-      ["current task", r.current_task_id != null ? `#${r.current_task_id}` : "idle"],
+      ["control task", runnerLaneCurrent("control") != null ? `#${runnerLaneCurrent("control")}` : "idle"],
+      ["work task", runnerLaneCurrent("work") != null ? `#${runnerLaneCurrent("work")}` : "idle"],
       ["pid (repo)", r.pid || "—"],
       ["pid (specseed)", env.pid || "—"],
     ];
@@ -150,13 +163,15 @@ export function createMonitor({ repo, ctx, refreshTopbar }) {
     if (!tasks.length) return `<div class="empty-state">Queue is empty.</div>`;
     return `
       <div class="table-wrap"><table class="table">
-        <thead><tr><th>#</th><th>action</th><th>post</th><th>status</th><th>att.</th><th>last</th><th></th></tr></thead>
+        <thead><tr><th>#</th><th>lane</th><th>pri.</th><th>action</th><th>post</th><th>status</th><th>att.</th><th>last</th><th></th></tr></thead>
         <tbody>
           ${tasks
             .map(
               (t) => `
             <tr class="row-${escapeHtml(t.status)}">
               <td>${escapeHtml(t.task_id)}</td>
+              <td><span class="tag tag-lane tag-lane-${escapeHtml(t.lane || "control")}">${escapeHtml(t.lane || "control")}</span></td>
+              <td class="mono">${escapeHtml(t.priority ?? 50)}</td>
               <td class="mono">${escapeHtml(t.action)}</td>
               <td>${t.post_id ? "#" + escapeHtml(t.post_id) : "—"}</td>
               <td><span class="tag tag-${escapeHtml(t.status)}">${escapeHtml(STATUS_LABEL[t.status] || t.status)}</span></td>
@@ -272,7 +287,9 @@ export function createMonitor({ repo, ctx, refreshTopbar }) {
   function queueDot() {
     const c = data?.counts || {};
     const busy = (c.pending || 0) + (c.in_progress || 0) > 0;
-    return busy ? `<span class="auto-dot" title="tasks queued or running"></span>` : "";
+    if (!busy) return "";
+    const detail = LANES.map((lane) => `${lane} ${laneCounts(lane).pending || 0}/${laneCounts(lane).in_progress || 0}`).join(" · ");
+    return `<span class="auto-dot" title="tasks queued or running: ${escapeHtml(detail)}"></span>`;
   }
 
   function html() {

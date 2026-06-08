@@ -43,6 +43,7 @@ from specseed_runtime import registry
 from specseed_runtime.configuring import configure
 from specseed_runtime.executing import agent_runner
 from specseed_runtime.executing import runner_control
+from specseed_runtime.db.database import DEFAULT_PRIORITY, LANE_CONTROL, LANE_WORK, LANES
 from specseed_runtime.tracking import populate_defaults
 from specseed_runtime.tracking.tracking_remote_local import TrackingRemoteLocal
 from specseed_runtime.tracking.supported_values import (
@@ -259,8 +260,21 @@ def _empty_page(offset: int, limit: int) -> dict:
     return {"items": [], "total": 0, "offset": offset, "limit": limit}
 
 
-def _queue_counts(storage: str | Path) -> dict:
+def _task_columns(conn: sqlite3.Connection) -> set[str]:
+    return {str(row[1]) for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
+
+
+def _zero_counts() -> dict:
     counts = {"pending": 0, "in_progress": 0, "success": 0, "failed": 0}
+    counts["lanes"] = {
+        lane: {"pending": 0, "in_progress": 0, "success": 0, "failed": 0}
+        for lane in LANES
+    }
+    return counts
+
+
+def _queue_counts(storage: str | Path) -> dict:
+    counts = _zero_counts()
     db = _queue_db(storage)
     if not db.exists():
         return counts
@@ -268,6 +282,16 @@ def _queue_counts(storage: str | Path) -> dict:
         conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5.0)
         for status, n in conn.execute("SELECT status, COUNT(*) FROM tasks GROUP BY status").fetchall():
             counts[status] = n
+        if "lane" in _task_columns(conn):
+            rows = conn.execute(
+                "SELECT lane, status, COUNT(*) FROM tasks GROUP BY lane, status"
+            ).fetchall()
+            for lane, status, n in rows:
+                if lane in counts["lanes"]:
+                    counts["lanes"][lane][status] = n
+        else:
+            for status in ("pending", "in_progress", "success", "failed"):
+                counts["lanes"][LANE_CONTROL][status] = counts.get(status, 0)
         conn.close()
     except sqlite3.Error:
         pass
@@ -280,18 +304,31 @@ def _read_tasks(storage: str | Path, queue: tuple[int, int] = (0, 50), errors: t
     out = {
         "tasks": _empty_page(*queue),
         "errors": _empty_page(*errors),
-        "counts": {"pending": 0, "in_progress": 0, "success": 0, "failed": 0},
+        "counts": _zero_counts(),
     }
     if not db.exists():
         return out
     try:
         conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5.0)
         conn.row_factory = sqlite3.Row
+        columns = _task_columns(conn)
         for r in conn.execute("SELECT status, COUNT(*) n FROM tasks GROUP BY status").fetchall():
             out["counts"][r["status"]] = r["n"]
-        out["tasks"]["total"] = sum(out["counts"].values())
+        if "lane" in columns:
+            for r in conn.execute("SELECT lane, status, COUNT(*) n FROM tasks GROUP BY lane, status").fetchall():
+                if r["lane"] in out["counts"]["lanes"]:
+                    out["counts"]["lanes"][r["lane"]][r["status"]] = r["n"]
+        else:
+            for status in ("pending", "in_progress", "success", "failed"):
+                out["counts"]["lanes"][LANE_CONTROL][status] = out["counts"].get(status, 0)
+        out["tasks"]["total"] = sum(
+            out["counts"].get(status, 0) for status in ("pending", "in_progress", "success", "failed")
+        )
+        lane_expr = "lane" if "lane" in columns else f"'{LANE_CONTROL}' AS lane"
+        priority_expr = "priority" if "priority" in columns else f"{DEFAULT_PRIORITY} AS priority"
         rows = conn.execute(
-            "SELECT task_id, action, post_id, status, attempts, created_at, last_attempted_at, not_before "
+            f"SELECT task_id, action, post_id, status, attempts, created_at, last_attempted_at, not_before, "
+            f"{lane_expr}, {priority_expr} "
             "FROM tasks ORDER BY task_id DESC LIMIT ? OFFSET ?",
             (queue[1], queue[0]),
         ).fetchall()
@@ -413,12 +450,20 @@ def _repo_summary(record: dict) -> dict:
         "target": record["target"],
         "configured": configured,
         "external_link": _external_link(record),
-        "queue": {"pending": counts["pending"], "in_progress": counts["in_progress"]},
+        "queue": {
+            "pending": counts["pending"],
+            "in_progress": counts["in_progress"],
+            "lanes": counts["lanes"],
+        },
         "runner": {
             "state": status.get("state", "stopped"),
             "alive": bool(status.get("alive")),
             "pending": status.get("pending"),
             "in_progress": status.get("in_progress"),
+            "control_pending": status.get("control_pending"),
+            "work_pending": status.get("work_pending"),
+            "current_control_task_id": status.get("current_control_task_id"),
+            "current_work_task_id": status.get("current_work_task_id"),
             "pid": status.get("pid"),
         },
     }
@@ -464,13 +509,18 @@ def _needs_approval(post: dict) -> bool:
 
 
 def _in_progress_post_ids(storage: str | Path) -> set[str]:
-    """Post ids with a task currently running (an agent working on them)."""
+    """Post ids with work-lane task currently running (agent/git work)."""
     try:
         conn = sqlite3.connect(f"file:{_queue_db(storage)}?mode=ro", uri=True, timeout=5.0)
+        columns = _task_columns(conn)
+        lane_clause = "AND lane = ?" if "lane" in columns else ""
+        args = (LANE_WORK,) if "lane" in columns else ()
         ids = {
             str(row[0])
             for row in conn.execute(
-                "SELECT DISTINCT post_id FROM tasks WHERE status = 'in_progress' AND post_id IS NOT NULL"
+                "SELECT DISTINCT post_id FROM tasks "
+                f"WHERE status = 'in_progress' AND post_id IS NOT NULL {lane_clause}",
+                args,
             )
         }
         conn.close()

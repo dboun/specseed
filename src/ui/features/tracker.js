@@ -659,7 +659,11 @@ export function createTracker({ repo, ctx }) {
     try {
       const q = (await api.repo(repo.id)).queue || {};
       const busy = (q.pending || 0) + (q.in_progress || 0) > 0;
-      slot.innerHTML = busy ? `<span class="auto-dot" title="tasks queued or running"></span>` : "";
+      const lanes = q.lanes || {};
+      const detail = ["control", "work"]
+        .map((lane) => `${lane} ${lanes[lane]?.pending || 0}/${lanes[lane]?.in_progress || 0}`)
+        .join(" · ");
+      slot.innerHTML = busy ? `<span class="auto-dot" title="tasks queued or running: ${escapeHtml(detail)}"></span>` : "";
     } catch {
       /* transient; next tick retries */
     }

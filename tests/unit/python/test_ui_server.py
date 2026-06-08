@@ -20,19 +20,21 @@ server = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(server)
 
 
-def _make_queue_db(storage: Path, tasks: int = 0, errors: int = 0) -> None:
+def _make_queue_db(storage: Path, tasks: int = 0, errors: int = 0, *, old_shape: bool = False) -> None:
     db = storage / "specseed.db"
     conn = sqlite3.connect(db)
+    lane_cols = "" if old_shape else ", lane TEXT NOT NULL DEFAULT 'control', priority INTEGER NOT NULL DEFAULT 50"
     conn.executescript(
-        """
+        f"""
         CREATE TABLE tasks (
             task_id INTEGER PRIMARY KEY AUTOINCREMENT,
             action TEXT NOT NULL, post_id TEXT,
-            payload TEXT NOT NULL DEFAULT '{}',
+            payload TEXT NOT NULL DEFAULT '{{}}',
             status TEXT NOT NULL DEFAULT 'pending',
             attempts INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL, last_attempted_at TEXT,
             not_before TEXT
+            {lane_cols}
         );
         CREATE TABLE task_errors (
             error_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,9 +44,13 @@ def _make_queue_db(storage: Path, tasks: int = 0, errors: int = 0) -> None:
     )
     for i in range(1, tasks + 1):
         status = "pending" if i % 2 else "success"
+        lane = "work" if i % 3 == 0 else "control"
         conn.execute(
-            "INSERT INTO tasks(action, post_id, status, created_at) VALUES (?, ?, ?, ?)",
-            (f"act_{i}", str(i), status, "2026-01-01T00:00:00Z"),
+            "INSERT INTO tasks(action, post_id, status, created_at"
+            + (") VALUES (?, ?, ?, ?)" if old_shape else ", lane, priority) VALUES (?, ?, ?, ?, ?, ?)"),
+            (f"act_{i}", str(i), status, "2026-01-01T00:00:00Z")
+            if old_shape
+            else (f"act_{i}", str(i), status, "2026-01-01T00:00:00Z", lane, 50 + i),
         )
     for i in range(1, errors + 1):
         conn.execute(
@@ -87,6 +93,23 @@ class ReadTasksTest(unittest.TestCase):
         self.assertIn("pending", statuses)
         self.assertEqual(out["counts"]["pending"], 2)
         self.assertEqual(out["counts"]["success"], 2)
+        self.assertEqual(out["counts"]["lanes"]["control"]["pending"], 1)
+        self.assertEqual(out["counts"]["lanes"]["work"]["pending"], 1)
+
+    def test_queue_page_includes_lane_and_priority(self) -> None:
+        _make_queue_db(self.storage, tasks=3)
+        out = server._read_tasks(self.storage, queue=(0, 1))
+        row = out["tasks"]["items"][0]
+        self.assertEqual(row["lane"], "work")
+        self.assertEqual(row["priority"], 53)
+
+    def test_old_shape_queue_defaults_to_control_lane(self) -> None:
+        _make_queue_db(self.storage, tasks=2, old_shape=True)
+        out = server._read_tasks(self.storage, queue=(0, 10))
+        self.assertEqual({t["lane"] for t in out["tasks"]["items"]}, {"control"})
+        self.assertEqual({t["priority"] for t in out["tasks"]["items"]}, {50})
+        self.assertEqual(out["counts"]["lanes"]["control"]["pending"], 1)
+        self.assertEqual(out["counts"]["lanes"]["work"]["pending"], 0)
 
     def test_errors_paged_with_task_join(self) -> None:
         _make_queue_db(self.storage, tasks=5, errors=5)
@@ -105,6 +128,9 @@ class QueueCountsTest(unittest.TestCase):
             counts = server._queue_counts(storage)
             self.assertEqual(counts["pending"], 2)
             self.assertEqual(counts["success"], 1)
+            self.assertEqual(counts["lanes"]["control"]["pending"], 1)
+            self.assertEqual(counts["lanes"]["work"]["pending"], 1)
+            self.assertEqual(counts["lanes"]["work"]["success"], 0)
 
 
 class ReadLogTest(unittest.TestCase):
@@ -326,21 +352,35 @@ class InProgressPostIdsTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
-    def _insert(self, post_id, status) -> None:
+    def _insert(self, post_id, status, lane="work") -> None:
         conn = sqlite3.connect(self.storage / "specseed.db")
         conn.execute(
-            "INSERT INTO tasks(action, post_id, status, created_at) VALUES (?, ?, ?, ?)",
-            ("act", post_id, status, "2026-01-01T00:00:00Z"),
+            "INSERT INTO tasks(action, post_id, status, created_at, lane) VALUES (?, ?, ?, ?, ?)",
+            ("act", post_id, status, "2026-01-01T00:00:00Z", lane),
         )
         conn.commit()
         conn.close()
 
-    def test_only_in_progress_posts_reported(self) -> None:
+    def test_only_work_lane_in_progress_posts_reported(self) -> None:
         self._insert("7", "in_progress")
         self._insert("8", "pending")
         self._insert("9", "success")
+        self._insert("10", "in_progress", lane="control")
         self._insert(None, "in_progress")  # no post: ignored
         self.assertEqual(server._in_progress_post_ids(self.storage), {"7"})
+
+    def test_old_shape_in_progress_posts_still_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = Path(tmp)
+            _make_queue_db(storage, old_shape=True)
+            conn = sqlite3.connect(storage / "specseed.db")
+            conn.execute(
+                "INSERT INTO tasks(action, post_id, status, created_at) VALUES (?, ?, ?, ?)",
+                ("act", "7", "in_progress", "2026-01-01T00:00:00Z"),
+            )
+            conn.commit()
+            conn.close()
+            self.assertEqual(server._in_progress_post_ids(storage), {"7"})
 
     def test_missing_db_degrades_to_empty(self) -> None:
         self.assertEqual(server._in_progress_post_ids(self.storage / "nope"), set())
@@ -359,7 +399,10 @@ class RepoSummaryQueueTest(unittest.TestCase):
                 "storage": str(storage),
             }
             summary = server._repo_summary(record)
-            self.assertEqual(summary["queue"], {"pending": 2, "in_progress": 0})
+            self.assertEqual(summary["queue"]["pending"], 2)
+            self.assertEqual(summary["queue"]["in_progress"], 0)
+            self.assertEqual(summary["queue"]["lanes"]["control"]["pending"], 1)
+            self.assertEqual(summary["queue"]["lanes"]["work"]["pending"], 1)
 
     def test_summary_queue_zero_without_db(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -371,7 +414,9 @@ class RepoSummaryQueueTest(unittest.TestCase):
                 "storage": tmp,
             }
             summary = server._repo_summary(record)
-            self.assertEqual(summary["queue"], {"pending": 0, "in_progress": 0})
+            self.assertEqual(summary["queue"]["pending"], 0)
+            self.assertEqual(summary["queue"]["in_progress"], 0)
+            self.assertEqual(summary["queue"]["lanes"]["work"]["pending"], 0)
 
 
 class PrepareTargetTest(unittest.TestCase):
