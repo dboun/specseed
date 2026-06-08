@@ -60,6 +60,7 @@ WORK_STATUS_LABELS = frozenset(
             "blocked",
             "in_review",
             "awaiting_approval",
+            "awaiting_merge",
             "done",
             "wont_do",
             "deprecated",

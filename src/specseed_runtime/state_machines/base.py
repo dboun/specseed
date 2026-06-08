@@ -497,6 +497,14 @@ def _transitions_for(
             StateTransition("blocked", "human", "hold or reject the gate", requires_approval=True),
             StateTransition("in_progress", "human", "request changes on completed work"),
         ]
+    if state == "awaiting_merge":
+        # Work accepted; only landing on primary is left. NOT done until merged.
+        return [
+            StateTransition("done", "human", "merge authorized or branch landed on primary",
+                            requires_approval=True),
+            StateTransition("todo", "human", "rework requested instead of merging"),
+            StateTransition("blocked", "human", "merge cannot proceed"),
+        ]
     if state == "awaiting_manual_test":
         return _after_work_transitions(
             review_required=review_required,

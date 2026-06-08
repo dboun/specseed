@@ -25,10 +25,12 @@ shipped capabilities as plain titles, with no child posts — see `routes/adopt.
 ## Status labels
 
 `<tier>:status:<status>` where status is one of:
-`todo, in_progress, blocked, in_review, awaiting_approval, done, wont_do, deprecated`.
-(`in_review` is meaningful for issues; epics use a coarse subset in practice.)
+`todo, in_progress, blocked, in_review, awaiting_approval, awaiting_merge, done, wont_do, deprecated`.
+(`in_review` + `awaiting_merge` are meaningful for issues; epics use a coarse subset in practice.)
 Terminal = `{done, wont_do, deprecated}`. `wont_do` = never built; `deprecated`
-= was real, now retired.
+= was real, now retired. `done` means MERGED to primary — an accepted-but-unmerged
+issue is `awaiting_merge` (runtime-managed), never `done`, so a dependent stays held
+until it lands.
 
 **A status change is a swap:** `remove_entry_label(id, "<tier>:status:<old>")`
 then `add_entry_label(id, "<tier>:status:<new>")`. The spec-change worker plans

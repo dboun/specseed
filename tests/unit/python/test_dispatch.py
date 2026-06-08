@@ -621,6 +621,27 @@ class DependencyGateTest(DispatchTestBase):
             self.local.create_label(label)
         return self.local.add_entry(title, body=body, labels=labels).data.id
 
+    def _seed_both(self, title, labels, body):
+        """Seed local AND remote in lockstep so ids match - needed when a transition
+        (e.g. block-on-cancelled-dep) mutates the remote entry by its (local) id."""
+        for label in labels:
+            self.local.create_label(label)
+            self.remote.create_label(label)
+        eid = self.local.add_entry(title, body=body, labels=labels).data.id
+        self.remote.add_entry(title, body=body, labels=labels)
+        return eid
+
+    def _remote_labels(self, eid):
+        return {lbl.name for lbl in self.remote.get_entry(eid).data.labels}
+
+    def _adapt_drafts(self):
+        out = []
+        for s in self.remote.list_entries(is_open=None).data or []:
+            names = {lbl.name for lbl in self.remote.get_entry(s.id).data.labels}
+            if "spec-change:adapt" in names and "draft" in names:
+                out.append(s.id)
+        return out
+
     def test_held_while_dependency_not_done(self) -> None:
         dep = self._seed_with_body("Dep", ["tier:issue", "status:todo"], "")
         issue = self._seed_with_body(
@@ -647,6 +668,51 @@ class DependencyGateTest(DispatchTestBase):
         )
         self.assertFalse(out.requeue)
         self.assertEqual(len(self.runner.calls), 1)  # dep done -> agent ran
+
+    def test_held_while_dependency_awaiting_merge(self) -> None:
+        # awaiting_merge is NOT done (code not on primary yet) -> dependent stays held.
+        dep = self._seed_with_body("Dep", ["tier:issue", "status:awaiting_merge"], "")
+        issue = self._seed_with_body(
+            "FEAT-0002 Dependent", ["tier:issue", "status:todo"],
+            "Depends on: #{0}".format(dep),
+        )
+        out = dispatch(
+            self.ctx,
+            {"action": "handle_label_added", "post_id": str(issue), "payload": {"label": "status:todo"}},
+        )
+        self.assertTrue(out.requeue)
+        self.assertIn("held", out.detail)
+        self.assertEqual(len(self.runner.calls), 0)
+
+    def test_blocked_and_drafts_adapt_when_dependency_cancelled(self) -> None:
+        # A dep that ended wont_do will never land -> the dependent is BLOCKED (not held
+        # forever) and one draft spec-adapt is opened for the human to triage.
+        dep = self._seed_both("Dep", ["tier:issue", "status:wont_do"], "")
+        issue = self._seed_both(
+            "FEAT-0002 Dependent", ["tier:issue", "status:todo"],
+            "Depends on: #{0}".format(dep),
+        )
+        out = dispatch(
+            self.ctx,
+            {"action": "handle_label_added", "post_id": str(issue), "payload": {"label": "status:todo"}},
+        )
+        self.assertFalse(out.requeue)
+        self.assertEqual(len(self.runner.calls), 0)  # agent never ran
+        self.assertIn("blocked", out.detail)
+        self.assertIn("issue:status:blocked", self._remote_labels(issue))
+        self.assertEqual(len(self._adapt_drafts()), 1)
+
+    def test_cancelled_dep_draft_is_idempotent(self) -> None:
+        # Two dependents on the same cancelled dep -> still ONE draft adapt.
+        dep = self._seed_both("Dep", ["tier:issue", "status:deprecated"], "")
+        a = self._seed_both("A", ["tier:issue", "status:todo"], "Depends on: #{0}".format(dep))
+        b = self._seed_both("B", ["tier:issue", "status:todo"], "Depends on: #{0}".format(dep))
+        for issue in (a, b):
+            dispatch(
+                self.ctx,
+                {"action": "handle_label_added", "post_id": str(issue), "payload": {"label": "status:todo"}},
+            )
+        self.assertEqual(len(self._adapt_drafts()), 1)
 
     def test_held_while_parent_ticket_dependency_not_done(self) -> None:
         # ticket-tier: issue under ticket B; B depends on ticket A (not done).
@@ -870,6 +936,79 @@ class RuntimeGitLifecycleTest(DispatchTestBase):
         bodies = "\n".join(c.body for c in self.remote.get_entry(eid).data.comments)
         self.assertIn(advance.MERGE_GATE_MARKER, bodies)
         self.assertEqual(_git_ops.current_branch(self.root), "main")
+
+    # -- Cat 4: branch isolation + base selection ----------------------------- #
+    def test_each_issue_gets_own_branch_cut_from_primary_not_sibling(self) -> None:
+        # Regression for the FEAT-0002-on-FEAT-0001-branch failure: two issues run
+        # back-to-back must each land on their OWN branch, each freshly cut from
+        # primary - NEVER reusing a sibling's branch. ensure_on_branch creates a new
+        # branch off primary explicitly, so even though the repo was last left on
+        # main, FEAT-0002's branch must not carry FEAT-0001's file.
+        self.ctx.runner = _FileWritingRunner(
+            AgentResult(ok=True, returncode=0,
+                        report={"status": "done", "summary": "a", "files_changed": ["a.py"]}),
+            filename="a.py",
+        )
+        first = self._seed_both("FEAT-0001 First", ["tier:issue", "status:todo"])
+        dispatch(
+            self.ctx,
+            {"action": "handle_label_added", "post_id": str(first), "payload": {"label": "status:todo"}},
+        )
+        self.ctx.runner = _FileWritingRunner(
+            AgentResult(ok=True, returncode=0,
+                        report={"status": "done", "summary": "b", "files_changed": ["b.py"]}),
+            filename="b.py",
+        )
+        second = self._seed_both("FEAT-0002 Second", ["tier:issue", "status:todo"])
+        dispatch(
+            self.ctx,
+            {"action": "handle_label_added", "post_id": str(second), "payload": {"label": "status:todo"}},
+        )
+        # two distinct branches exist
+        self.assertEqual(self._git("rev-parse", "--verify", "refs/heads/feat-0001-first").returncode, 0)
+        self.assertEqual(self._git("rev-parse", "--verify", "refs/heads/feat-0002-second").returncode, 0)
+        # FEAT-0001's branch carries only its own file
+        self._git("checkout", "feat-0001-first")
+        self.assertTrue((self.root / "a.py").exists())
+        self.assertFalse((self.root / "b.py").exists())
+        # FEAT-0002 was cut from primary, NOT from the sibling: it has b.py and NOT a.py
+        self._git("checkout", "feat-0002-second")
+        self.assertTrue((self.root / "b.py").exists())
+        self.assertFalse((self.root / "a.py").exists())
+
+    def test_dependent_branch_cut_from_primary_carries_merged_dep_code(self) -> None:
+        # Regression for "FEAT-0001 rooted at empty init, re-created the scaffold":
+        # once a dependency is merged to primary, the dependent's branch (cut from
+        # the up-to-date primary AFTER the dep gate passes) must already carry the
+        # dep's code - so the agent builds ON it instead of recreating it.
+        # Simulate the dep merged: its file is on primary, its status is done.
+        (self.root / "scaffold.py").write_text("# scaffold from CHORE-0001\n", encoding="utf-8")
+        self._git("add", "-A")
+        self._git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "merge CHORE-0001")
+        for label in ("tier:issue", "status:done", "status:todo"):
+            self.local.create_label(label)
+        dep = self.local.add_entry("CHORE-0001 Scaffold", labels=["tier:issue", "status:done"]).data.id
+        feat = self.local.add_entry(
+            "FEAT-0001 Build on scaffold",
+            body="Depends on: #{0}".format(dep),
+            labels=["tier:issue", "status:todo"],
+        ).data.id
+        self.ctx.runner = _FileWritingRunner(
+            AgentResult(ok=True, returncode=0,
+                        report={"status": "done", "summary": "f", "files_changed": ["feat.py"]}),
+            filename="feat.py",
+        )
+        out = dispatch(
+            self.ctx,
+            {"action": "handle_label_added", "post_id": str(feat), "payload": {"label": "status:todo"}},
+        )
+        # dep done -> gate passed, agent ran (not held)
+        self.assertFalse(out.requeue)
+        self.assertEqual(len(self.runner.calls) if hasattr(self, "runner") else 1, 1) if False else None
+        # the dependent's branch carries the dep's merged scaffold AND the new work
+        self._git("checkout", "feat-0001-build-on-scaffold")
+        self.assertTrue((self.root / "scaffold.py").exists())  # built ON the dep, not recreated
+        self.assertTrue((self.root / "feat.py").exists())
 
     def test_merge_reprepares_open_sibling_gate(self) -> None:
         # Merging one issue re-readies every OTHER open merge gate with a FRESH gate

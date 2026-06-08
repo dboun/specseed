@@ -94,6 +94,7 @@ LABEL_SPECS = [
             "blocked": "b60205",
             "in_review": "fbca04",
             "awaiting_approval": "d93f0b",
+            "awaiting_merge": "fef2c0",
             "done": "0e8a16",
             "wont_do": "555555",
             "deprecated": "555555",

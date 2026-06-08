@@ -834,21 +834,31 @@ def _dep_status(ctx: ExecutionContext, dep_id: str) -> Optional[str]:
     return getattr(dep_entity, "status", None) if dep_entity else None
 
 
-def _unmet_dependencies(ctx: ExecutionContext, entity: Any) -> list[tuple[str, str]]:
-    """Dependencies that are not yet ``done``, blocking this issue.
+# A dependency terminally cancelled - its code will NEVER reach primary. The dependent
+# can't just wait (deadlock); it gets blocked + a draft adapt for the human to triage.
+_CANCELLED_DEP_STATUSES = {"wont_do", "deprecated"}
 
-    Two tiers:
-    * issue-level: the issue's own body ``Depends on: #NN`` ids;
-    * ticket-tier: the issue's parent ticket's ``Depends on: #NN`` tickets (so an
-      issue waits for the upstream tickets its ticket depends on, one hop up - those
-      tickets roll up to ``done`` when their own issues finish).
 
-    Returns ``[(dep_id, status)]`` for each blocker. Only numeric provider-id deps
-    are enforced (the remote-posts convention); a dep we cannot resolve counts as
-    not-done (likely just not synced yet) so we wait rather than race ahead.
-    Non-numeric (human-id) tokens are skipped.
+def _classify_deps(
+    ctx: ExecutionContext, entity: Any
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """Split an issue's dependencies into ``(cancelled, pending)``.
+
+    A dep is SATISFIED only when its status is exactly ``done`` - and ``done`` means its
+    code is on primary (``advance.close_issue_done`` only runs after a real merge; an
+    unmerged issue reads ``awaiting_merge``/``blocked``, never ``done``). So this gate is
+    the strict merged-to-primary rule, judged in code, never the agent's call.
+
+    * ``cancelled`` - deps in a terminal non-done state (``wont_do``/``deprecated``): the
+      foundation will never land, so the dependent is blocked for a human, not held forever.
+    * ``pending`` - deps not done and not cancelled (still in flight): hold and re-check.
+
+    Two tiers: the issue's own ``Depends on: #NN`` ids and its parent ticket's. Only numeric
+    provider-id deps are enforced; a dep we cannot resolve counts as pending (likely just not
+    synced yet) so we wait rather than race ahead. Non-numeric tokens are skipped.
     """
-    unmet: list[tuple[str, str]] = []
+    cancelled: list[tuple[str, str]] = []
+    pending: list[tuple[str, str]] = []
     seen: set[str] = set()
 
     def _check(dep_id: str) -> None:
@@ -857,8 +867,12 @@ def _unmet_dependencies(ctx: ExecutionContext, entity: Any) -> list[tuple[str, s
             return
         seen.add(dep_id)
         status = _dep_status(ctx, dep_id)
-        if status != "done":
-            unmet.append((dep_id, status or "unknown"))
+        if status == "done":
+            return
+        if status in _CANCELLED_DEP_STATUSES:
+            cancelled.append((dep_id, status))
+        else:
+            pending.append((dep_id, status or "unknown"))
 
     for dep in getattr(entity, "depends_on", []) or []:
         _check(dep)
@@ -868,7 +882,7 @@ def _unmet_dependencies(ctx: ExecutionContext, entity: Any) -> list[tuple[str, s
         parent, _ = context_mod.load_entity(ctx, str(parent_id))
         for dep in getattr(parent, "depends_on", []) or []:
             _check(dep)
-    return unmet
+    return cancelled, pending
 
 
 def _poll_interval_s(ctx: ExecutionContext) -> float:
@@ -978,6 +992,21 @@ def _run_work(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
             )
             return HandlerOutcome(success=True, detail=detail)
 
+    # An awaiting_merge issue (work accepted, branch not on primary yet) is resolved in
+    # code with no agent run: 👍/❤️ on its gate comment (or `approve`/`merge` APR) re-readies
+    # and merges - idempotent, so it also just confirms a hand-merge - then closes done;
+    # prose/`retry` reworks. Nothing here reaches done without an actual merge.
+    if _spec_change_route(entity) is None and getattr(entity, "status", None) == "awaiting_merge":
+        transition = advance.resolve_awaiting_merge(ctx, entity, state_result, conversation, action)
+        detail = _run_gate_merge(ctx, entity, transition, task) or "awaiting_merge; not yet authorized"
+        platform_log.log_event(
+            "awaiting_merge_resolved",
+            task_id=task.get("task_id"),
+            post_id=post_id,
+            detail=detail,
+        )
+        return HandlerOutcome(success=True, detail=detail)
+
     if intent == AgentIntent.NONE:
         platform_log.log_event(
             "work_no_action",
@@ -1024,21 +1053,31 @@ def _run_work(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
             )
             return HandlerOutcome(success=True, detail=detail)
 
-    # Dependency gate: hold an issue until the issues it depends on are done. Body
-    # links carry deps (remote-posts.md). Requeue with a poll-interval delay so the
-    # held issue is re-checked next poll (no busy loop), instead of running early
-    # and clobbering shared foundations a dependency was meant to lay down first.
+    # Dependency gate: an issue may only implement once every issue it depends on is
+    # DONE (== merged to primary; see _classify_deps). A dep still in flight -> hold and
+    # re-check next poll (no busy loop), so we never build on a foundation a dependency
+    # was meant to lay down first. A dep terminally CANCELLED -> block + draft adapt (the
+    # foundation will never land, so waiting would deadlock).
     if intent == AgentIntent.IMPLEMENT:
-        unmet = _unmet_dependencies(ctx, entity)
-        if unmet:
+        cancelled, pending = _classify_deps(ctx, entity)
+        if cancelled:
+            detail = advance.block_on_cancelled_dep(ctx, entity, cancelled)
+            platform_log.log_event(
+                "work_blocked_cancelled_dep",
+                task_id=task.get("task_id"),
+                post_id=post_id,
+                cancelled=[d for d, _ in cancelled],
+            )
+            return HandlerOutcome(success=True, detail=detail)
+        if pending:
             detail = "held: waiting on {0}".format(
-                ", ".join("#{0}({1})".format(d, s) for d, s in unmet)
+                ", ".join("#{0}({1})".format(d, s) for d, s in pending)
             )
             platform_log.log_event(
                 "work_held_on_deps",
                 task_id=task.get("task_id"),
                 post_id=post_id,
-                unmet=[d for d, _ in unmet],
+                unmet=[d for d, _ in pending],
             )
             return HandlerOutcome(
                 success=True, requeue=True, requeue_after_s=_poll_interval_s(ctx), detail=detail

@@ -77,7 +77,7 @@ src/
     entities/                        #   epic/ticket/issue = meaning over neutral entries (tier/status/links). EntityRef
     state_machines/                  #   legal status transitions + approvals. 0.15.0: a gate's 👍/👎/❤️ counts on its REQUEST COMMENT (latest platform comment w/ the approval-request marker), NOT the post — `_gate_reaction_users`; post reactions only when no request comment (post body is the ask). approve/reject/merge cmds still scoped to live APR/post id
     configuring/                     #   configure.py interactive setup -> config
-    migrating/                       #   storage migrations (hops); 0.3.1->0.4.0 deletes copied code; 0.4.0->0.5.0 + 0.5.0->0.7.0 drop the seed marker so new labels re-seed; 0.5.0->0.7.0 also adds tasks.not_before; 0.11.0->0.12.0 renames dev_branch->specseed_primary_branch (+ merge_to_primary/push_primary); 0.12.0->0.13.0 drops the dead permissions.remote.make_prs switch
+    migrating/                       #   storage migrations (hops); 0.3.1->0.4.0 deletes copied code; 0.4.0->0.5.0 + 0.5.0->0.7.0 drop the seed marker so new labels re-seed; 0.5.0->0.7.0 also adds tasks.not_before; 0.11.0->0.12.0 renames dev_branch->specseed_primary_branch (+ merge_to_primary/push_primary); 0.12.0->0.13.0 drops the dead permissions.remote.make_prs switch; 0.14.0->0.16.0 drops the seed marker so the new `awaiting_merge` status re-seeds
   ui/                  # the SHARED web UI (vanilla JS modules, no deps): server.py (multi-repo API) + shell/ + features/{repos,monitor,tracker,configuration} + theme.css
 skills/specseed/                     # the spec-change worker skill (markdown + helper scripts), at repo root
   SKILL.md                           #   START HERE. router: routes, contract, hard rules
@@ -142,7 +142,10 @@ tests/integration/python/            # opt-in integration tests (marker: integra
     `MERGE_GATE_MARKER`/`WORK_MERGE_GATE_MARKER` comment (+ `approve/merge APR-<id>` naming that comment's minted APR).
     A re-opened gate is a NEW comment with no reactions, so a standing 👍 / a superseded gate's approval is dead - the
     consume mechanism, no extra storage. PURE gate (work accepted) - 👍/❤️ on the comment re-readies + merges, 👎 declines
-    (settle done, branch left for a manual merge). COMBINED gate (review under the bar AND merge gated) - ❤️/`merge`
+    -> `awaiting_merge` (**0.16.0:** NOT done; nothing is done until on primary - the branch is left for a manual merge,
+    the issue stays open, dependents stay held). An `awaiting_merge` issue resolves via `advance.resolve_awaiting_merge`:
+    👍/❤️/`approve`/`merge` re-readies + merges (idempotent, so it also just confirms a hand-merge) -> done; prose/`retry`
+    reworks. COMBINED gate (review under the bar AND merge gated) - ❤️/`merge`
     approves work + readies + merges; 👍/`approve` approves work + opens a follow-up pure merge gate; 👎/prose reworks.
     Plain HITL/below-bar gates keep POST-reaction approval (`_resolve_plain_gate`). **Invalidate-on-primary-change:** after
     a successful merge `_reprepare_after_primary_change` re-readies every OTHER open merge gate against the new primary
@@ -151,6 +154,13 @@ tests/integration/python/            # opt-in integration tests (marker: integra
     the request comment (`data-gate-react`/`reactComment`) for EVERY gate. A comment reaction syncs keyed on the COMMENT,
     so `dispatch._run_work` maps it to the owning entry via `TrackingLocal.entry_id_for_comment` before resolving.
     specseed does NOT open PRs/MRs yet; the issue-branch merge is the unit.
+- **dependency gate** (`dispatch._classify_deps`, run at the IMPLEMENT gate in `_run_work`) - an issue may only implement
+    once EVERY dep it declares is `done`, and `done` means MERGED to primary (`advance.close_issue_done` runs only after a
+    real merge), so this is the strict merged-to-primary rule judged in code, never the agent's call. Deps are body links
+    (`Depends on: #NN`, two tiers: the issue's own + its parent ticket's). A dep still in flight -> HOLD (requeue each poll).
+    A dep terminally CANCELLED (`wont_do`/`deprecated`, its code will never land) -> the dependent parks `blocked` and one
+    draft `spec-change:adapt` per cancelled dep (idempotent via a `dep-cancelled #NN` marker) lists every blocked dependent
+    so a human triages (rework / continue / cancel) instead of deadlocking forever (`advance.block_on_cancelled_dep`).
 
 ## Testing (enforced)
 

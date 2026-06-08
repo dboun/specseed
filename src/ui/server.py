@@ -454,10 +454,11 @@ def _touch_entry(db: Path, entry_id) -> None:
 def _needs_approval(post: dict) -> bool:
     """A post awaits a human gate when any of its labels end ``:status:awaiting_approval``
     (the request post's ``spec-change:status:awaiting_approval`` or a work post's
-    ``<tier>:status:awaiting_approval``)."""
+    ``<tier>:status:awaiting_approval``), or ``:status:awaiting_merge`` (work accepted but
+    not yet on primary - the human merges it or approves the merge)."""
     for label in post.get("labels") or []:
         name = label.get("name") if isinstance(label, dict) else None
-        if name and name.endswith(":status:awaiting_approval"):
+        if name and (name.endswith(":status:awaiting_approval") or name.endswith(":status:awaiting_merge")):
             return True
     return False
 

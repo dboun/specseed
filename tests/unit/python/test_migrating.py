@@ -72,7 +72,8 @@ class RunMigrationsTest(unittest.TestCase):
                 applied,
                 ["m_0_3_0__0_3_1", "m_0_3_1__0_4_0", "m_0_4_0__0_5_0",
                  "m_0_5_0__0_7_0", "m_0_7_0__0_9_0", "m_0_9_0__0_11_0",
-                 "m_0_11_0__0_12_0", "m_0_12_0__0_13_0", "m_0_13_0__0_14_0"],
+                 "m_0_11_0__0_12_0", "m_0_12_0__0_13_0", "m_0_13_0__0_14_0",
+                 "m_0_14_0__0_16_0"],
             )
             self.assertEqual(migrate.storage_version(storage), migrate.code_version())
 

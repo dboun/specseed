@@ -484,18 +484,59 @@ class ApprovalGateTest(_Base):
         self.assertIn(advance.MERGE_GATE_MARKER, bodies)
         self.assertIn("APR-0001", bodies)  # first token minted from the storage counter
 
-    def test_pure_merge_gate_declined_settles_done_unmerged(self) -> None:
-        # 👎 ON the pure merge gate comment = decline the runtime merge: settle done,
-        # branch left intact for a manual merge. The human owns the branch; not a rework.
+    def test_pure_merge_gate_declined_parks_awaiting_merge(self) -> None:
+        # 👎 ON the pure merge gate comment = decline the runtime merge. NOT done (nothing is
+        # done until on primary): park `awaiting_merge`, branch left for a manual merge, post
+        # stays OPEN so a dependent keyed on `done` stays held.
         eid = self._seed("Gate", ["issue", "issue:status:awaiting_approval"])
         ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
         entity, _ = _load(ctx, eid)
         conv = [self._gate_comment(advance.MERGE_GATE_MARKER, down=["alice"])]
         t = advance.resolve_approval(ctx, entity, _SR([]), conv, _REACT)
         self.assertFalse(t.merge)
-        self.assertIn("unmerged", t.detail)
-        self.assertIn("issue:status:done", self._remote_labels(eid))
-        self.assertFalse(self._remote_details(eid).is_open)
+        self.assertIn("awaiting_merge", t.detail)
+        self.assertIn("issue:status:awaiting_merge", self._remote_labels(eid))
+        self.assertNotIn("issue:status:done", self._remote_labels(eid))
+        self.assertTrue(self._remote_details(eid).is_open)
+        # a fresh awaiting-merge gate comment is posted (new APR, no carried reaction)
+        bodies = "\n".join(c.body for c in self._remote_details(eid).comments)
+        self.assertIn(advance.AWAITING_MERGE_MARKER, bodies)
+
+    def test_awaiting_merge_approve_merges(self) -> None:
+        # 👍 on the awaiting_merge gate comment authorizes the runtime merge: re-ready +
+        # merge (idempotent, so it also just confirms a hand-merge), then done.
+        eid = self._seed("Gate", ["issue", "issue:status:awaiting_merge"])
+        ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
+        entity, _ = _load(ctx, eid)
+        conv = [self._gate_comment(advance.MERGE_GATE_MARKER, thumbs=["alice"])]
+        t = advance.resolve_awaiting_merge(ctx, entity, _SR([]), conv, _REACT)
+        self.assertTrue(t.prepare)
+        self.assertTrue(t.merge)
+
+    def test_awaiting_merge_no_signal_waits(self) -> None:
+        eid = self._seed("Gate", ["issue", "issue:status:awaiting_merge"])
+        ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
+        entity, _ = _load(ctx, eid)
+        conv = [self._gate_comment(advance.MERGE_GATE_MARKER)]
+        t = advance.resolve_awaiting_merge(ctx, entity, _SR([]), conv, _REACT)
+        self.assertFalse(t.merge)
+        self.assertFalse(t.prepare)
+        self.assertIsNone(t.detail)
+        self.assertIn("issue:status:awaiting_merge", self._remote_labels(eid))
+
+    def test_awaiting_merge_prose_reworks_to_todo(self) -> None:
+        # A free-text comment is taken as change guidance: rework, not merge.
+        eid = self._seed("Gate", ["issue", "issue:status:awaiting_merge"])
+        ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
+        entity, _ = _load(ctx, eid)
+        conv = [
+            self._gate_comment(advance.MERGE_GATE_MARKER),
+            {"author": "alice", "body": "actually rename the flag first", "reactions": []},
+        ]
+        t = advance.resolve_awaiting_merge(ctx, entity, _SR([]), conv, _COMMENT)
+        self.assertFalse(t.merge)
+        self.assertIn("todo", t.detail)
+        self.assertIn("issue:status:todo", self._remote_labels(eid))
 
     def test_prework_gate_resumes_when_approved(self) -> None:
         # No review attempts recorded = a pre-work HITL gate: 👍 resumes to todo.
@@ -646,6 +687,20 @@ class BlockedBypassTest(_Base):
 def _load(ctx, eid):
     from specseed_runtime.executing.context import load_entity
     return load_entity(ctx, str(eid))
+
+
+class StateMachineAwaitingMergeTest(unittest.TestCase):
+    def test_awaiting_merge_next_states(self) -> None:
+        from specseed_runtime.state_machines import base as sm
+        e = Entity.for_labels(post_id="1", labels=["issue", "issue:status:awaiting_merge"])
+        nxt = sm.possible_next_states(e, {})
+        self.assertIn("done", nxt)
+        self.assertIn("todo", nxt)
+        self.assertIn("blocked", nxt)
+
+    def test_awaiting_merge_is_not_terminal(self) -> None:
+        from specseed_runtime.state_machines import base as sm
+        self.assertNotIn("awaiting_merge", sm.TERMINAL_STATES)
 
 
 class RelationshipsParseTest(unittest.TestCase):

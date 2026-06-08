@@ -43,6 +43,8 @@ from typing import Any, Optional
 from specseed_runtime.entities.entity_base import (
     Entity,
     STATUS_LABEL_PREFIX,
+    parse_depends_on,
+    parse_parent,
 )
 from specseed_runtime.executing import platform_log
 from specseed_runtime.executing import relationships
@@ -164,6 +166,11 @@ def _close(ctx: Any, post_id: Any) -> None:
 #                          (the merge becomes a pure gate), 👎 rejects the work.
 MERGE_GATE_MARKER = "<!-- specseed:merge-gate -->"
 WORK_MERGE_GATE_MARKER = "<!-- specseed:work-merge-gate -->"
+# Stamped on the gate comment of an issue parked ``awaiting_merge`` (work accepted,
+# branch not yet on primary). Carries MERGE_GATE_MARKER too, so the same gate-signal
+# reader applies. Per cancelled dependency, one draft adapt carries the next marker.
+AWAITING_MERGE_MARKER = "<!-- specseed:awaiting-merge -->"
+DEP_CANCELLED_MARKER = "<!-- specseed:dep-cancelled #{0} -->"
 
 
 @dataclass
@@ -246,6 +253,35 @@ def open_merge_gate_ready(ctx: Any, entity: Any) -> str:
         _set_status(ctx, entity, "awaiting_approval")
     _comment(ctx, entity.post_id, _merge_gate_ready_comment(ctx, entity, apr_id))
     return "branch readied -> awaiting_approval (merge gate {0})".format(apr_id)
+
+
+def _awaiting_merge_comment(ctx: Any, entity: Any, apr_id: str) -> str:
+    """The gate comment for an issue parked ``awaiting_merge`` (work accepted, branch not
+    yet on primary). A fresh APR each time, so a prior decline never carries over."""
+    primary = _primary_branch_name(ctx)
+    return (
+        "**Awaiting merge.** The work is accepted, but it is NOT on `{0}` yet, so this issue "
+        "is `awaiting_merge` (not done) and anything that depends on it stays blocked until it "
+        "lands:\n\n"
+        "- react 👍 on this comment (or comment `approve {1}`) and I will merge the branch into "
+        "`{0}` for you, or\n"
+        "- merge the branch yourself, then react 👍 / comment `approve {1}` so I confirm it landed "
+        "and close this.\n\n"
+        "React on THIS comment, not the post.\n\n{2}\n{3}\n<!-- {4} {1} -->".format(
+            primary, apr_id, AWAITING_MERGE_MARKER, MERGE_GATE_MARKER, APPROVAL_REQUEST_MARKER
+        )
+    )
+
+
+def park_awaiting_merge(ctx: Any, entity: Any) -> str:
+    """Park an issue ``awaiting_merge``: work accepted, branch not yet on primary. NOT done,
+    NOT closed - a dependent issue keyed on ``done`` stays held until this actually merges.
+    Posts a fresh gate comment (new APR) so a prior decline can never re-fire."""
+    apr_id = next_apr_id(ctx.storage)
+    if getattr(entity, "status", None) != "awaiting_merge":
+        _set_status(ctx, entity, "awaiting_merge")
+    _comment(ctx, entity.post_id, _awaiting_merge_comment(ctx, entity, apr_id))
+    return "awaiting_merge (merge gate {0})".format(apr_id)
 
 
 def _settle_or_merge(ctx: Any, entity: Any, reason: str) -> WorkTransition:
@@ -764,13 +800,17 @@ def _resolve_pure_merge_gate(ctx: Any, entity: Any, sig: _GateSignals) -> WorkTr
             "merge gate approved by {0} -> merging".format(approver), prepare=True, merge=True
         )
     if sig.reject:
-        detail = close_issue_done(ctx, entity)
+        # Declining does NOT complete the issue: nothing is `done` until it is on primary.
+        # Park `awaiting_merge` so the branch can be merged by hand later (or approved here),
+        # and any dependent stays blocked until it actually lands.
         _comment(
             ctx, entity.post_id,
-            "Merge declined by {0}; issue marked done with the branch left unmerged for "
-            "you to merge by hand.".format(sig.reject[0]),
+            "Merge declined by {0}; the branch is left for you to merge by hand.".format(
+                sig.reject[0]
+            ),
         )
-        return WorkTransition("merge gate declined -> {0} (unmerged)".format(detail))
+        detail = park_awaiting_merge(ctx, entity)
+        return WorkTransition("merge gate declined -> {0}".format(detail))
     return WorkTransition(None)
 
 
@@ -838,6 +878,58 @@ def _resolve_directive(
     if (kind == "reject_bare" or rejected) and not _options_already_posted(ctx, entity.post_id):
         _post_reject_options(ctx, entity)
         return WorkTransition("approval gate: rejected without guidance -> options prompt posted")
+    return WorkTransition(None)
+
+
+def resolve_awaiting_merge(
+    ctx: Any, entity: Any, state_result: Any, conversation: Any = None, action: Any = None
+) -> WorkTransition:
+    """Resolve an ``awaiting_merge`` issue (work accepted, branch not yet on primary).
+
+    Approval read off the LIVE gate comment (its 👍/❤️ or `approve`/`merge` APR): re-ready
+    and merge into primary, then ``done``. The merge is idempotent - if the human already
+    merged the branch by hand, the runtime merge is a no-op that just confirms it landed and
+    closes. Prose / `retry` reworks (-> ``todo``). A 👎 (decline again) or nothing -> wait.
+    Nothing reaches ``done`` here without an actual merge.
+    """
+    if getattr(entity, "status", None) != "awaiting_merge":
+        return WorkTransition(None)
+    if not _can_write(ctx):
+        return WorkTransition(None)
+    sig = _gate_signals(ctx, entity, conversation, MERGE_GATE_MARKER)
+    is_comment = action in _COMMENT_ACTIONS
+    if not (sig and (sig.approve or sig.merge or sig.reject)) and not is_comment:
+        return WorkTransition(None)
+    if _is_stale(ctx, entity):
+        return WorkTransition("stale event; remote already advanced past awaiting_merge")
+
+    if sig and (sig.approve or sig.merge):
+        approver = (sig.merge or sig.approve)[0]
+        primary = _primary_branch_name(ctx)
+        _comment(
+            ctx, entity.post_id,
+            "Merging into `{0}` (folding any new `{0}` changes first); authorized by {1}. If "
+            "you already merged it, this just confirms it landed.".format(primary, approver),
+        )
+        return WorkTransition(
+            "awaiting_merge approved by {0} -> merging".format(approver), prepare=True, merge=True
+        )
+
+    # Not an approval: a prose comment reworks; a bare decline just keeps waiting.
+    kind, _text = (None, None)
+    if is_comment:
+        kind, _text = _human_directive(conversation, getattr(ctx, "config", {}))
+    if kind in ("retry", "guidance"):
+        _set_status(ctx, entity, "todo")
+        _comment(
+            ctx, entity.post_id,
+            "Retrying implementation with no new feedback."
+            if kind == "retry"
+            else "Taking your comment as change guidance; re-running implementation.",
+        )
+        return WorkTransition(
+            "awaiting_merge -> todo ({0})".format("retry" if kind == "retry" else "revise")
+        )
     return WorkTransition(None)
 
 
@@ -1221,3 +1313,99 @@ def _work_nodes(ctx: Any) -> dict:
 def _details(ctx: Any, post_id: Any) -> Any:
     res = ctx.remote.get_entry(post_id)
     return getattr(res, "data", None)
+
+
+# --------------------------------------------------------------------------- #
+# cancelled dependency -> block the dependent + open a draft adapt to triage
+# --------------------------------------------------------------------------- #
+def _dependents_of(ctx: Any, dep_id: Any) -> list[str]:
+    """Issue ids blocked by ``dep_id``: those declaring it in their own ``Depends on:`` or
+    via their parent ticket's ``Depends on:`` (the same two tiers the dispatch gate reads)."""
+    dep_id = str(dep_id)
+    out: list[str] = []
+    try:
+        res = ctx.remote.list_entries(is_open=None)
+    except Exception:
+        return out
+    parent_deps: dict[str, set] = {}
+    for summary in getattr(res, "data", None) or []:
+        names = [str(getattr(lbl, "name", lbl)) for lbl in getattr(summary, "labels", []) or []]
+        if Entity.tier_from_labels(names) != "issue":
+            continue
+        sid = str(getattr(summary, "id", "") or "")
+        body = getattr(_details(ctx, sid), "body", None)
+        if dep_id in set(parse_depends_on(body)):
+            out.append(sid)
+            continue
+        parent = parse_parent(body)
+        if parent:
+            if parent not in parent_deps:
+                parent_deps[parent] = set(parse_depends_on(getattr(_details(ctx, parent), "body", None)))
+            if dep_id in parent_deps[parent]:
+                out.append(sid)
+    return out
+
+
+def _find_open_adapt_with_marker(ctx: Any, marker: str) -> Optional[str]:
+    """The id of an OPEN ``spec-change:adapt`` post carrying ``marker``, or None (idempotency)."""
+    try:
+        res = ctx.remote.list_entries(is_open=True)
+    except Exception:
+        return None
+    for summary in getattr(res, "data", None) or []:
+        names = [str(getattr(lbl, "name", lbl)) for lbl in getattr(summary, "labels", []) or []]
+        if "spec-change:adapt" not in names:
+            continue
+        body = getattr(_details(ctx, getattr(summary, "id", "")), "body", None) or ""
+        if marker in body:
+            return str(getattr(summary, "id", "") or "")
+    return None
+
+
+def _ensure_cancelled_dep_adapt(ctx: Any, dep_id: Any, status: str) -> Optional[Any]:
+    """One draft ``spec-change:adapt`` per cancelled dependency, listing every blocked dependent.
+    Idempotent via a per-dep marker: re-encountering the same cancelled dep returns the existing
+    post instead of opening a second. Returns the post id (or None)."""
+    marker = DEP_CANCELLED_MARKER.format(dep_id)
+    existing = _find_open_adapt_with_marker(ctx, marker)
+    if existing is not None:
+        return existing
+    dependents = _dependents_of(ctx, dep_id)
+    listing = "\n".join("- #{0}".format(d) for d in dependents) or "- (none resolved yet)"
+    body = (
+        "Dependency **#{0}** was cancelled (`{1}`), but other work declared a hard dependency "
+        "on it, so that work is parked `blocked` - its foundation will never land.\n\n"
+        "Blocked by this cancellation:\n{2}\n\n"
+        "Decide per item: **rework** it so it no longer needs #{0}, let it **continue** without the "
+        "dep (reply to unblock), or **cancel** it too. This is a **draft** `spec-change:adapt` - "
+        "discuss, then drop the `draft` label to let the spec-change worker adapt the spec.\n\n{3}"
+    ).format(dep_id, status, listing, marker)
+    res = ctx.remote.add_entry(
+        title="Spec adapt: dependency #{0} cancelled, dependents blocked".format(dep_id),
+        body=body,
+        labels=["spec-change:adapt", "draft", "management"],
+    )
+    data = getattr(res, "data", None)
+    return getattr(data, "id", None) if data is not None else None
+
+
+def block_on_cancelled_dep(ctx: Any, entity: Any, cancelled: list) -> str:
+    """Park an issue ``blocked`` because a hard dependency was cancelled, and open one draft
+    adapt per cancelled dep (idempotent) so a human triages how to unblock. ``cancelled`` is a
+    list of ``(dep_id, status)``."""
+    if not _can_write(ctx):
+        return "remote writes not permitted; not blocking on cancelled dep"
+    _set_status(ctx, entity, "blocked")
+    refs = []
+    for dep_id, status in cancelled:
+        refs.append((dep_id, status, _ensure_cancelled_dep_adapt(ctx, dep_id, status)))
+    lines = ["Blocked: a hard dependency was cancelled, so this work cannot proceed as planned:"]
+    for dep_id, status, draft_id in refs:
+        tail = " - see spec-adapt #{0}".format(draft_id) if draft_id is not None else ""
+        lines.append("- depends on #{0}, now `{1}`{2}".format(dep_id, status, tail))
+    lines.append("Decide via the spec-adapt: rework this, continue without the dep, or cancel it too.")
+    _comment(ctx, entity.post_id, "\n".join(lines))
+    platform_log.log_event(
+        "blocked_on_cancelled_dep", post_id=entity.post_id, deps=[str(d) for d, _, _ in refs]
+    )
+    return "blocked: cancelled dep(s) {0}".format(", ".join(str(d) for d, _, _ in refs))
