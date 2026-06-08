@@ -48,6 +48,16 @@ STATUS_FAILED = "failed"
 # Tasks that still represent outstanding work (the queue is "not empty").
 ACTIVE_STATUSES = (STATUS_PENDING, STATUS_IN_PROGRESS)
 
+# Two lanes share the table. ``control`` = fast deterministic work the scheduler's
+# control thread drains to empty every tick (decide state, fast remote writes,
+# schedule work). ``work`` = the heavy serial muscle (agents + git) drained by the
+# work thread. See ``executing/priorities.py`` for the priority scale.
+LANE_CONTROL = "control"
+LANE_WORK = "work"
+LANES = (LANE_CONTROL, LANE_WORK)
+
+DEFAULT_PRIORITY = 50
+
 
 def _now() -> str:
     """Return an ISO-8601 UTC timestamp, e.g. '2026-06-04T12:00:00Z'."""
@@ -100,33 +110,47 @@ class Database:
         action: str,
         post_id: Optional[int | str] = None,
         payload: Optional[dict[str, Any]] = None,
+        lane: str = LANE_CONTROL,
+        priority: int = DEFAULT_PRIORITY,
     ) -> int:
         """Append a task to the queue and return its ``task_id``.
 
         ``action`` is a free-form verb the scheduler understands, such as
         ``handle_label_added`` or ``continue_impl``. ``post_id`` is the remote
         entry the task concerns (or ``None`` for global work). ``payload`` holds
-        action-specific data and is stored as JSON.
+        action-specific data and is stored as JSON. ``lane`` picks the control or
+        work lane; ``priority`` orders within a lane (higher claimed first).
         """
         if not action or not action.strip():
             raise ValueError("action is required")
+        if lane not in LANES:
+            raise ValueError(f"unknown lane: {lane!r}")
         now = _now()
         with self._tx() as conn:
             cursor = conn.execute(
                 """
-                INSERT INTO tasks(action, post_id, payload, status, attempts, created_at)
-                VALUES (?, ?, ?, ?, 0, ?)
+                INSERT INTO tasks(action, post_id, payload, status, attempts, created_at, lane, priority)
+                VALUES (?, ?, ?, ?, 0, ?, ?, ?)
                 """,
-                (action, _post_id_to_text(post_id), _payload_to_text(payload), STATUS_PENDING, now),
+                (
+                    action,
+                    _post_id_to_text(post_id),
+                    _payload_to_text(payload),
+                    STATUS_PENDING,
+                    now,
+                    lane,
+                    int(priority),
+                ),
             )
             return int(cursor.lastrowid)
 
-    def claim_next(self) -> Optional[dict[str, Any]]:
-        """Atomically claim the oldest *due* pending task, or return ``None``.
+    def claim_next(self, lane: str = LANE_CONTROL) -> Optional[dict[str, Any]]:
+        """Atomically claim the highest-priority *due* pending task in ``lane``.
 
-        A task with a future ``not_before`` (a scheduled retry) is skipped until
-        its time comes. The claimed task is moved to ``in_progress``, its
-        ``attempts`` is incremented, and ``last_attempted_at`` is stamped.
+        Ordering is ``priority`` descending then ``task_id`` ascending (FIFO within
+        a priority). A task with a future ``not_before`` (a scheduled retry) is
+        skipped until its time comes. The claimed task is moved to ``in_progress``,
+        its ``attempts`` is incremented, and ``last_attempted_at`` is stamped.
         ``BEGIN IMMEDIATE`` plus the process lock guarantee that no two callers
         claim the same row.
         """
@@ -135,11 +159,12 @@ class Database:
                 f"""
                 SELECT task_id FROM tasks
                 WHERE status = '{STATUS_PENDING}'
+                  AND lane = ?
                   AND (not_before IS NULL OR not_before <= ?)
-                ORDER BY task_id
+                ORDER BY priority DESC, task_id ASC
                 LIMIT 1
                 """,
-                (_now(),),
+                (lane, _now()),
             ).fetchone()
             if row is None:
                 return None
@@ -236,13 +261,19 @@ class Database:
             ).fetchall()
         return [_row_to_task(row) for row in rows]
 
-    def pending_count(self) -> int:
-        """Number of tasks still waiting to be claimed."""
-        return self._count_status((STATUS_PENDING,))
+    def pending_count(self, lane: Optional[str] = None, ready_now: bool = False) -> int:
+        """Number of pending tasks, optionally scoped to ``lane``.
 
-    def active_count(self) -> int:
-        """Number of tasks that are pending or in progress."""
-        return self._count_status(ACTIVE_STATUSES)
+        ``ready_now`` excludes scheduled retries whose ``not_before`` is still in
+        the future - the count of what could actually be claimed right now. The
+        work thread uses ``pending_count(LANE_CONTROL, ready_now=True) == 0`` to
+        decide the control lane is drained before it picks up a heavy job.
+        """
+        return self._count_status((STATUS_PENDING,), lane=lane, ready_now=ready_now)
+
+    def active_count(self, lane: Optional[str] = None) -> int:
+        """Number of tasks that are pending or in progress (optionally per lane)."""
+        return self._count_status(ACTIVE_STATUSES, lane=lane)
 
     def is_empty(self) -> bool:
         """Whether the queue has no outstanding work.
@@ -267,12 +298,25 @@ class Database:
     # ------------------------------------------------------------------ #
     # internals
     # ------------------------------------------------------------------ #
-    def _count_status(self, statuses: tuple[str, ...]) -> int:
+    def _count_status(
+        self,
+        statuses: tuple[str, ...],
+        lane: Optional[str] = None,
+        ready_now: bool = False,
+    ) -> int:
         placeholders = ",".join("?" for _ in statuses)
+        clauses = [f"status IN ({placeholders})"]
+        params: list[Any] = list(statuses)
+        if lane is not None:
+            clauses.append("lane = ?")
+            params.append(lane)
+        if ready_now:
+            clauses.append("(not_before IS NULL OR not_before <= ?)")
+            params.append(_now())
         with self._connect() as conn:
             row = conn.execute(
-                f"SELECT COUNT(*) AS n FROM tasks WHERE status IN ({placeholders})",
-                statuses,
+                f"SELECT COUNT(*) AS n FROM tasks WHERE {' AND '.join(clauses)}",
+                params,
             ).fetchone()
         return int(row["n"])
 
@@ -317,7 +361,10 @@ class Database:
                     attempts          INTEGER NOT NULL DEFAULT 0,
                     created_at        TEXT    NOT NULL,
                     last_attempted_at TEXT,
-                    not_before        TEXT
+                    not_before        TEXT,
+                    lane              TEXT    NOT NULL DEFAULT '{LANE_CONTROL}'
+                                      CHECK (lane IN ('{LANE_CONTROL}', '{LANE_WORK}')),
+                    priority          INTEGER NOT NULL DEFAULT {DEFAULT_PRIORITY}
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_tasks_status_id
@@ -335,6 +382,26 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_task_errors_task_id
                     ON task_errors(task_id);
                 """
+            )
+            # Self-heal a pre-0.18.0 table opened without the migration (the
+            # Database is also constructed standalone, e.g. by the UI/tests). The
+            # lane index below references these columns, so add them first.
+            self._ensure_lane_columns(conn)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tasks_lane_claim "
+                "ON tasks(lane, status, priority, task_id)"
+            )
+
+    @staticmethod
+    def _ensure_lane_columns(conn: sqlite3.Connection) -> None:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(tasks)")}
+        if "lane" not in cols:
+            conn.execute(
+                f"ALTER TABLE tasks ADD COLUMN lane TEXT NOT NULL DEFAULT '{LANE_CONTROL}'"
+            )
+        if "priority" not in cols:
+            conn.execute(
+                f"ALTER TABLE tasks ADD COLUMN priority INTEGER NOT NULL DEFAULT {DEFAULT_PRIORITY}"
             )
 
 

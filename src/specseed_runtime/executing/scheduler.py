@@ -30,6 +30,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from specseed_runtime.db.database import LANE_CONTROL, LANE_WORK
 from specseed_runtime.scheduling.sync_to_db import sync_to_db
 from specseed_runtime.tracking.resolve_remote import (
     load_remote_state,
@@ -125,14 +126,20 @@ class Scheduler:
 
         self._state = PAUSED
         self._stop = threading.Event()
-        self._thread: Optional[threading.Thread] = None
+        # Two lanes, two threads: control (sync + fast deterministic drain) and
+        # work (serial heavy agents + git). They run concurrently so a human
+        # approval is never starved behind a long agent run.
+        self._control_thread: Optional[threading.Thread] = None
+        self._work_thread: Optional[threading.Thread] = None
         self._state_lock = threading.Lock()
+        self._tracker_lock = threading.Lock()  # guards lazy tracker creation across threads
 
         # status bookkeeping
         self._started_at: Optional[str] = None
         self._last_poll_at: Optional[str] = None
         self._last_sync: Optional[dict[str, Any]] = None
-        self._current_task_id: Optional[int] = None
+        self._current_task_id: Optional[int] = None  # the in-flight WORK task (the long one)
+        self._current_control_task_id: Optional[int] = None
         self._next_poll_at = 0.0  # monotonic; 0 forces an immediate first sync
 
         self._last_work_sig: Optional[str] = None
@@ -146,8 +153,8 @@ class Scheduler:
     # lifecycle
     # ------------------------------------------------------------------ #
     def start(self) -> None:
-        """Start the background loop (non-blocking). Idempotent while alive."""
-        if self._thread is not None and self._thread.is_alive():
+        """Start the control + work loops (non-blocking). Idempotent while alive."""
+        if self.is_running():
             platform_log.log_event("scheduler_start_skipped", reason="already_alive")
             return
         self._stop.clear()
@@ -162,25 +169,40 @@ class Scheduler:
             poll_interval=self.poll_interval,
             agent_timeout_s=self.agent_timeout_s,
         )
-        self._thread = threading.Thread(target=self._loop, name="specseed-scheduler", daemon=True)
-        self._thread.start()
+        self._control_thread = threading.Thread(
+            target=self._control_loop, name="specseed-control", daemon=True
+        )
+        self._work_thread = threading.Thread(
+            target=self._work_loop, name="specseed-work", daemon=True
+        )
+        self._control_thread.start()
+        self._work_thread.start()
 
     def stop(self, timeout: Optional[float] = None) -> None:
-        """Hard stop: cancel the in-flight task and join the loop thread."""
+        """Hard stop: cancel the in-flight work task and join both loop threads."""
         platform_log.log_event("scheduler_stop_requested", timeout=timeout)
         self.request_stop()
-        thread = self._thread
-        if thread is not None and thread is not threading.current_thread():
-            thread.join(timeout=timeout)
-            platform_log.log_event("scheduler_stop_joined", alive=thread.is_alive())
+        for thread in (self._control_thread, self._work_thread):
+            if thread is not None and thread is not threading.current_thread():
+                thread.join(timeout=timeout)
+                platform_log.log_event(
+                    "scheduler_stop_joined", thread=thread.name, alive=thread.is_alive()
+                )
 
     def request_stop(self) -> None:
         with self._state_lock:
             self._state = STOPPED
         self._stop.set()
-        platform_log.log_event("scheduler_request_stop", current_task_id=self._current_task_id)
-        if self._current_task_id is not None:
-            cancellation.cancel(self._current_task_id)
+        platform_log.log_event(
+            "scheduler_request_stop",
+            current_task_id=self._current_task_id,
+            current_control_task_id=self._current_control_task_id,
+        )
+        # Cancel whatever is in flight on either lane (the work task is the long one;
+        # a control item like apply.py polls the same cancel Event).
+        for tid in (self._current_task_id, self._current_control_task_id):
+            if tid is not None:
+                cancellation.cancel(tid)
 
     def pause(self) -> None:
         with self._state_lock:
@@ -248,7 +270,10 @@ class Scheduler:
             return self._state
 
     def is_running(self) -> bool:
-        return self._thread is not None and self._thread.is_alive()
+        return any(
+            t is not None and t.is_alive()
+            for t in (self._control_thread, self._work_thread)
+        )
 
     # ------------------------------------------------------------------ #
     # status
@@ -262,6 +287,11 @@ class Scheduler:
             "pending": pending,
             "in_progress": max(active - pending, 0),
             "current_task_id": self._current_task_id,
+            # Per-lane breakdown for the two-lane scheduler.
+            "control_pending": self.db.pending_count(LANE_CONTROL),
+            "work_pending": self.db.pending_count(LANE_WORK),
+            "current_work_task_id": self._current_task_id,
+            "current_control_task_id": self._current_control_task_id,
             "started_at": self._started_at,
             "last_poll_at": self._last_poll_at,
             "poll_interval_seconds": self.poll_interval,
@@ -271,8 +301,15 @@ class Scheduler:
     # ------------------------------------------------------------------ #
     # the loop
     # ------------------------------------------------------------------ #
-    def _loop(self) -> None:
-        platform_log.log_event("scheduler_loop_start")
+    def _control_loop(self) -> None:
+        """Fast lane: operator control + sync + drain the control queue to empty.
+
+        Runs even while the work thread is mid-agent-run, so sync discovers events
+        promptly and human approvals / CONTROL commands are never starved. Never
+        runs an agent or touches the git working tree - control items only decide
+        state, write the remote, and SCHEDULE work onto the work lane.
+        """
+        platform_log.log_event("scheduler_control_loop_start")
         while not self._stop.is_set():
             self._reconcile_control_file()
             self._heartbeat()
@@ -281,19 +318,46 @@ class Scheduler:
                 break
 
             did_work = False
-            if self.state == RUNNING and not self._quota_circuit_open():
+            if self.state == RUNNING:
                 if time.monotonic() >= self._next_poll_at:
                     self._sync()
                     self._next_poll_at = time.monotonic() + self.poll_interval
-                task = self.db.claim_next()
-                if task is not None:
-                    self._process_task(task)
+                # Drain every ready control item this tick (each is fast).
+                while not self._stop.is_set() and self.state == RUNNING:
+                    task = self.db.claim_next(LANE_CONTROL)
+                    if task is None:
+                        break
+                    self._process_control_task(task)
                     did_work = True
 
             if not did_work and not self._stop.is_set():
                 self._stop.wait(timeout=self._idle_sleep())
         self._heartbeat(force=True, final=True)
-        platform_log.log_event("scheduler_loop_exit", state=self.state)
+        platform_log.log_event("scheduler_control_loop_exit", state=self.state)
+
+    def _work_loop(self) -> None:
+        """Work lane: one heavy job at a time (agents + git), serial.
+
+        Yields to the control lane: a job is only claimed when the control queue
+        has nothing ready, so a freshly synced approval / a finished job's result
+        is always digested before the next heavy job starts. The quota circuit
+        parks THIS lane only - control keeps flowing.
+        """
+        platform_log.log_event("scheduler_work_loop_start")
+        while not self._stop.is_set():
+            claimed = False
+            if (
+                self.state == RUNNING
+                and not self._quota_circuit_open()
+                and self.db.pending_count(LANE_CONTROL, ready_now=True) == 0
+            ):
+                task = self.db.claim_next(LANE_WORK)
+                if task is not None:
+                    self._process_task(task)
+                    claimed = True
+            if not claimed and not self._stop.is_set():
+                self._stop.wait(timeout=self.tick)
+        platform_log.log_event("scheduler_work_loop_exit", state=self.state)
 
     def _reconcile_control_file(self) -> None:
         """Apply the operator's desired state written by the CLI/web service."""
@@ -409,7 +473,7 @@ class Scheduler:
         self._sync()
         drained = 0
         while not self._stop.is_set():
-            task = self.db.claim_next()
+            task = self.db.claim_next(LANE_CONTROL) or self.db.claim_next(LANE_WORK)
             if task is None:
                 break
             platform_log.log_event(
@@ -429,14 +493,17 @@ class Scheduler:
     # steps
     # ------------------------------------------------------------------ #
     def _ensure_trackers(self) -> None:
-        if self._remote is None:
-            platform_log.log_event("tracker_remote_resolve_start")
-            self._remote = self._remote_factory()
-            platform_log.log_event("tracker_remote_resolve_complete", type=type(self._remote).__name__)
-        if self._local is None:
-            platform_log.log_event("tracker_local_resolve_start")
-            self._local = self._local_factory()
-            platform_log.log_event("tracker_local_resolve_complete", type=type(self._local).__name__)
+        # The control and work threads both lazily resolve trackers; serialize the
+        # first creation so they share one instance instead of racing two into being.
+        with self._tracker_lock:
+            if self._remote is None:
+                platform_log.log_event("tracker_remote_resolve_start")
+                self._remote = self._remote_factory()
+                platform_log.log_event("tracker_remote_resolve_complete", type=type(self._remote).__name__)
+            if self._local is None:
+                platform_log.log_event("tracker_local_resolve_start")
+                self._local = self._local_factory()
+                platform_log.log_event("tracker_local_resolve_complete", type=type(self._local).__name__)
 
     def _ensure_control(self) -> Optional[ControlChannel]:
         if self._control is None:
@@ -526,6 +593,7 @@ class Scheduler:
         )
 
     def _process_task(self, task: dict[str, Any]) -> None:
+        """Run a WORK-lane task on a governed worker thread (backstop + cancel)."""
         task_id = int(task["task_id"])
         cancel = cancellation.register(task_id)
         self._current_task_id = task_id
@@ -544,7 +612,39 @@ class Scheduler:
         finally:
             self._current_task_id = None
             cancellation.clear(task_id)
+        self._finish_task(task, outcome)
 
+    def _process_control_task(self, task: dict[str, Any]) -> None:
+        """Run a CONTROL-lane task inline on the control thread.
+
+        Control items are fast and deterministic (decide state, write the remote,
+        schedule work). The one multi-second item - apply.py - self-limits via its
+        own cancel/timeout loop, and the registered cancel Event is set on stop.
+        """
+        task_id = int(task["task_id"])
+        cancel = cancellation.register(task_id)
+        self._current_control_task_id = task_id
+        platform_log.log_event(
+            "control_task_start",
+            task_id=task_id,
+            action=task.get("action"),
+            post_id=task.get("post_id"),
+            attempts=task.get("attempts"),
+        )
+        try:
+            ctx = self._make_context(cancel)
+            outcome = dispatch(ctx, task)
+        except Exception as exc:  # pragma: no cover - defensive
+            outcome = HandlerOutcome(success=False, error=f"handler crashed: {exc!r}")
+            platform_log.log_event("control_task_crash", task_id=task_id, error=repr(exc))
+        finally:
+            self._current_control_task_id = None
+            cancellation.clear(task_id)
+        self._finish_task(task, outcome)
+
+    def _finish_task(self, task: dict[str, Any], outcome: Optional[HandlerOutcome]) -> None:
+        """Complete / requeue a finished task and run recovery. Lane-agnostic."""
+        task_id = int(task["task_id"])
         if outcome is None:
             self.db.requeue(task_id)
             platform_log.log_event("task_requeued", task_id=task_id, reason="worker_no_outcome")

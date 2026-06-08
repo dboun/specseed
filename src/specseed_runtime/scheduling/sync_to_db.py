@@ -32,6 +32,7 @@ from typing import Any, Optional
 
 from specseed_runtime.db.database import Database
 from specseed_runtime.executing import platform_log
+from specseed_runtime.executing import priorities
 from specseed_runtime.platform_identity import is_platform_comment, platform_username
 from specseed_runtime.tasks.cleanup_task import CleanupTask
 from specseed_runtime.tasks.handle_comment_added import HandleCommentAdded
@@ -280,9 +281,12 @@ def _teardown_post(
     for row in in_progress:
         _request_interrupt(row)  # cancel the running task via the cancellation registry
         summary["interrupts_todo"] += 1
+        # The interrupted task may be a heavy WORK job (a long agent run); the cancel
+        # above tears it down on the work thread. The cleanup is a control item run
+        # high-priority so teardown bookkeeping is not stuck behind a control burst.
         CleanupTask.for_post(
             post_id, reason=f"entry_{action}", interrupted_task_id=row["task_id"]
-        ).enqueue(db)
+        ).enqueue(db, priority=priorities.CONTROL_CLEANUP)
         summary["cleanups"] += 1
         platform_log.log_event(
             "cleanup_enqueued_for_teardown",

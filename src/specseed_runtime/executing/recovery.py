@@ -187,6 +187,11 @@ def _comment(remote: Any, post_id: Any, body: str) -> None:
 
 
 def _enqueue_resolve(db: Any, error_post_id: Any, task: dict[str, Any], reason: str) -> None:
+    # The resolve agent is a heavy run -> the WORK lane, so it never blocks the
+    # control lane (and the quota circuit can park it).
+    from specseed_runtime.db.database import LANE_WORK
+    from specseed_runtime.executing import priorities
+
     db.enqueue(
         PLATFORM_ERROR_ACTION,
         post_id=error_post_id,
@@ -196,6 +201,8 @@ def _enqueue_resolve(db: Any, error_post_id: Any, task: dict[str, Any], reason: 
             "origin_action": task.get("action"),
             "reason": reason,  # "new" | "exhausted" | (dispatch adds "reply")
         },
+        lane=LANE_WORK,
+        priority=priorities.WORK_DEFAULT,
     )
     platform_log.log_event(
         "platform_error_agent_enqueued",

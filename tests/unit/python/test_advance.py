@@ -95,8 +95,12 @@ class _Base(unittest.TestCase):
         (self.root / ".gitignore").write_text("*.db\n*.db-*\nstorage/\n", encoding="utf-8")
         self._git("init")
         self._git("symbolic-ref", "HEAD", "refs/heads/main")
+        # Commit the .gitignore (real specseed scaffold does) so it is stable across
+        # branches; otherwise `git add -A` stages it onto a feature branch and a
+        # later `checkout main` deletes it, exposing the sqlite dbs to staging.
+        self._git("add", ".gitignore")
         self._git("-c", "user.email=t@t", "-c", "user.name=t",
-                  "commit", "--allow-empty", "-m", "root")
+                  "commit", "-m", "root")
         self.remote = TrackingRemoteLocal(db_path=self.root / "remote.db", author="alice")
         self.local = TrackingLocal(db_path=self.root / "local.db", author="agent")
         self.db = Database(db_path=self.root / "queue.db")
@@ -131,6 +135,36 @@ class _Base(unittest.TestCase):
             cancel=threading.Event(),
             agent_timeout_s=30.0,
         )
+
+    def _drain(self, ctx, max_iter=100):
+        """Drive the queue to quiescence like the two-lane scheduler.
+
+        The split means a work-triggering control event now SCHEDULES a work_run
+        instead of running the agent inline; the agent run + post-work transition
+        (+ any merge) play out across the work lane and a process_work_result
+        control item. This claims control-then-work, dispatches, and completes,
+        so a test can assert the final remote state exactly as the live runner.
+        """
+        from specseed_runtime.db.database import LANE_CONTROL, LANE_WORK
+
+        for _ in range(max_iter):
+            task = self.db.claim_next(LANE_CONTROL) or self.db.claim_next(LANE_WORK)
+            if task is None:
+                return
+            out = dispatch(ctx, task)
+            if out is not None and out.requeue and not out.quota:
+                # park the retry far out so the drain terminates (these tests do not
+                # exercise the retry path).
+                self.db.requeue(task["task_id"], not_before="2999-01-01T00:00:00Z")
+            else:
+                self.db.complete(task["task_id"], bool(out and out.success), out.error if out else None)
+        raise AssertionError("drain did not quiesce within max_iter")
+
+    def _run(self, ctx, task):
+        """Dispatch a control event, then drain the work it schedules."""
+        out = dispatch(ctx, task)
+        self._drain(ctx)
+        return out
 
     def _seed(self, title, labels, comments=()):
         for label in labels:
@@ -170,7 +204,7 @@ class ImplementTransitionTest(_Base):
         # merge auto-on: implement -> merge branch -> close done (no human gate).
         eid = self._seed("Do it", ["issue", "issue:status:todo"])
         ctx = self._ctx(self._config(merge=True), FakeAgentRunner(_impl_ok()))
-        out = dispatch(ctx, {"action": "handle_label_added", "post_id": str(eid), "payload": {}})
+        out = self._run(ctx, {"action": "handle_label_added", "post_id": str(eid), "payload": {}})
         self.assertTrue(out.success)
         labels = self._remote_labels(eid)
         self.assertIn("issue:status:done", labels)
@@ -181,7 +215,7 @@ class ImplementTransitionTest(_Base):
         eid = self._seed("Do it", ["issue", "issue:status:todo"])
         ctx = self._ctx(self._config(review={"enabled": True}),
                         FakeAgentRunner(_impl_ok()))
-        out = dispatch(ctx, {"action": "handle_label_added", "post_id": str(eid), "payload": {}})
+        out = self._run(ctx, {"action": "handle_label_added", "post_id": str(eid), "payload": {}})
         self.assertTrue(out.success)
         labels = self._remote_labels(eid)
         self.assertIn("issue:status:in_review", labels)
@@ -194,7 +228,7 @@ class ImplementTransitionTest(_Base):
             self._config(review={"enabled": True}),
             FakeAgentRunner(_impl_ok(status="blocked", summary="sandbox blocked the write")),
         )
-        out = dispatch(ctx, {"action": "handle_label_added", "post_id": str(eid), "payload": {}})
+        out = self._run(ctx, {"action": "handle_label_added", "post_id": str(eid), "payload": {}})
         self.assertTrue(out.success)
         labels = self._remote_labels(eid)
         self.assertIn("issue:status:blocked", labels)
@@ -210,7 +244,7 @@ class ImplementTransitionTest(_Base):
             FakeAgentRunner(_impl_ok(status="blocked", summary="spec contradicts itself",
                                      recommend=True)),
         )
-        out = dispatch(ctx, {"action": "handle_label_added", "post_id": str(eid), "payload": {}})
+        out = self._run(ctx, {"action": "handle_label_added", "post_id": str(eid), "payload": {}})
         self.assertTrue(out.success)
         labels = self._remote_labels(eid)
         self.assertIn("issue:status:blocked", labels)
@@ -237,7 +271,7 @@ class ReviewTransitionTest(_Base):
         eid = self._seed("Review me", ["issue", "issue:status:in_review"])
         ctx = self._ctx(self._config(review={"enabled": True, "confidence_threshold": 0.75}, merge=True),
                         self._review_runner("approve", 0.9))
-        out = dispatch(ctx, {"action": "handle_comment_added", "post_id": str(eid), "payload": {}})
+        out = self._run(ctx, {"action": "handle_comment_added", "post_id": str(eid), "payload": {}})
         self.assertTrue(out.success)
         self.assertIn("issue:status:done", self._remote_labels(eid))
         self.assertFalse(self._remote_details(eid).is_open)
@@ -249,7 +283,7 @@ class ReviewTransitionTest(_Base):
         eid = self._seed("Review me", ["issue", "issue:status:in_review"])
         ctx = self._ctx(self._config(review={"enabled": True, "confidence_threshold": 0.75, "max_attempts": 3}),
                         self._review_runner("approve", 0.4))
-        out = dispatch(ctx, {"action": "handle_comment_added", "post_id": str(eid), "payload": {}})
+        out = self._run(ctx, {"action": "handle_comment_added", "post_id": str(eid), "payload": {}})
         self.assertTrue(out.success)
         labels = self._remote_labels(eid)
         self.assertIn("issue:status:awaiting_approval", labels)
@@ -263,7 +297,7 @@ class ReviewTransitionTest(_Base):
             self._config(review={"enabled": True, "require_human_approval": True}, merge=True),
             self._review_runner("approve", 0.95),
         )
-        out = dispatch(ctx, {"action": "handle_comment_added", "post_id": str(eid), "payload": {}})
+        out = self._run(ctx, {"action": "handle_comment_added", "post_id": str(eid), "payload": {}})
         self.assertTrue(out.success)
         self.assertIn("issue:status:done", self._remote_labels(eid))
         self.assertFalse(self._remote_details(eid).is_open)
@@ -281,7 +315,7 @@ class ReviewTransitionTest(_Base):
         eid = self._seed("Review me", ["issue", "issue:status:in_review"], comments=prior)
         ctx = self._ctx(self._config(review={"enabled": True, "max_attempts": 3}),
                         self._review_runner("changes", 0.2, recommend=True))
-        out = dispatch(ctx, {"action": "handle_comment_added", "post_id": str(eid), "payload": {}})
+        out = self._run(ctx, {"action": "handle_comment_added", "post_id": str(eid), "payload": {}})
         self.assertTrue(out.success)
         self.assertIn("issue:status:blocked", self._remote_labels(eid))
         self.assertEqual(len(self._drafts()), 1)
@@ -293,7 +327,7 @@ class ReviewTransitionTest(_Base):
         eid = self._seed("Review me", ["issue", "issue:status:in_review"], comments=prior)
         ctx = self._ctx(self._config(review={"enabled": True, "max_attempts": 3}),
                         self._review_runner("changes", 0.2, recommend=False))
-        out = dispatch(ctx, {"action": "handle_comment_added", "post_id": str(eid), "payload": {}})
+        out = self._run(ctx, {"action": "handle_comment_added", "post_id": str(eid), "payload": {}})
         self.assertTrue(out.success)
         self.assertIn("issue:status:blocked", self._remote_labels(eid))
         self.assertEqual(len(self._drafts()), 0)
@@ -307,7 +341,7 @@ class ReviewTransitionTest(_Base):
         eid = self._seed("Review me", ["issue", "issue:status:in_review"], comments=prior)
         ctx = self._ctx(self._config(review={"enabled": True}),
                         self._review_runner("changes", 0.2, recommend=True))
-        out = dispatch(ctx, {"action": "handle_comment_added", "post_id": str(eid), "payload": {}})
+        out = self._run(ctx, {"action": "handle_comment_added", "post_id": str(eid), "payload": {}})
         self.assertTrue(out.success)
         self.assertIn("issue:status:blocked", self._remote_labels(eid))
         self.assertEqual(len(self._drafts()), 1)
@@ -347,7 +381,7 @@ class ImplementApprovalGateTest(_Base):
         self.local.add_entry_comment(eid, "approve {0}".format(eid))
         ctx = self._ctx(self._auto_off(approvers=["agent"], merge=True),
                         FakeAgentRunner(_impl_ok()))
-        out = dispatch(ctx, {"action": "handle_label_added", "post_id": str(eid), "payload": {}})
+        out = self._run(ctx, {"action": "handle_label_added", "post_id": str(eid), "payload": {}})
         self.assertTrue(out.success)
         self.assertIn("issue:status:done", self._remote_labels(eid))
 
@@ -356,7 +390,7 @@ class ImplementApprovalGateTest(_Base):
         cfg = self._config(merge=True)
         cfg["permissions"]["platform"] = {"auto_implement_issue": True}
         ctx = self._ctx(cfg, FakeAgentRunner(_impl_ok()))
-        out = dispatch(ctx, {"action": "handle_label_added", "post_id": str(eid), "payload": {}})
+        out = self._run(ctx, {"action": "handle_label_added", "post_id": str(eid), "payload": {}})
         self.assertTrue(out.success)
         self.assertIn("issue:status:done", self._remote_labels(eid))
 
@@ -750,7 +784,7 @@ class RollUpTest(_Base):
     def test_finishing_last_issue_closes_ticket_and_epic(self) -> None:
         self._tree()
         ctx = self._ctx(self._config(merge=True), FakeAgentRunner(_impl_ok()))
-        out = dispatch(ctx, {"action": "handle_label_added", "post_id": "4", "payload": {}})
+        out = self._run(ctx, {"action": "handle_label_added", "post_id": "4", "payload": {}})
         self.assertTrue(out.success)
         self.assertIn("issue:status:done", self._remote_labels(4))
         # ticket #2 and epic #1 rolled up to done + closed
@@ -758,7 +792,8 @@ class RollUpTest(_Base):
         self.assertFalse(self._remote_details(2).is_open)
         self.assertIn("epic:status:done", self._remote_labels(1))
         self.assertFalse(self._remote_details(1).is_open)
-        self.assertIn("rolled up", out.detail)
+        # (the roll-up note now lands on the process_work_result outcome, not the
+        # initial scheduling outcome; the remote state above is the real assertion.)
 
     def test_open_sibling_keeps_parents_open(self) -> None:
         # Issue A is NOT finished -> finishing B must not close the ticket/epic.
@@ -767,7 +802,7 @@ class RollUpTest(_Base):
         self.remote.remove_entry_label(3, "issue:status:done")
         self.remote.add_entry_label(3, "issue:status:in_progress")
         ctx = self._ctx(self._config(merge=True), FakeAgentRunner(_impl_ok()))
-        out = dispatch(ctx, {"action": "handle_label_added", "post_id": "4", "payload": {}})
+        out = self._run(ctx, {"action": "handle_label_added", "post_id": "4", "payload": {}})
         self.assertTrue(out.success)
         self.assertIn("issue:status:done", self._remote_labels(4))
         self.assertIn("ticket:status:todo", self._remote_labels(2))

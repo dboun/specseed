@@ -64,8 +64,12 @@ class Task:
     def resource_key(self) -> tuple:
         return resource_key(self.ACTION, self.post_id, self.payload)
 
-    def enqueue(self, db: Any) -> int:
-        return db.enqueue(self.ACTION, post_id=self.post_id, payload=self.payload)
+    def enqueue(self, db: Any, priority: Optional[int] = None) -> int:
+        # Control lane is the default for every sync-derived task; ``priority`` lets
+        # a caller order it within the lane (e.g. teardown's cleanup runs high).
+        if priority is None:
+            return db.enqueue(self.ACTION, post_id=self.post_id, payload=self.payload)
+        return db.enqueue(self.ACTION, post_id=self.post_id, payload=self.payload, priority=priority)
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"{type(self).__name__}(post_id={self.post_id!r}, payload={self.payload!r})"

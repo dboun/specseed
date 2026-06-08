@@ -23,7 +23,7 @@ import time
 import unittest
 from pathlib import Path
 
-from specseed_runtime.db.database import Database
+from specseed_runtime.db.database import Database, LANE_CONTROL, LANE_WORK
 from specseed_runtime.executing import cancellation
 from specseed_runtime.executing.agent_runner import (
     AgentResult,
@@ -238,9 +238,15 @@ class SchedulerTest(unittest.TestCase):
         self.remote.add_entry("Tweak it", labels=["spec-change:tweak"])
 
         sched = self._scheduler(runner=runner)
-        sched._sync()  # mirror + enqueue, no draining yet
-        task = self.db.claim_next()
-        self.assertIsNotNone(task)
+        sched._sync()  # mirror + enqueue the control event
+        # The long agent run now lives on the WORK lane. Drain the control event so
+        # it SCHEDULES the work_run, then claim that work job - it is the in-flight
+        # task a hard stop must cancel + requeue.
+        ctrl = self.db.claim_next(LANE_CONTROL)
+        self.assertIsNotNone(ctrl)
+        sched._process_control_task(ctrl)
+        task = self.db.claim_next(LANE_WORK)
+        self.assertIsNotNone(task, "the control event should have scheduled a work_run")
 
         done = threading.Event()
 
@@ -251,7 +257,7 @@ class SchedulerTest(unittest.TestCase):
         worker = threading.Thread(target=_go)
         worker.start()
         time.sleep(0.3)
-        sched.request_stop()  # cancels the in-flight task
+        sched.request_stop()  # cancels the in-flight work task
         finished = done.wait(timeout=10)
 
         self.assertTrue(finished, "stop did not unblock the in-flight task")
@@ -530,6 +536,99 @@ class QuotaCircuitTest(SchedulerTest):
         secs, not_before = sched._quota_park(None)
         self.assertEqual(secs, float(DEFAULT_PARK_S))
         self.assertTrue(not_before)
+
+
+class TwoLaneConcurrencyTest(SchedulerTest):
+    """The point of the split: the control lane keeps moving while the work lane is
+    busy or parked, so human-facing events are never starved behind a long run."""
+
+    def _seed_blocking_issue(self, release, started):
+        def _impl(call):
+            started.set()
+            release.wait(timeout=10)
+            return AgentResult(ok=True, report={"status": "done", "summary": "x"})
+
+        self.remote.create_label("tier:issue")
+        self.remote.create_label("status:todo")
+        self.remote.add_entry("Do it", labels=["tier:issue", "status:todo"])
+        return FakeAgentRunner(side_effect=_impl)
+
+    def _wait(self, predicate, timeout=8.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return True
+            time.sleep(0.03)
+        return False
+
+    def _work_task(self):
+        """The scheduled work_run row (id is not 1 - that is the control event)."""
+        for i in range(1, 50):
+            row = self.db.get_task(i)
+            if row and row["action"] == "work_run":
+                return row
+        return None
+
+    def test_control_drains_while_work_blocks(self) -> None:
+        release, started = threading.Event(), threading.Event()
+        runner = self._seed_blocking_issue(release, started)
+        sched = self._scheduler(runner=runner)
+        sched.start()
+        self.addCleanup(lambda: (release.set(), sched.stop(timeout=5)))
+        try:
+            self.assertTrue(started.wait(timeout=8), "work agent never started")
+            # A fast control item enqueued WHILE the work agent blocks must still drain.
+            cid = self.db.enqueue("cleanup", post_id="x", payload={"reason": "t"})
+            self.assertTrue(
+                self._wait(lambda: self.db.get_task(cid)["status"] == "success"),
+                "control item was starved behind the blocked work job",
+            )
+            # ...and the work job is genuinely still in flight at that moment.
+            self.assertEqual(self._work_task()["status"], "in_progress")
+        finally:
+            release.set()
+
+    def test_quota_parks_work_lane_but_not_control(self) -> None:
+        # The work agent reports quota -> the scheduler parks the WORK lane. The
+        # control lane must keep draining (approvals/cleanup are not quota-bound).
+        def _quota(call):
+            return AgentResult(ok=False, quota_exhausted=True, error="usage limit")
+
+        self.remote.create_label("tier:issue")
+        self.remote.create_label("status:todo")
+        self.remote.add_entry("Do it", labels=["tier:issue", "status:todo"])
+        sched = self._scheduler(runner=FakeAgentRunner(side_effect=_quota))
+        sched.start()
+        self.addCleanup(lambda: sched.stop(timeout=5))
+        self.assertTrue(
+            self._wait(lambda: sched._quota_paused_until > 0), "quota circuit never opened"
+        )
+        cid = self.db.enqueue("cleanup", post_id="y", payload={"reason": "t"})
+        self.assertTrue(
+            self._wait(lambda: self.db.get_task(cid)["status"] == "success"),
+            "control item was starved while the work lane was quota-parked",
+        )
+
+    def test_stop_mid_work_unblocks_and_requeues(self) -> None:
+        release, started = threading.Event(), threading.Event()
+
+        def _impl(call):
+            started.set()
+            event = call["cancel"]
+            event.wait(timeout=10)
+            return AgentResult(ok=False, killed=True, error="cancelled")
+
+        self.remote.create_label("tier:issue")
+        self.remote.create_label("status:todo")
+        self.remote.add_entry("Do it", labels=["tier:issue", "status:todo"])
+        sched = self._scheduler(runner=FakeAgentRunner(side_effect=_impl))
+        sched.start()
+        self.assertTrue(started.wait(timeout=8), "work agent never started")
+        sched.request_stop()  # honored mid-work (the control gap that used to freeze)
+        sched.stop(timeout=8)
+        self.assertFalse(sched.is_running())
+        # the interrupted work job was requeued, not lost.
+        self.assertEqual(self._work_task()["status"], "pending")
 
 
 if __name__ == "__main__":

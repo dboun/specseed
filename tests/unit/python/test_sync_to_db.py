@@ -11,7 +11,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from specseed_runtime.db.database import Database
+from specseed_runtime.db.database import Database, LANE_WORK
+from specseed_runtime.executing import cancellation
+from specseed_runtime.executing import priorities
 from specseed_runtime.scheduling.sync_to_db import sync_to_db
 from specseed_runtime.tracking.comment import TrackingEntryComment, TrackingReaction
 from specseed_runtime.tracking.post import (
@@ -265,6 +267,36 @@ class SyncToDbTest(unittest.TestCase):
         cleanup = next(t for t in self.all_tasks() if t["action"] == "cleanup")
         self.assertEqual(cleanup["payload"]["interrupted_task_id"], claimed["task_id"])
         self.assertEqual(cleanup["payload"]["reason"], "entry_state")
+
+    def test_close_sweeps_pending_work_job_and_interrupts_in_flight_work(self) -> None:
+        # A heavy WORK job for an entry must be torn down on close exactly like a
+        # control task: a pending one swept, an in-flight one cancelled + cleaned up.
+        entry = self.remote.add_entry("E", labels=["issue"]).data.id
+        self.sync()
+        # one in-flight work job (claimed) + one pending work job for the same entry
+        running = self.db.enqueue(
+            "work_run", post_id=str(entry), payload={"intent": "implement"}, lane=LANE_WORK
+        )
+        claimed = self.db.claim_next(LANE_WORK)
+        self.assertEqual(claimed["task_id"], running)
+        pending_work = self.db.enqueue(
+            "work_gate_action", post_id=str(entry), payload={"merge": True}, lane=LANE_WORK
+        )
+        cancellation.reset()
+
+        self.remote.set_entry_closed(entry)
+        summary = self.sync()
+
+        # pending work job swept; in-flight work job left as-is but cancelled.
+        self.assertIsNone(self.db.get_task(pending_work))
+        self.assertEqual(self.db.get_task(running)["status"], "in_progress")
+        self.assertTrue(cancellation.is_cancelled(running))
+        self.assertEqual(summary["interrupts_todo"], 1)
+        # cleanup is a control item enqueued at the teardown priority.
+        cleanup = next(t for t in self.all_tasks() if t["action"] == "cleanup")
+        self.assertEqual(cleanup["lane"], "control")
+        self.assertEqual(cleanup["priority"], priorities.CONTROL_CLEANUP)
+        self.assertEqual(cleanup["payload"]["interrupted_task_id"], running)
 
     def test_close_does_not_sweep_unrelated_entry_sharing_comment_id(self) -> None:
         # Comment ids and entry ids are separate sqlite sequences in one integer

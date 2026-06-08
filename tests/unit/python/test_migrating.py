@@ -73,7 +73,7 @@ class RunMigrationsTest(unittest.TestCase):
                 ["m_0_3_0__0_3_1", "m_0_3_1__0_4_0", "m_0_4_0__0_5_0",
                  "m_0_5_0__0_7_0", "m_0_7_0__0_9_0", "m_0_9_0__0_11_0",
                  "m_0_11_0__0_12_0", "m_0_12_0__0_13_0", "m_0_13_0__0_14_0",
-                 "m_0_14_0__0_16_0"],
+                 "m_0_14_0__0_16_0", "m_0_16_0__0_18_0"],
             )
             self.assertEqual(migrate.storage_version(storage), migrate.code_version())
 
@@ -334,6 +334,77 @@ class Hop050To070Test(unittest.TestCase):
             (storage / "specseed.db").unlink()
             changed = [p.name for p in m_0_5_0__0_7_0.run(storage, specseed_dir)]
             self.assertEqual(changed, ["seed_state.json"])
+
+
+class Hop0160To0180Test(unittest.TestCase):
+    """0.16.0 -> 0.18.0: tasks.lane + tasks.priority columns for the two lanes."""
+
+    def _old_shape(self, root: Path, version: str = "0.17.0") -> tuple[Path, Path]:
+        import sqlite3
+
+        from specseed_runtime.migrating import m_0_16_0__0_18_0  # noqa: F401
+
+        specseed_dir = root / ".specseed"
+        storage = specseed_dir / "storage"
+        storage.mkdir(parents=True)
+        skill_version = specseed_dir / "skills" / "specseed" / "version.txt"
+        skill_version.parent.mkdir(parents=True)
+        skill_version.write_text("0.18.0\n", encoding="utf-8")
+        migrate.write_storage_version(version, storage)
+        # old-shape queue db: tasks WITHOUT lane/priority, one live row
+        with sqlite3.connect(storage / "specseed.db") as conn:
+            conn.execute(
+                """CREATE TABLE tasks (
+                    task_id INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT NOT NULL,
+                    post_id TEXT, payload TEXT NOT NULL DEFAULT '{}',
+                    status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL, last_attempted_at TEXT, not_before TEXT)"""
+            )
+            conn.execute(
+                "INSERT INTO tasks(action, post_id, created_at) VALUES ('handle_entry_created', '5', 'x')"
+            )
+        return specseed_dir, storage
+
+    def _columns(self, storage: Path) -> set[str]:
+        import sqlite3
+
+        with sqlite3.connect(storage / "specseed.db") as conn:
+            return {row[1] for row in conn.execute("PRAGMA table_info(tasks)")}
+
+    def test_hop_adds_lane_and_priority_with_safe_defaults(self) -> None:
+        import sqlite3
+
+        with tempfile.TemporaryDirectory() as tmp:
+            specseed_dir, storage = self._old_shape(Path(tmp))
+
+            applied = migrate.run_migrations(storage=storage, specseed_dir=specseed_dir)
+
+            self.assertIn("m_0_16_0__0_18_0", applied)
+            cols = self._columns(storage)
+            self.assertIn("lane", cols)
+            self.assertIn("priority", cols)
+            # the pre-split row defaults to the control lane at the default priority
+            with sqlite3.connect(storage / "specseed.db") as conn:
+                row = conn.execute("SELECT post_id, lane, priority FROM tasks").fetchone()
+            self.assertEqual(row, ("5", "control", 50))
+
+    def test_hop_is_idempotent(self) -> None:
+        from specseed_runtime.migrating import m_0_16_0__0_18_0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            specseed_dir, storage = self._old_shape(Path(tmp))
+            first = [p.name for p in m_0_16_0__0_18_0.run(storage, specseed_dir)]
+            self.assertEqual(first, ["specseed.db"])
+            self.assertEqual(m_0_16_0__0_18_0.run(storage, specseed_dir), [])
+            self.assertEqual(self._columns(storage) & {"lane", "priority"}, {"lane", "priority"})
+
+    def test_missing_db_is_noop(self) -> None:
+        from specseed_runtime.migrating import m_0_16_0__0_18_0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            specseed_dir, storage = self._old_shape(Path(tmp))
+            (storage / "specseed.db").unlink()
+            self.assertEqual(m_0_16_0__0_18_0.run(storage, specseed_dir), [])
 
 
 class Hop070To090Test(unittest.TestCase):

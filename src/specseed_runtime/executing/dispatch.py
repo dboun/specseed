@@ -38,8 +38,11 @@ from specseed_runtime.executing import context as context_mod
 from specseed_runtime.executing import inflight
 from specseed_runtime.executing import recovery
 from specseed_runtime.executing import platform_log
+from specseed_runtime.executing import priorities
+from specseed_runtime.executing import work_lane
 from specseed_runtime.executing.context import ExecutionContext
 from specseed_runtime.executing import prompts
+from specseed_runtime.db.database import LANE_WORK
 from specseed_runtime.scheduling.spec_change import (
     DEFAULT_SCRIPT_NAME,
     SPEC_CHANGE_ACTION,
@@ -222,6 +225,82 @@ def _has_pending_spec_change_run(ctx: "ExecutionContext", post_id: Any) -> bool:
         if row.get("status") == "pending" and row.get("action") in follow_up:
             return True
     return False
+
+
+def _has_pending_work_job(ctx: "ExecutionContext", post_id: Any, action: str) -> bool:
+    """True if a work job of ``action`` for this post is already queued/running.
+
+    Several control events can describe one entity in a drain (a status swap is a
+    label remove + add). Each could schedule the same heavy job. Supersession +
+    the work-side staleness check would collapse the extras, but skipping here
+    avoids piling identical jobs on the work lane in the first place.
+    """
+    if post_id in (None, ""):
+        return False
+    try:
+        rows = ctx.db.tasks_for(post_id)
+    except Exception:
+        return False
+    for row in rows or []:
+        if row.get("action") == action and row.get("status") in ("pending", "in_progress"):
+            return True
+    return False
+
+
+def _schedule_work_run(ctx: "ExecutionContext", entity: Any, intent: str, task: dict) -> HandlerOutcome:
+    """Hand a heavy agent run (implement/review/spec_change) to the WORK lane.
+
+    Control decided the intent and passed every gate; the work lane builds the
+    prompt and runs the agent. Idempotent against repeated control events for one
+    entity (``_has_pending_work_job``).
+    """
+    post_id = getattr(entity, "post_id", None) or task.get("post_id")
+    if _has_pending_work_job(ctx, post_id, work_lane.WORK_RUN):
+        platform_log.log_event("work_run_already_scheduled", post_id=post_id, intent=intent)
+        return HandlerOutcome(success=True, detail="work_run already scheduled for {0}".format(post_id))
+    work_id = ctx.db.enqueue(
+        work_lane.WORK_RUN,
+        post_id=post_id,
+        payload={"intent": intent, "post_id": str(post_id) if post_id is not None else None},
+        lane=LANE_WORK,
+        priority=priorities.WORK_DEFAULT,
+    )
+    platform_log.log_event("work_run_scheduled", work_task_id=work_id, post_id=post_id, intent=intent)
+    return HandlerOutcome(success=True, detail="scheduled {0} on the work lane (job {1})".format(intent, work_id))
+
+
+def _schedule_gate_action(ctx: "ExecutionContext", entity: Any, transition: Any, task: dict) -> str:
+    """Hand a branch ready+gate / merge (git, possibly the conflict agent) to the WORK lane.
+
+    The brain (advance.resolve_* / apply_post_work_transition) already applied the
+    remote state + acks; only the git muscle is deferred. Returns a human note. A
+    transition with no prepare/merge schedules nothing.
+    """
+    detail = getattr(transition, "detail", None)
+    if not (getattr(transition, "prepare", False) or getattr(transition, "merge", False)):
+        return detail
+    post_id = getattr(entity, "post_id", None) or task.get("post_id")
+    if _has_pending_work_job(ctx, post_id, work_lane.WORK_GATE_ACTION):
+        platform_log.log_event("gate_action_already_scheduled", post_id=post_id)
+        note = "merge already scheduled"
+        return "{0}; {1}".format(detail, note) if detail else note
+    work_id = ctx.db.enqueue(
+        work_lane.WORK_GATE_ACTION,
+        post_id=post_id,
+        payload={
+            "post_id": str(post_id) if post_id is not None else None,
+            "prepare": bool(getattr(transition, "prepare", False)),
+            "merge": bool(getattr(transition, "merge", False)),
+        },
+        lane=LANE_WORK,
+        priority=priorities.WORK_MERGE,
+    )
+    platform_log.log_event(
+        "gate_action_scheduled", work_task_id=work_id, post_id=post_id,
+        prepare=bool(getattr(transition, "prepare", False)), merge=bool(getattr(transition, "merge", False)),
+    )
+    note = "merge readying scheduled on the work lane (job {0})".format(work_id)
+    return "{0}; {1}".format(detail, note) if detail else note
 
 
 def decide_intent(entity: Any, state_result: Any, task: Any) -> str:
@@ -932,7 +1011,20 @@ def _run_work(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
     labels = {str(label) for label in getattr(entity, "labels", []) or []}
     if recovery.PLATFORM_ERROR_LABEL in labels:
         if task.get("action") == "handle_comment_added":
-            return _run_platform_error(ctx, task, reason="reply")
+            # The resolve agent is heavy -> hand it to the WORK lane (control stays
+            # responsive). The job is the same PLATFORM_ERROR_ACTION dispatch routes
+            # to _run_platform_error, tagged reason=reply.
+            if _has_pending_work_job(ctx, post_id, recovery.PLATFORM_ERROR_ACTION):
+                return HandlerOutcome(success=True, detail="resolve agent already scheduled for {0}".format(post_id))
+            work_id = ctx.db.enqueue(
+                recovery.PLATFORM_ERROR_ACTION,
+                post_id=post_id,
+                payload={"reason": "reply"},
+                lane=LANE_WORK,
+                priority=priorities.WORK_DEFAULT,
+            )
+            platform_log.log_event("platform_error_reply_scheduled", work_task_id=work_id, post_id=post_id)
+            return HandlerOutcome(success=True, detail="resolve agent (reply) scheduled on the work lane")
         return HandlerOutcome(
             success=True, detail="platform_error post bookkeeping; no work"
         )
@@ -974,7 +1066,7 @@ def _run_work(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
     action = task.get("action")
     if _spec_change_route(entity) is None and getattr(entity, "status", None) == "awaiting_approval":
         transition = advance.resolve_approval(ctx, entity, state_result, conversation, action)
-        detail = _run_gate_merge(ctx, entity, transition, task) or "awaiting_approval; no approver yet"
+        detail = _schedule_gate_action(ctx, entity, transition, task) or "awaiting_approval; no approver yet"
         platform_log.log_event(
             "approval_resolved",
             task_id=task.get("task_id"),
@@ -990,7 +1082,7 @@ def _run_work(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
         transition = advance.resolve_blocked(ctx, entity, state_result, conversation, action)
         # nothing applied (no detail/prepare/merge) = fall through to the work path.
         if transition.detail is not None or transition.merge or transition.prepare:
-            detail = _run_gate_merge(ctx, entity, transition, task)
+            detail = _schedule_gate_action(ctx, entity, transition, task)
             platform_log.log_event(
                 "blocked_resolved",
                 task_id=task.get("task_id"),
@@ -1005,7 +1097,7 @@ def _run_work(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
     # prose/`retry` reworks. Nothing here reaches done without an actual merge.
     if _spec_change_route(entity) is None and getattr(entity, "status", None) == "awaiting_merge":
         transition = advance.resolve_awaiting_merge(ctx, entity, state_result, conversation, action)
-        detail = _run_gate_merge(ctx, entity, transition, task) or "awaiting_merge; not yet authorized"
+        detail = _schedule_gate_action(ctx, entity, transition, task) or "awaiting_merge; not yet authorized"
         platform_log.log_event(
             "awaiting_merge_resolved",
             task_id=task.get("task_id"),
@@ -1101,119 +1193,11 @@ def _run_work(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
             detail="apply.py already queued for request {0}; skipping re-run".format(post_id),
         )
 
-    if intent == AgentIntent.SPEC_CHANGE:
-        route = _spec_change_route(entity)
-        request_id = getattr(entity, "post_id", None)
-        prompt = prompts.build_spec_change_prompt(route, request_id, entity, ctx)
-    elif intent == AgentIntent.IMPLEMENT:
-        prompt = prompts.build_implement_prompt(entity, ctx)
-    else:  # REVIEW
-        prompt = prompts.build_review_prompt(entity, ctx)
-
-    # Runtime owns git: branch before the agent edits anything.
-    branch = _prepare_git_branch(ctx, entity, intent)
-    result = _run_agent(ctx, prompt, intent, task_id=task.get("task_id"))
-    # Commit the work (implement) and always return to the primary branch -
-    # regardless of how the run ended, so WIP is never stranded on a feature branch.
-    _finalize_git_branch(ctx, entity, intent, branch)
-    platform_log.log_event(
-        "agent_result",
-        task_id=task.get("task_id"),
-        post_id=post_id,
-        intent=intent,
-        ok=getattr(result, "ok", False),
-        returncode=getattr(result, "returncode", None),
-        killed=getattr(result, "killed", False),
-        timed_out=getattr(result, "timed_out", False),
-        duration_s=getattr(result, "duration_s", None),
-        error=getattr(result, "error", None),
-        stdout_chars=len(getattr(result, "stdout", "") or ""),
-    )
-
-    # Provider quota: every runner spec was quota-blocked. Not a task-local
-    # failure - requeue and let the scheduler park the loop. requeue (not
-    # complete-as-failed) means recovery never fires: no error post, no resolver.
-    if getattr(result, "quota_exhausted", False):
-        platform_log.log_event(
-            "work_quota_exhausted",
-            task_id=task.get("task_id"),
-            post_id=post_id,
-            intent=intent,
-            quota_until=getattr(result, "quota_reset_hint", None),
-        )
-        return HandlerOutcome(
-            success=False,
-            requeue=True,
-            quota=True,
-            quota_until=getattr(result, "quota_reset_hint", None),
-            error=getattr(result, "error", None) or "provider quota exhausted",
-            detail="intent {0} parked: provider quota".format(intent),
-        )
-
-    if getattr(result, "ok", False):
-        # rc==0 is not enough: implement/review MUST have written a valid result
-        # file. A missing/invalid one means the run did not really finish - retry
-        # (a fresh run; agent runs are stateless, so re-asking for just the JSON
-        # is impossible). This catches the "Blocked: cannot make changes", exit 0
-        # case that used to advance straight to review.
-        if intent in (AgentIntent.IMPLEMENT, AgentIntent.REVIEW) and getattr(result, "report", None) is None:
-            return HandlerOutcome(
-                success=False,
-                error="agent finished but did not report a valid result file: {0}".format(
-                    getattr(result, "report_error", None) or "missing"
-                ),
-                detail="intent {0} missing result file".format(intent),
-                retryable=True,
-            )
-        detail = "agent ran intent {0}".format(intent)
-        if intent == AgentIntent.SPEC_CHANGE:
-            # Code-enforced gate: the agent wrote plan.json + apply.py (+ staged
-            # spec) and stopped - it does NOT enqueue. The runtime reads the output
-            # and decides whether to gate (propose) or apply directly (clarification).
-            try:
-                detail = "{0}; {1}".format(detail, _enqueue_spec_change_followup(ctx, entity, post_id))
-            except Exception as exc:  # never lose the run over an enqueue hiccup
-                detail = "{0}; follow-up enqueue failed: {1!r}".format(detail, exc)
-        if intent in (AgentIntent.IMPLEMENT, AgentIntent.REVIEW):
-            try:
-                transition = advance.apply_post_work_transition(
-                    ctx, entity, intent, result, state_result, conversation
-                )
-                detail = "{0}; {1}".format(detail, transition.detail)
-            except Exception as exc:  # never lose the successful run over a write hiccup
-                detail = "{0}; transition failed: {1!r}".format(detail, exc)
-            else:
-                # advance decided what happens to the branch now: merge auto-on -> a
-                # direct merge; merge gated -> ready it (prepare) and open a gate.
-                # dispatch owns git and runs it. Best-effort: a git problem is a note,
-                # never reopens the resolved transition.
-                if transition.prepare or transition.merge:
-                    try:
-                        note = _run_gate_action(ctx, entity, transition, branch, task)
-                        if note:
-                            detail = "{0}; {1}".format(detail, note)
-                    except Exception as exc:
-                        detail = "{0}; merge failed: {1!r}".format(detail, exc)
-        return HandlerOutcome(success=True, detail=detail)
-    if getattr(result, "killed", False) or getattr(result, "timed_out", False):
-        return HandlerOutcome(
-            success=False,
-            requeue=True,
-            error=getattr(result, "error", None) or "agent interrupted",
-            detail="intent {0} interrupted".format(intent),
-        )
-    # Keep the agent's last output in the recorded error: "exited with code 1"
-    # alone is undiagnosable.
-    error = getattr(result, "error", None) or "agent run failed"
-    tail = stdout_tail(getattr(result, "stdout", "") or "")
-    if tail:
-        error = "{0}\n{1}".format(error, tail)
-    return HandlerOutcome(
-        success=False,
-        error=error,
-        detail="intent {0} failed".format(intent),
-        retryable=True,
-    )
+    # Control decided the intent and cleared every gate. The heavy agent run (and
+    # any git it implies) is muscle - hand it to the WORK lane. The work job builds
+    # the prompt, runs the agent, and on finish enqueues a process_work_result
+    # control item that applies the lifecycle transition / spec-change follow-up.
+    return _schedule_work_run(ctx, entity, intent, task)
 
 
 def _read_plan(ctx: ExecutionContext, request_id: Any) -> Optional[dict]:
@@ -1394,6 +1378,18 @@ def dispatch(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
 
     if action == recovery.PLATFORM_ERROR_ACTION:
         return _run_platform_error(ctx, task)
+
+    # Work-lane jobs + their control-lane result handler. work_runner drives the
+    # execution helpers in this module; imported lazily to avoid an import cycle
+    # (work_runner imports dispatch).
+    if action in work_lane.WORK_LANE_ACTIONS or action == work_lane.PROCESS_WORK_RESULT:
+        from specseed_runtime.executing import work_runner
+
+        if action == work_lane.WORK_RUN:
+            return work_runner.run_agent_job(ctx, task)
+        if action == work_lane.WORK_GATE_ACTION:
+            return work_runner.run_gate_job(ctx, task)
+        return work_runner.process_work_result(ctx, task)
 
     if action == CLEANUP_ACTION:
         payload = task.get("payload") or {}

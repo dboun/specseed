@@ -73,6 +73,41 @@ class DispatchTestBase(unittest.TestCase):
             self.local.create_label(label)
         return self.local.add_entry(title, labels=labels).data.id
 
+    # -- two-lane drain helpers ------------------------------------------- #
+    # A work-triggering control event now SCHEDULES a work_run instead of running
+    # the agent inline; the agent + transition (+ merge) play out across the work
+    # lane and a process_work_result control item. These mimic the scheduler.
+    def _drain(self, max_iter=100):
+        from specseed_runtime.db.database import LANE_CONTROL, LANE_WORK
+
+        for _ in range(max_iter):
+            task = self.db.claim_next(LANE_CONTROL) or self.db.claim_next(LANE_WORK)
+            if task is None:
+                return
+            out = dispatch(self.ctx, task)
+            if out is not None and out.requeue and not out.quota:
+                self.db.requeue(task["task_id"], not_before="2999-01-01T00:00:00Z")
+            else:
+                self.db.complete(task["task_id"], bool(out and out.success), out.error if out else None)
+        raise AssertionError("drain did not quiesce within max_iter")
+
+    def _run_full(self, ctx, task):
+        """Dispatch a control event then drain everything it schedules."""
+        out = dispatch(ctx, task)
+        self._drain()
+        return out
+
+    def _dispatch_then_work(self, ctx, task):
+        """Dispatch a control event then run the ONE work job it schedules, returning
+        that work job's outcome (so a test can assert the agent run's result)."""
+        from specseed_runtime.db.database import LANE_WORK
+
+        out = dispatch(ctx, task)
+        work = self.db.claim_next(LANE_WORK)
+        if work is None:
+            return out
+        return dispatch(ctx, work)
+
 
 class DecideIntentTest(DispatchTestBase):
     def _intent_for(self, labels, action="handle_label_added"):
@@ -180,7 +215,7 @@ class DispatchRoutingTest(DispatchTestBase):
         ))
         self.runner = self.ctx.runner
         eid = self._seed_local_entry("Do the thing", ["tier:issue", "status:todo"])
-        out = dispatch(
+        out = self._dispatch_then_work(
             self.ctx,
             {"action": "handle_label_added", "post_id": str(eid), "payload": {"label": "status:todo"}},
         )
@@ -196,7 +231,7 @@ class DispatchRoutingTest(DispatchTestBase):
         ))
         self.runner = self.ctx.runner
         eid = self._seed_local_entry("Review me", ["tier:issue", "status:in_review"])
-        out = dispatch(
+        out = self._dispatch_then_work(
             self.ctx,
             {"action": "handle_comment_added", "post_id": str(eid), "payload": {}},
         )
@@ -206,7 +241,7 @@ class DispatchRoutingTest(DispatchTestBase):
 
     def test_spec_change_label_runs_spec_change_prompt(self) -> None:
         eid = self._seed_local_entry("Adopt request", ["spec-change:adopt"])
-        out = dispatch(
+        out = self._dispatch_then_work(
             self.ctx,
             {"action": "handle_label_added", "post_id": str(eid), "payload": {"label": "spec-change:adopt"}},
         )
@@ -223,7 +258,7 @@ class DispatchRoutingTest(DispatchTestBase):
 
     def test_inject_label_runs_inject_route_prompt(self) -> None:
         eid = self._seed_local_entry("Manual hotfix", ["spec-change:inject"])
-        out = dispatch(
+        out = self._dispatch_then_work(
             self.ctx,
             {"action": "handle_label_added", "post_id": str(eid), "payload": {"label": "spec-change:inject"}},
         )
@@ -234,7 +269,7 @@ class DispatchRoutingTest(DispatchTestBase):
 
     def test_draft_removed_runs_spec_change_prompt(self) -> None:
         eid = self._seed_local_entry("Adapt request", ["spec-change:adapt"])
-        out = dispatch(
+        out = self._dispatch_then_work(
             self.ctx,
             {"action": "handle_label_removed", "post_id": str(eid), "payload": {"label": "draft"}},
         )
@@ -252,7 +287,7 @@ class DispatchRoutingTest(DispatchTestBase):
             ["spec-change:adapt", "spec-change:status:awaiting_approval"],
         )
         self.local.add_entry_comment(eid, "Answer: keep it simple.")
-        out = dispatch(
+        out = self._dispatch_then_work(
             self.ctx,
             {"action": "handle_comment_added", "post_id": str(eid), "payload": {}},
         )
@@ -309,7 +344,7 @@ class DispatchRoutingTest(DispatchTestBase):
         self.ctx.runner = FakeAgentRunner(AgentResult(ok=True, returncode=0, report=None,
                                                       report_error="no result file"))
         eid = self._seed_local_entry("Do it", ["tier:issue", "status:todo"])
-        out = dispatch(self.ctx, {"action": "handle_entry_created", "post_id": str(eid), "payload": {}})
+        out = self._dispatch_then_work(self.ctx, {"action": "handle_entry_created", "post_id": str(eid), "payload": {}})
         self.assertFalse(out.success)
         self.assertTrue(out.retryable)
         self.assertIn("result file", out.error)
@@ -321,7 +356,7 @@ class DispatchRoutingTest(DispatchTestBase):
             ok=False, returncode=1, error="usage limit", quota_exhausted=True, quota_reset_hint=None,
         ))
         eid = self._seed_local_entry("Do it", ["tier:issue", "status:todo"])
-        out = dispatch(self.ctx, {"action": "handle_entry_created", "post_id": str(eid), "payload": {}})
+        out = self._dispatch_then_work(self.ctx, {"action": "handle_entry_created", "post_id": str(eid), "payload": {}})
         self.assertFalse(out.success)
         self.assertTrue(out.requeue)
         self.assertTrue(out.quota)
@@ -331,7 +366,7 @@ class DispatchRoutingTest(DispatchTestBase):
             result=AgentResult(ok=False, timed_out=True, error="timed out")
         )
         eid = self._seed_local_entry("Slow", ["tier:issue", "status:todo"])
-        out = dispatch(
+        out = self._dispatch_then_work(
             self.ctx,
             {"action": "handle_entry_created", "post_id": str(eid), "payload": {}},
         )
@@ -343,7 +378,7 @@ class DispatchRoutingTest(DispatchTestBase):
             result=AgentResult(ok=False, returncode=1, error="agent exited with code 1")
         )
         eid = self._seed_local_entry("Boom", ["tier:issue", "status:todo"])
-        out = dispatch(
+        out = self._dispatch_then_work(
             self.ctx,
             {"action": "handle_entry_created", "post_id": str(eid), "payload": {}},
         )
@@ -361,7 +396,7 @@ class DispatchRoutingTest(DispatchTestBase):
             )
         )
         eid = self._seed_local_entry("Boom", ["tier:issue", "status:todo"])
-        out = dispatch(
+        out = self._dispatch_then_work(
             self.ctx,
             {"action": "handle_entry_created", "post_id": str(eid), "payload": {}},
         )
@@ -396,13 +431,27 @@ class SpecChangeGateDecisionTest(DispatchTestBase):
         dest.write_text("# staged\n", encoding="utf-8")
 
     def _run(self, rid):
+        # The spec-change follow-up (propose vs direct apply) is decided in
+        # process_work_result AFTER the spec worker runs on the work lane. Dispatch
+        # the control event, run the scheduled spec work_run, then the
+        # process_work_result it enqueues - whose outcome carries the follow-up
+        # detail. Stop there (do NOT run the enqueued apply.py).
+        from specseed_runtime.db.database import LANE_CONTROL, LANE_WORK
+
         self.ctx.runner = FakeAgentRunner(AgentResult(ok=True, returncode=0))
         self.runner = self.ctx.runner
-        return dispatch(
+        dispatch(
             self.ctx,
             {"action": "handle_label_added", "post_id": str(rid),
              "payload": {"label": "spec-change:adapt"}},
         )
+        work = self.db.claim_next(LANE_WORK)
+        self.assertIsNotNone(work, "a spec-change work_run should have been scheduled")
+        dispatch(self.ctx, work)
+        self.db.complete(work["task_id"], True)
+        result_task = self.db.claim_next(LANE_CONTROL)
+        self.assertIsNotNone(result_task, "the work run should enqueue process_work_result")
+        return dispatch(self.ctx, result_task)
 
     def _actions(self, rid):
         return [t["action"] for t in self.db.tasks_for(rid)]
@@ -585,7 +634,7 @@ class PlatformErrorDispatchTest(DispatchTestBase):
             "Platform error: handle_label_removed (post 5)", ["platform_error"]
         )
         self.assertEqual(str(eid), str(post_id))  # same id space, fresh dbs
-        out = dispatch(
+        out = self._dispatch_then_work(
             self.ctx,
             {"action": "handle_comment_added", "task_id": 2,
              "post_id": str(eid), "payload": {"comment_id": 1, "author": "alice"}},
@@ -758,7 +807,7 @@ class DependencyGateTest(DispatchTestBase):
             "FEAT-0002 Dependent", ["tier:issue", "status:todo"],
             "Depends on: #{0}".format(dep),
         )
-        out = dispatch(
+        out = self._dispatch_then_work(
             self.ctx,
             {"action": "handle_label_added", "post_id": str(issue), "payload": {"label": "status:todo"}},
         )
@@ -835,7 +884,7 @@ class DependencyGateTest(DispatchTestBase):
         issue = self._seed_with_body(
             "FEAT-0003 Under B", ["tier:issue", "status:todo"], "Ticket: #{0}".format(parent)
         )
-        out = dispatch(
+        out = self._dispatch_then_work(
             self.ctx,
             {"action": "handle_label_added", "post_id": str(issue), "payload": {"label": "status:todo"}},
         )
@@ -869,8 +918,14 @@ class RuntimeGitLifecycleTest(DispatchTestBase):
         (self.root / ".gitignore").write_text("*.db\n*.db-*\nstorage/\n", encoding="utf-8")
         self._git("init")
         self._git("symbolic-ref", "HEAD", "refs/heads/main")
+        # COMMIT the .gitignore (real specseed scaffold does) so it is stable on
+        # main and inherited by every branch. With an --allow-empty root the
+        # .gitignore is untracked, `git add -A` stages it onto a feature branch, and
+        # `checkout main` then deletes it - after which `git add -A` starts staging
+        # the (now un-ignored) sqlite dbs and a later checkout wipes them mid-run.
+        self._git("add", ".gitignore")
         self._git("-c", "user.email=t@t", "-c", "user.name=t",
-                  "commit", "--allow-empty", "-m", "root")
+                  "commit", "-m", "root")
 
     def _git(self, *args) -> subprocess.CompletedProcess:
         return subprocess.run(["git", *args], cwd=str(self.root),
@@ -894,7 +949,7 @@ class RuntimeGitLifecycleTest(DispatchTestBase):
             filename="new.py",
         )
         eid = self._seed_local_entry("FEAT-0001 Do the thing", ["tier:issue", "status:todo"])
-        out = dispatch(
+        out = self._run_full(
             self.ctx,
             {"action": "handle_label_added", "post_id": str(eid), "payload": {"label": "status:todo"}},
         )
@@ -922,13 +977,14 @@ class RuntimeGitLifecycleTest(DispatchTestBase):
             filename="x.py",
         )
         eid = self._seed_both("FEAT-0002 Thing", ["tier:issue", "status:todo"])
-        out = dispatch(
+        out = self._run_full(
             self.ctx,
             {"action": "handle_label_added", "post_id": str(eid), "payload": {"label": "status:todo"}},
         )
         self.assertTrue(out.success)
         self.assertFalse((self.root / "x.py").exists())  # not on primary
-        self.assertIn("merge gate", out.detail)
+        # the merge gate opened on the work lane; the awaiting_approval label proves it
+        # (the "merge gate" note now lands on the work-lane outcome, not this one).
         labels = {l.name for l in self.remote.get_entry(eid).data.labels}
         self.assertIn("issue:status:awaiting_approval", labels)
         # the work branch still exists, intact for the approved merge (or a manual one)
@@ -945,7 +1001,7 @@ class RuntimeGitLifecycleTest(DispatchTestBase):
             filename="y.py",
         )
         eid = self._seed_both("FEAT-0003 Thing", ["tier:issue", "status:todo"])
-        out = dispatch(
+        out = self._run_full(
             self.ctx,
             {"action": "handle_label_added", "post_id": str(eid), "payload": {"label": "status:todo"}},
         )
@@ -953,7 +1009,10 @@ class RuntimeGitLifecycleTest(DispatchTestBase):
         self.assertEqual(_git_ops.current_branch(self.root), "main")
         # primary now carries the merged file
         self.assertTrue((self.root / "y.py").exists())
-        self.assertIn("merged", out.detail)
+        # the merge ran on the work lane; the "Merged branch" remote comment proves it
+        # (the "merged" note now lands on the work-lane outcome, not this one).
+        bodies = "\n".join(c.body for c in self.remote.get_entry(eid).data.comments)
+        self.assertIn("Merged branch", bodies)
 
     # -- readiness (prepare) + invalidation sweep ----------------------------- #
     def _commit(self, *args) -> None:
@@ -1046,7 +1105,7 @@ class RuntimeGitLifecycleTest(DispatchTestBase):
             filename="a.py",
         )
         first = self._seed_both("FEAT-0001 First", ["tier:issue", "status:todo"])
-        dispatch(
+        self._run_full(
             self.ctx,
             {"action": "handle_label_added", "post_id": str(first), "payload": {"label": "status:todo"}},
         )
@@ -1056,7 +1115,7 @@ class RuntimeGitLifecycleTest(DispatchTestBase):
             filename="b.py",
         )
         second = self._seed_both("FEAT-0002 Second", ["tier:issue", "status:todo"])
-        dispatch(
+        self._run_full(
             self.ctx,
             {"action": "handle_label_added", "post_id": str(second), "payload": {"label": "status:todo"}},
         )
@@ -1096,7 +1155,7 @@ class RuntimeGitLifecycleTest(DispatchTestBase):
                         report={"status": "done", "summary": "f", "files_changed": ["feat.py"]}),
             filename="feat.py",
         )
-        out = dispatch(
+        out = self._run_full(
             self.ctx,
             {"action": "handle_label_added", "post_id": str(feat), "payload": {"label": "status:todo"}},
         )
