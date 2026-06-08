@@ -9,8 +9,9 @@ Plays all three agent jobs by sniffing the prompt:
 
 * spec change - acts as the spec-change worker per the skill contract: question
   rounds first (parked awaiting_input, woken by the human's answer), then the
-  scripted breakdown. Writes spec docs + plan.json + apply.py into the request
-  dir and enqueues the run. Never runs apply.py itself.
+  scripted breakdown. Stages spec docs under the request's spec/ dir and writes
+  plan.json + apply.py, then STOPS. It never enqueues and never runs apply.py: the
+  runtime reads the output and gates it (proposal vs clarification).
 * implement   - no-op (the e2e writes no application code).
 * review      - emits the SPECSEED_REVIEW verdict line. One scripted issue
   (script.json review.flaky_title) fails its first review to exercise the
@@ -39,14 +40,9 @@ for _parent in HERE.parents:
         sys.path.insert(0, str(_parent / "src"))
         break
 
-from specseed_runtime.db.database import Database  # noqa: E402
 from specseed_runtime.executing import agent_report  # noqa: E402
 from specseed_runtime.executing.advance import REVIEW_MARKER  # noqa: E402
 from specseed_runtime.executing.approvals import next_apr_id  # noqa: E402
-from specseed_runtime.scheduling.spec_change import (  # noqa: E402
-    enqueue_spec_change_propose,
-    enqueue_spec_change_run,
-)
 from specseed_runtime.tracking.resolve_remote import resolve_local  # noqa: E402
 
 SCRIPT = json.loads((HERE / "script.json").read_text(encoding="utf-8"))
@@ -181,13 +177,13 @@ if __name__ == "__main__":
 '''
 
 
-def _emit(storage: Path, request_id: str, route: str, plan: dict, propose: bool = False) -> None:
-    """Write plan.json + apply.py into the request dir and enqueue work.
+def _emit(storage: Path, request_id: str, route: str, plan: dict) -> None:
+    """Write plan.json + apply.py into the request dir, then STOP.
 
-    Plan-first (``propose=True``): a work-creating / spec-settling breakdown emits
-    the files and enqueues a PROPOSAL - the runtime posts the plan summary + APR and
-    parks the request; ``apply.py`` runs only after a human approves. A mechanical
-    run (a clarification round) enqueues ``apply.py`` directly to post its comment.
+    Code-enforced gate: the worker NEVER enqueues and NEVER picks whether the run
+    needs approval. It writes its output (plan.json + apply.py + any staged spec) and
+    stops. The runtime reads that output and decides: a proposal (work / staged spec)
+    parks the request awaiting approval; a clarification round runs apply.py directly.
     """
     request_dir = storage / "spec-change" / str(request_id)
     request_dir.mkdir(parents=True, exist_ok=True)
@@ -196,15 +192,7 @@ def _emit(storage: Path, request_id: str, route: str, plan: dict, propose: bool 
     (request_dir / "plan.json").write_text(
         json.dumps(plan, indent=2) + "\n", encoding="utf-8"
     )
-    apply_path = request_dir / "apply.py"
-    apply_path.write_text(APPLY_SOURCE, encoding="utf-8")
-    db = Database(storage / "specseed.db")
-    if propose:
-        enqueue_spec_change_propose(request_id=str(request_id), route=route, db=db)
-    else:
-        enqueue_spec_change_run(
-            apply_path, request_id=str(request_id), route=route, db=db, storage=storage,
-        )
+    (request_dir / "apply.py").write_text(APPLY_SOURCE, encoding="utf-8")
 
 
 def _park_labels(request_id: str, status: str = "awaiting_approval") -> list[dict]:
@@ -337,11 +325,14 @@ def run_spec_change(prompt: str) -> int:
     id_map: dict[str, object] = {}
 
     if sprint == 1:
-        # Spec docs are local files; the breakdown is remote posts.
-        spec_root = storage.parent / "spec"
-        spec_root.mkdir(parents=True, exist_ok=True)
+        # Spec docs are STAGED (not written to live spec/); the runtime promotes them
+        # into live spec/ only on approval. The breakdown is remote posts.
+        staged_root = storage / "spec-change" / str(request_id) / "spec"
+        staged_root.mkdir(parents=True, exist_ok=True)
         for rel, content in SCRIPT["adapt"]["spec_docs"].items():
-            (spec_root / rel).write_text(content, encoding="utf-8")
+            dest = staged_root / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(content, encoding="utf-8")
         id_map["SCHEDULE_POST"] = _title_ids(local, ["SCHEDULE"])["SCHEDULE"]
     else:
         # Sprint-2 tickets already exist; wire their new issues into their bodies.
@@ -376,8 +367,8 @@ def run_spec_change(prompt: str) -> int:
         settle_docs=list(SCRIPT["adapt"]["settle_docs"]) if sprint == 1 else [],
         breakdown_done=True,
     )
-    _emit(storage, request_id, route, plan, propose=True)
-    print(f"fake agent: proposed sprint-{sprint} breakdown for request {request_id} ({apr_id})")
+    _emit(storage, request_id, route, plan)
+    print(f"fake agent: planned sprint-{sprint} breakdown for request {request_id} ({apr_id})")
     return 0
 
 

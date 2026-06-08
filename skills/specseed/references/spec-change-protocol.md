@@ -29,20 +29,27 @@ Never call `resolve_remote()` to *read*: the local cache exists so a planning
 pass never hits the provider API. The remote is touched only by the script you
 emit, when the executor runs it.
 
-## The two outputs
+## The three outputs
 
-1. **Spec edits** under `<specseed_dir>/spec/` (local files), when the route
-   calls for them. Edit them in place.
-2. **A reconcile script** + its plan, under the request dir:
+You read live `<specseed_dir>/spec/` for CONTEXT only. You never write there. All
+three outputs land under the request dir:
 
 ```
 <specseed_dir>/storage/spec-change/<request_id>/
+├── spec/...      # STAGED spec edits, mirroring the live spec/ tree
 ├── plan.json     # the work-breakdown delta you decided (inspectable)
 └── apply.py      # mutates the REMOTE posts to match plan.json
 ```
 
-Use `scheduling/spec_change.py:spec_change_dir(request_id)` to resolve the dir;
-create it if missing.
+1. **Staged spec edits** under `<specseed_dir>/storage/spec-change/<id>/spec/`. Every
+   created or edited doc goes here at the SAME relative path it has under live `spec/`
+   (so `spec/sad.md` stages at `storage/spec-change/<id>/spec/sad.md`). The runtime
+   promotes these into live `spec/` ONLY after a human approves, so an unapproved or
+   buggy run cannot corrupt the real spec. Use
+   `scheduling/spec_change.py:spec_change_spec_dir(request_id)` for the staging path.
+2. **plan.json** + **apply.py** in the request dir. Use
+   `scheduling/spec_change.py:spec_change_dir(request_id)` to resolve the dir; create
+   it if missing.
 
 ## plan.json
 
@@ -95,6 +102,12 @@ substitutes the real id at create time. Never hardcode guessed ids (`#1`, `#2`).
 Keeping the data and the executor separate means a human can eyeball the delta and the
 script stays generic.
 
+**The runtime derives the gate from `plan.json` + the staging dir** (see the approval
+gate). It is a proposal needing approval if a staged spec file exists, or `creates` /
+`settle_docs` / `closes` / `deletes` is non-empty, or any `edits` / `labels` /
+`comments` entry targets a post OTHER than the request post itself. So write `plan.json`
+honestly; the runtime reads it to decide whether a human must sign off.
+
 ## apply.py
 
 Self-contained. Imports `resolve_remote()` (the **configured** provider:
@@ -105,12 +118,13 @@ abort on the first failure so a half-applied run is obvious.
 **apply.py runs ONLY after a human approves the plan** (the runtime enqueues it
 then — see the approval gate). So it is the DOER that actually creates the posts.
 It must NOT touch the request's `spec-change:status` to `awaiting_approval` (the
-propose step already parked it). Its job: create the work. The **request closes
-itself** — the runtime swaps it to `spec-change:status:done` on approval and closes
-the request post in code after this apply succeeds. Do NOT put `REQUEST_ID` in
-`plan.json.closes`; that list is only for OTHER posts the change retires (e.g. a
-superseded ticket). A re-trigger before approval REWRITES this script; only the
-approved copy ever runs.
+propose step already parked it). Its job: create the work. It does NOT promote the
+staged spec into live `spec/` — the runtime does that on approval, before running
+apply.py. The **request closes itself** — the runtime swaps it to
+`spec-change:status:done` on approval and closes the request post in code after this
+apply succeeds. Do NOT put `REQUEST_ID` in `plan.json.closes`; that list is only for
+OTHER posts the change retires (e.g. a superseded ticket). A re-trigger before approval
+REWRITES this script; only the approved copy ever runs.
 
 Canonical header (resolves the dev import root by walking up to the package):
 
@@ -222,26 +236,33 @@ A **status swap** = `remove_entry_label(id, "<tier>:status:<old>")` then
 `edit_entry(schedule_id, body=<rendered markdown>)` (ROADMAP + CURRENT SPRINT are
 runtime-rendered — do not hand-edit). See `remote-posts.md` for the post/label model.
 
-## Approval gate (APR-NNNN): nothing is created until the plan is approved
+## Approval gate (APR-NNNN): the runtime decides, the worker never does
 
-**Plan-first. A run that creates work or settles spec docs does NOT create
-anything — it proposes a PLAN and stops.** No epic, ticket, or issue is posted to
-the tracker before a human approves. The gate is the spec-change request itself;
-there is no per-issue status gate.
+**Plan-first, code-enforced. The worker writes its three outputs and STOPS. It does
+NOT enqueue anything and does NOT decide whether the run needs approval.** The runtime
+reads `plan.json` + the staging dir after the run and derives the gate in code. No epic,
+ticket, or issue is posted to the tracker before a human approves. The gate is the
+spec-change request itself; there is no per-issue status gate.
 
-How it works:
+Two outcomes the runtime can pick:
 
-1. You write the spec edits (unsettled), `plan.json` (with `plan_summary` + `apr`),
-   and `apply.py` (the doer that creates the posts) — but you do NOT run apply.py.
-   You enqueue a **proposal** instead (see Enqueue + stop).
-2. The runtime posts your `plan_summary` + an `APR-NNNN` approval request onto the
-   request post and parks it `spec-change:status:awaiting_approval`. **Nothing is
-   created.**
-3. A human approves (`approve APR-NNNN` comment **or** 👍 on the request) or rejects
-   (`reject APR-NNNN` / 👎).
-4. On approval the runtime settles the docs, swaps the request to
-   `spec-change:status:done`, and runs your `apply.py` — which NOW creates the
-   epics/tickets/issues. On rejection nothing is created and the request closes.
+- **Gated (proposal, needs approval).** ANY of these makes it a proposal: a staged spec
+  file exists, OR `plan.json` has non-empty `creates` / `settle_docs` / `closes` /
+  `deletes`, OR any `edits` / `labels` / `comments` entry targets a post OTHER than the
+  request post itself. The runtime posts your `plan_summary` + an `APR-NNNN` request onto
+  the request post and parks it `spec-change:status:awaiting_approval`. It creates and
+  promotes NOTHING. A human approves (`approve APR-NNNN` comment, 👍 on the request, or
+  the UI button) or rejects (`reject APR-NNNN` / 👎). On approval the runtime promotes
+  the staged spec into live `spec/`, stamps `settled`, swaps the request to
+  `spec-change:status:done`, and runs your `apply.py` (which NOW creates the
+  epics/tickets/issues). On rejection nothing is created or promoted and the request closes.
+- **Direct (clarification round, no approval).** The ONE ungated run: it touches ONLY
+  the request post (a clarifying comment plus flipping the request's own
+  `spec-change:status` label), creates no work and stages no spec. The runtime runs
+  apply.py straight away so the question reaches the human, and parks `awaiting_input`.
+
+Plainly: **every spec-change that creates work or touches the spec needs explicit human
+approval. The one ungated run is a clarification round (asking the human a question).**
 
 Consequences for what you write:
 
@@ -251,6 +272,8 @@ Consequences for what you write:
 - **`plan_summary` (required):** the human-readable plan the runtime posts for
   approval — a short overall summary, then EVERY epic/ticket/issue you will create as
   a titled bullet with a one-line description. Markdown, into `plan.json`.
+  `plan_summary` + `apr` are required for any run that is not a pure clarification (the
+  runtime's propose step fails loud without `apr.id`).
 - **`apr` (required):** allocate one token at **plan time** and write `{id, summary}`
   into `plan.json` (stable across re-runs — do NOT re-allocate in apply.py):
 
@@ -269,52 +292,29 @@ Consequences for what you write:
   apply.py — the propose step did that.
 
 **Settling on approval.** Approving the plan is also what **settles the spec**: the
-runtime stamps `settled: true` + `settled_at` on every `plan.json.settle_docs` path
-and moves the request to `done`. A run that only edits the spec (no new work) still
-proposes with an `APR-NNNN` if it touched a settled-track doc — the approval is the
-settle, and the runtime closes the request with no apply.py to run. The skill never
-writes `settled` itself; `adapt` is the only route that may reopen a settled doc.
+runtime promotes the staged docs into live `spec/`, then stamps `settled: true` +
+`settled_at` on every `plan.json.settle_docs` path and moves the request to `done`. A run
+that only edits the spec (no new work) still gates as a proposal — a staged spec file is
+enough to require approval — the approval is the settle, and the runtime closes the
+request with no apply.py to run. The skill never writes `settled` itself; `adapt` is the
+only route that may reopen a settled doc (the reopened doc is STAGED like any other).
 
 When no approver list is configured, any non-bot human may approve (the default).
 
-## Enqueue + stop
+## Hand off + stop
 
-After writing `plan.json` and `apply.py`, enqueue and stop. Pick ONE:
+Write the three outputs (staged spec, `plan.json`, `apply.py`), then STOP. You do NOT
+enqueue anything and you do NOT choose whether the run needs approval — the runtime owns
+that. It reads `plan.json` + the staging dir, gates the run in code (see the approval
+gate), and drives it from there: a proposal posts the summary + APR and parks (promoting
+the spec + running `apply.py` only on approval); a clarification round runs `apply.py`
+straight away as a permission-gated subprocess. Either way your job ends when the files
+are written: never run `apply.py`, never touch git or code.
 
-**Proposing run** — created work and/or settled spec docs (the common case). The
-runtime posts the summary + APR, parks the request, and runs your `apply.py` only
-once a human approves:
-
-```python
-from specseed_runtime.db.database import Database
-from specseed_runtime.scheduling.spec_change import enqueue_spec_change_propose
-enqueue_spec_change_propose(REQUEST_ID, route=ROUTE,
-                            db=Database.instance(STORAGE_DIR / "specseed.db"))
-```
-
-**Direct apply** — a mechanical run that creates NO work and settles NO doc (e.g. a
-sprint label shuffle that needs no sign-off). apply.py runs straight away:
-
-```python
-from specseed_runtime.db.database import Database
-from specseed_runtime.scheduling.spec_change import enqueue_spec_change_run
-enqueue_spec_change_run(script_path, request_id=REQUEST_ID, route=ROUTE,
-                        db=Database.instance(STORAGE_DIR / "specseed.db"))
-```
-
-`script_path` absolute; `db` explicit so the task lands in the TARGET's queue
-(the bare default falls back to `$SPECSEED_STORAGE`, then the engine's dev
-storage).
-
-The executor (`executing/`) drains the queue: a proposal posts the summary + APR
-and parks (running `apply.py` only on approval); a direct apply runs `apply.py`
-straight away as a permission-gated subprocess. Either way your job ends at the
-enqueue: do not run `apply.py` yourself, do not touch git or code.
-
-**Chat mode** (no runner; see `references/chat-mode.md`): there is nothing to
-enqueue and no remote. Still write `plan.json` + `apply.py` (inert here, runs
-later under a real runner), then bundle the working dir into one downloadable zip
-and offer it — early and refreshed, never pasted into the output.
+**Chat mode** (no runner; see `references/chat-mode.md`): no remote, nothing to enqueue
+anyway. Still write the staged spec + `plan.json` + `apply.py` (inert here, runs later
+under a real runner), then bundle the working dir into one downloadable zip and offer it
+(early and refreshed, never pasted into the output).
 
 ## Idempotency
 
@@ -325,12 +325,11 @@ post it made before the crash. Write `apply.py` so re-running is safe: keep the
 add/remove and comments (idempotent), check current state from `plan.json`. When
 unsure, comment rather than duplicate.
 
-**A re-trigger REWRITES the request dir.** The `plan.json` + `apply.py` you find
-there are a previous run's output - usually the clarification round the human
-just answered. Re-enqueueing that stale script is an idempotent no-op: nothing
-posts, the human gets silence. Every run writes a fresh `plan.json` + `apply.py`
-for what IT decided (carry forward bookkeeping: `questions`, `apr`, recorded
-created ids), then enqueues.
+**A re-trigger REWRITES the request dir.** The staged spec + `plan.json` + `apply.py`
+you find there are a previous run's output - usually the clarification round the human
+just answered. Every run writes a fresh set of outputs for what IT decided (carry
+forward bookkeeping: `questions`, `apr`, recorded created ids), then stops; the runtime
+re-derives the gate from the new output.
 
 ## Async clarification
 
@@ -338,9 +337,9 @@ Cannot proceed safely? Do not guess. Post a **clarification round** — possibly
 questions in the confidence/suggestion format of `references/question-protocol.md`,
 delivered as comment(s) on the spec-change post into `plan.json.comments` — add label
 `spec-change:status:awaiting_input` (never `awaiting_approval`; that is the runtime's
-APR plan gate), record the round in `plan.json.questions`. A
-clarification creates no work and settles no doc, so enqueue it as a **direct apply**
-(`enqueue_spec_change_run`, not a proposal), then stop. The human replies on the remote
-(a one-word `OK` accepts all your suggestions); the next poll re-triggers this route
-with their answers in the comments.
+APR plan gate), record the round in `plan.json.questions`. This is the ONE ungated run:
+it touches ONLY the request post, creates no work, and stages no spec, so the runtime
+runs `apply.py` straight away (a direct apply) instead of gating it. Write the files and
+stop. The human replies on the remote (a one-word `OK` accepts all your suggestions); the
+next poll re-triggers this route with their answers in the comments.
 A round may carry multiple questions; the rule is one round then park, not one question.

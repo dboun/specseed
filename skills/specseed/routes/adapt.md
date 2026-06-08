@@ -99,18 +99,25 @@ Most adapt requests are shorter than a cold start — apply anti-max-bias harder
 the auto-skip rule aggressively (adapt questions are often the obvious ones). Skip
 question rounds entirely when the impact map is unambiguous.
 
-## 2. Patch the spec in place
+## 2. Patch the spec (staged)
+
+Read live `spec/` for context; write every changed doc into the staging tree
+`<specseed_dir>/storage/spec-change/<id>/spec/<same relative path>`
+(`spec_change_spec_dir(id)`). Never write to live `spec/`. The runtime promotes the
+staged docs into live `spec/` on approval.
 
 - **New reqs:** next id per component; add rows to the SRS table.
 - **Deprecate, do not delete:** append `[DEPRECATED <ISO date>: reason]` to the
   requirement text (preserves the id and traceability). Optionally collect under a
   `## Deprecated` section.
-- **Semantic change** -> new id + deprecate old. **Phrasing only** -> edit in place,
-  same id.
-- **SAD/SDD:** update the affected sections; log structural SAD changes to `adr.csv`.
-- **Reopen a settled doc:** allowed here (adapt is the only route that may). Log a row
-  in `adr.csv` noting what reopened and why. Keep the doc in `settle_docs` so it
-  re-settles on approval (don't toggle `settled` off and on).
+- **Semantic change** -> new id + deprecate old. **Phrasing only** -> edit the staged
+  copy, same id.
+- **SAD/SDD:** update the affected sections in the staged copy; log structural SAD
+  changes to `adr.csv`.
+- **Reopen a settled doc:** allowed here (adapt is the only route that may). The
+  reopened/edited doc is STAGED like any other. Log a row in `adr.csv` noting what
+  reopened and why. Keep the doc in `settle_docs` so it re-settles on approval (don't
+  toggle `settled` off and on).
 - Regenerate `reqs.json`; re-run the analyzer; resolve cycles.
 - Humanize any prose you touched; keep machine rows machine-formatted.
 
@@ -138,13 +145,14 @@ existing rows.
 A spec doc becomes `settled: true` **when the human approves this change**, not the
 moment you write it. So:
 - Record every spec doc this run created or reopened in `plan.json.settle_docs` (a list
-  of paths under `<specseed_dir>/spec/`).
-- Write `apr` + `plan_summary` in `plan.json` and enqueue a **proposal**; the runtime
-  posts the summary + `APR-NNNN` request and parks the request
-  `spec-change:status:awaiting_approval` (any run that touches the spec needs sign-off,
-  even a spec-only one). On approval the **runtime** stamps `settled: true` +
-  `settled_at` on each `settle_docs` path and
-  moves the request to `done`. You never write `settled` yourself.
+  of paths under `spec/`, the same relative paths you staged).
+- Write `apr` + `plan_summary` in `plan.json`, write `apply.py`, then stop. A staged
+  spec file alone makes the runtime gate this as a proposal (any run that touches the
+  spec needs sign-off, even a spec-only one); it posts the summary + `APR-NNNN` request
+  and parks the request `spec-change:status:awaiting_approval`. On approval the
+  **runtime** promotes the staged docs into live `spec/`, stamps `settled: true` +
+  `settled_at` on each `settle_docs` path, and moves the request to `done`. You never
+  write `settled` yourself.
 This is why adapt is the sole reopen path: once settled, only an approved adapt run
 re-opens and re-settles a doc. `plan-next-sprint` and `tweak` never touch settled docs.
 
@@ -180,10 +188,10 @@ When the request retires an entire feature, not one req:
 
 ## Finish
 
-Per the protocol: `plan.json` (with `plan_summary` + `apr`) -> `apply.py` ->
-`enqueue_spec_change_propose(...)` -> stop. Any run that plans issues OR touches the
-spec proposes: the runtime posts the summary + `APR-NNNN`, parks
-`spec-change:status:awaiting_approval`, settles the docs and runs `apply.py` (which
-creates the posts) on approval. Nothing is created before approval. If this adapt
-resolved a draft-adapt concern post, unblock its originating issue (swap to
-`:status:todo`) in the plan.
+Per the protocol: stage the spec, write `plan.json` (with `plan_summary` + `apr`) +
+`apply.py`, then stop. The runtime gates it: any run that plans issues OR touches the
+spec is a proposal. It posts the summary + `APR-NNNN`, parks
+`spec-change:status:awaiting_approval`, and on approval promotes the staged spec into
+live `spec/`, stamps `settled`, and runs `apply.py` (which creates the posts). Nothing is
+created or promoted before approval. If this adapt resolved a draft-adapt concern post,
+unblock its originating issue (swap to `:status:todo`) in the plan.

@@ -36,6 +36,7 @@ from __future__ import annotations
 import datetime
 import json
 import re
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -57,6 +58,8 @@ from specseed_runtime.scheduling.spec_change import (
     DEFAULT_SCRIPT_NAME,
     enqueue_spec_change_run,
     spec_change_dir,
+    spec_change_spec_dir,
+    staged_spec_files,
 )
 from specseed_runtime.state_machines import base as sm
 from specseed_runtime.state_machines.base import (
@@ -1120,6 +1123,34 @@ def _enqueue_apply_on_approval(ctx: Any, request_id: Any, route: Optional[str]) 
     return True
 
 
+def _promote_staged_spec(ctx: Any, request_id: Any) -> list[str]:
+    """Copy a request's STAGED spec into the live ``spec/`` tree. Returns rel paths.
+
+    Plan-first: the worker wrote every created/edited spec doc under
+    ``storage/spec-change/<id>/spec/`` instead of touching live ``spec/``. Now that a
+    human approved, promote each staged file to ``<specseed_dir>/<same rel path>``
+    (the staging root mirrors ``spec/``, so a file at ``spec/sad.md`` lands back at
+    ``spec/sad.md``). Parent dirs are created. Nothing is promoted before approval, so
+    an unapproved or buggy run can never corrupt the real spec.
+    """
+    staged_root = spec_change_spec_dir(request_id, ctx.storage)
+    specseed_dir = Path(ctx.storage).parent
+    promoted: list[str] = []
+    for src in staged_spec_files(request_id, ctx.storage):
+        rel = src.relative_to(staged_root)
+        dest = specseed_dir / "spec" / rel
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dest)
+        except OSError as exc:
+            platform_log.log_event(
+                "spec_promote_failed", post_id=request_id, doc=str(rel), error=str(exc)
+            )
+            continue
+        promoted.append(str(Path("spec") / rel))
+    return promoted
+
+
 def _settle_docs_for_request(ctx: Any, request_id: Any) -> list[str]:
     """Read ``plan.json.settle_docs`` for the request and stamp each doc. Returns paths done."""
     plan_path = spec_change_dir(request_id, ctx.storage) / "plan.json"
@@ -1164,6 +1195,10 @@ def resolve_spec_change_request(ctx: Any, entity: Any, state_result: Any) -> Opt
         return "stale spec-change approval; request already {0}".format(current)
     if approved:
         approver = approved[0]
+        # Plan-first promotion: the staged spec (storage/spec-change/<id>/spec/) was
+        # NOT written to live spec/ before this. Approval is what promotes it; THEN
+        # we stamp settled on the now-live docs the run listed.
+        promoted = _promote_staged_spec(ctx, entity.post_id)
         settled = _settle_docs_for_request(ctx, entity.post_id)
         _set_spec_change_status(ctx, entity, "done")
         route = _plan_route(ctx, entity.post_id)
@@ -1175,18 +1210,18 @@ def resolve_spec_change_request(ctx: Any, entity: Any, state_result: Any) -> Opt
         tail = "Creating the approved work now." if apply_enqueued else "Request done."
         _comment(
             ctx, entity.post_id,
-            "Approved by {0}. Spec settled ({1} doc(s)): {2}. {3}".format(
-                approver, len(settled), ", ".join(settled) or "none", tail
+            "Approved by {0}. Spec promoted ({1} doc(s)), settled ({2}): {3}. {4}".format(
+                approver, len(promoted), len(settled), ", ".join(settled) or "none", tail
             ),
         )
         if not apply_enqueued:
             _close(ctx, entity.post_id)
         platform_log.log_event(
             "spec_change_settled", post_id=entity.post_id, approver=approver,
-            docs=settled, apply_enqueued=apply_enqueued,
+            promoted=promoted, docs=settled, apply_enqueued=apply_enqueued,
         )
-        return "spec-change approved -> settled ({0} docs); {1}".format(
-            len(settled), "apply enqueued" if apply_enqueued else "done (closed)"
+        return "spec-change approved -> promoted {0} doc(s), settled {1}; {2}".format(
+            len(promoted), len(settled), "apply enqueued" if apply_enqueued else "done (closed)"
         )
     rejecter = rejected[0]
     # Rejected before any work exists (plan-first): nothing to tear down, just close.

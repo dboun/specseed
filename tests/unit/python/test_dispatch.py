@@ -5,6 +5,7 @@ FakeAgentRunner only; TrackingRemoteLocal/TrackingLocal mirrors. No GitHub/GitLa
 
 from __future__ import annotations
 
+import json
 import tempfile
 import threading
 import unittest
@@ -367,6 +368,101 @@ class DispatchRoutingTest(DispatchTestBase):
         self.assertFalse(out.success)
         self.assertIn("agent exited with code 1", out.error)
         self.assertIn("Not logged in", out.error)
+
+
+class SpecChangeGateDecisionTest(DispatchTestBase):
+    """Runtime owns the gate, derived in code from the finished run's OUTPUT.
+
+    The agent no longer enqueues. After a spec-change run the runtime reads
+    plan.json + the staged spec and decides propose (gated) vs direct (clarification).
+    """
+
+    def _spec_dir(self, rid):
+        from specseed_runtime.scheduling.spec_change import spec_change_dir
+        d = spec_change_dir(str(rid), self.ctx.storage)
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def _write_plan(self, rid, plan):
+        d = self._spec_dir(rid)
+        plan.setdefault("request_id", str(rid))
+        (d / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
+        (d / "apply.py").write_text("print('noop')\n", encoding="utf-8")
+
+    def _stage_spec(self, rid, rel="sad.md"):
+        from specseed_runtime.scheduling.spec_change import spec_change_spec_dir
+        dest = spec_change_spec_dir(str(rid), self.ctx.storage) / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text("# staged\n", encoding="utf-8")
+
+    def _run(self, rid):
+        self.ctx.runner = FakeAgentRunner(AgentResult(ok=True, returncode=0))
+        self.runner = self.ctx.runner
+        return dispatch(
+            self.ctx,
+            {"action": "handle_label_added", "post_id": str(rid),
+             "payload": {"label": "spec-change:adapt"}},
+        )
+
+    def _actions(self, rid):
+        return [t["action"] for t in self.db.tasks_for(rid)]
+
+    def test_classify_propose_on_creates(self) -> None:
+        rid = self._seed_local_entry("Adapt", ["spec-change:adapt"])
+        self._write_plan(rid, {"creates": [{"title": "FEAT-0001"}]})
+        self.assertEqual(dispatch_mod._classify_spec_change(self.ctx, str(rid)), "propose")
+
+    def test_classify_propose_on_staged_spec(self) -> None:
+        rid = self._seed_local_entry("Adapt", ["spec-change:adapt"])
+        self._write_plan(rid, {})  # no work keys at all
+        self._stage_spec(rid)
+        self.assertEqual(dispatch_mod._classify_spec_change(self.ctx, str(rid)), "propose")
+
+    def test_classify_propose_on_settle_docs(self) -> None:
+        rid = self._seed_local_entry("Adapt", ["spec-change:adapt"])
+        self._write_plan(rid, {"settle_docs": ["spec/sad.md"]})
+        self.assertEqual(dispatch_mod._classify_spec_change(self.ctx, str(rid)), "propose")
+
+    def test_classify_propose_when_touching_other_post(self) -> None:
+        rid = self._seed_local_entry("Adapt", ["spec-change:adapt"])
+        self._write_plan(rid, {"comments": [{"post": 999, "body": "hi"}]})
+        self.assertEqual(dispatch_mod._classify_spec_change(self.ctx, str(rid)), "propose")
+
+    def test_classify_direct_for_clarification_on_request(self) -> None:
+        # Only touches the request post: a clarifying comment + flipping its own status.
+        rid = self._seed_local_entry("Adapt", ["spec-change:adapt"])
+        self._write_plan(rid, {
+            "comments": [{"post": str(rid), "body": "Q1?"}],
+            "labels": [{"post": str(rid), "add": ["spec-change:status:awaiting_input"]}],
+        })
+        self.assertEqual(dispatch_mod._classify_spec_change(self.ctx, str(rid)), "direct")
+
+    def test_classify_none_without_plan(self) -> None:
+        rid = self._seed_local_entry("Adapt", ["spec-change:adapt"])
+        self.assertEqual(dispatch_mod._classify_spec_change(self.ctx, str(rid)), "none")
+
+    def test_work_run_enqueues_proposal_not_apply(self) -> None:
+        rid = self._seed_local_entry("Adapt", ["spec-change:adapt"])
+        self._write_plan(rid, {"creates": [{"title": "FEAT-0001"}]})
+        out = self._run(rid)
+        self.assertTrue(out.success)
+        self.assertIn("proposal enqueued", out.detail)
+        actions = self._actions(rid)
+        self.assertIn("propose_spec_change", actions)
+        self.assertNotIn("run_spec_change_script", actions)  # nothing applied yet
+
+    def test_clarification_run_enqueues_direct_apply(self) -> None:
+        rid = self._seed_local_entry("Adapt", ["spec-change:adapt"])
+        self._write_plan(rid, {
+            "comments": [{"post": str(rid), "body": "Q1?"}],
+            "labels": [{"post": str(rid), "add": ["spec-change:status:awaiting_input"]}],
+        })
+        out = self._run(rid)
+        self.assertTrue(out.success)
+        self.assertIn("direct apply", out.detail)
+        actions = self._actions(rid)
+        self.assertIn("run_spec_change_script", actions)
+        self.assertNotIn("propose_spec_change", actions)
 
 
 class RunAgentRoutingTest(DispatchTestBase):

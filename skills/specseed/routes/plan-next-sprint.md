@@ -40,9 +40,16 @@ When the request asks for help, or when there is no un-specced roadmap tail left
   user to edit it into the change they want, and remind them to remove the
   `draft` label when done.
 - Move the `plan-next-sprint` request itself toward `done`.
-- Write `apply.py`, enqueue, and stop.
+- Write `plan.json` + `apply.py` and stop. (The draft post is a `creates`, so the
+  runtime gates this as a proposal.)
 
-## 2. Extend the spec (append only)
+## 2. Extend the spec (append only, staged)
+
+Read live `spec/` for context; write every changed/new doc into the staging tree
+`<specseed_dir>/storage/spec-change/<id>/spec/<same relative path>`
+(`spec_change_spec_dir(id)`), never to live `spec/`. The runtime promotes the staged
+docs on approval. Append-only still holds: stage a copy that only adds the slice's rows,
+never rewriting settled content.
 
 - **SRS:** append new req rows for the slice (new component -> new `*-srs.md`).
   New ids continue the per-component numbering. Do not edit existing rows.
@@ -74,10 +81,12 @@ to adapt** for that change (note it in `plan.json`), then resume.
 
 ## Finish
 
-Per the protocol: `plan.json` (with `plan_summary` + `apr`) -> `apply.py` ->
-`enqueue_spec_change_propose(...)` -> stop. The runtime posts the `plan_summary` +
-`APR-NNNN` and parks the request `spec-change:status:awaiting_approval`; `apply.py`
-creates the sprint's posts only on approval — nothing is created before then.
+Per the protocol: stage the spec, write `plan.json` (with `plan_summary` + `apr`) +
+`apply.py`, then stop. The runtime gates it as a proposal (staged spec + `creates`): it
+posts the `plan_summary` + `APR-NNNN` and parks the request
+`spec-change:status:awaiting_approval`; on approval it promotes the staged spec into live
+`spec/` and runs `apply.py`, which creates the sprint's posts. Nothing is created or
+promoted before then.
 
 ## Boundary
 

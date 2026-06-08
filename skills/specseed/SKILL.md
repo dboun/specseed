@@ -106,10 +106,13 @@ Read `references/spec-change-protocol.md` first. The shape is always:
    Always pass `storage=` — the bare default points at the engine repo, not the
    target. Never poll the remote to plan; that is what the local cache is for.
    Read the current spec under `<specseed_dir>/spec/`.
-2. **Decide + edit the spec if needed.** Apply the route's logic to
-   `<specseed_dir>/spec/`.
-   Persist any intermediate reasoning (the planned work-breakdown delta) as JSON
-   in the request dir so the script and a human can inspect it.
+2. **Decide + STAGE the spec if needed.** Apply the route's logic. You read live
+   `<specseed_dir>/spec/` for context only; never write there. Write each created or
+   edited doc into the STAGING tree
+   `<specseed_dir>/storage/spec-change/<id>/spec/<same relative path>`
+   (`scheduling/spec_change.spec_change_spec_dir(id)`). The runtime promotes staged
+   docs into live `spec/` only on approval. Persist the planned work-breakdown delta
+   as JSON in the request dir so the script and a human can inspect it.
 3. **Emit the reconcile script.** Write `apply.py` into the request dir. It
    imports `resolve_remote()` and applies the post mutations through the tracking
    contract: `add_entry`, `edit_entry` (title/body), `add_entry_label`,
@@ -119,15 +122,16 @@ Read `references/spec-change-protocol.md` first. The shape is always:
    renders from the work posts. A status swap is `remove_entry_label` then
    `add_entry_label`. See the protocol for the canonical header and the
    per-provider notes (GitHub cannot hard-delete issues, so close instead).
-4. **Enqueue it (runner mode).** A run that plans work or settles spec docs calls
-   `scheduling/spec_change.enqueue_spec_change_propose(...)` — the runtime posts the
-   plan summary + `APR-NNNN`, parks the request, and runs your `apply.py` only on
-   approval (plan-first: nothing is created before then). A mechanical run that
-   creates no work and settles no doc (e.g. a clarification round, a sprint label
-   shuffle) calls `enqueue_spec_change_run(...)` instead — `apply.py` runs straight
-   away. Either way the scheduler drains the queue under permission gating; your job
-   ends at the enqueue, never run the script yourself. **Chat mode:** skip the enqueue
-   — bundle the artifacts into a zip and offer it for download (`references/chat-mode.md`).
+4. **Hand off + stop.** Write the staged spec + `plan.json` + `apply.py`, then STOP.
+   You never enqueue and never pick the gate. The runtime reads `plan.json` + the
+   staging dir and derives the gate in code: a run that stages any spec or whose
+   `plan.json` creates work / settles docs / touches any post but the request is a
+   **proposal** (posts the plan summary + `APR-NNNN`, parks, promotes the spec and runs
+   `apply.py` only on approval); the ONE ungated run is a **clarification round** (touches
+   only the request post), which runs `apply.py` straight away. The scheduler drains the
+   queue under permission gating; never run the script yourself. **Chat mode:** no runner,
+   nothing to enqueue — bundle the artifacts into a zip and offer it for download
+   (`references/chat-mode.md`).
 
 ## Doc style (spec prose only)
 
@@ -145,15 +149,19 @@ reference text: no injected voice, opinions, or first person.
 
 ## Approval before work (mandatory, every route)
 
-**Plan-first: nothing is created on the tracker until the human approves the plan.**
-A run that creates work (or settles spec docs) does not create posts — it writes the
-plan, then enqueues a **proposal** and stops. The runtime posts a human-readable
-`plan_summary` + one `APR-NNNN` request on the spec-change post and parks it
-`spec-change:status:awaiting_approval`. A human approves (`approve APR-NNNN` or 👍 on
-the request) or rejects (`reject` / 👎). Only on approval does the runtime settle the
-docs and run your `apply.py`, which creates the epics/tickets/issues — issues born
-`issue:status:todo` (the plan approval was the gate; no per-issue gate). Full contract
-+ helpers in `references/spec-change-protocol.md` ("Approval gate (APR-NNNN)").
+**Plan-first, code-enforced: nothing is created on the tracker until the human approves
+the plan.** The worker writes its outputs (staged spec + `plan.json` + `apply.py`) and
+STOPS. It never enqueues and never picks the gate. The runtime reads `plan.json` + the
+staging dir and decides in code: a run that stages any spec, or whose `plan.json` creates
+work / settles docs / touches any post but the request, is a **proposal** that needs
+approval. The runtime posts a human-readable `plan_summary` + one `APR-NNNN` request on
+the spec-change post and parks it `spec-change:status:awaiting_approval`. A human approves
+(`approve APR-NNNN` or 👍 on the request, or the UI button) or rejects (`reject` / 👎).
+Only on approval does the runtime promote the staged spec into live `spec/`, stamp
+`settled`, and run your `apply.py`, which creates the epics/tickets/issues — issues born
+`issue:status:todo` (the plan approval was the gate; no per-issue gate). The one ungated
+run is a clarification round (asking the human a question). Full contract + helpers in
+`references/spec-change-protocol.md` ("Approval gate (APR-NNNN)").
 
 ## Async clarification (the question path in runner mode)
 
@@ -163,15 +171,17 @@ round** (the confidence/suggestion format in `references/question-protocol.md` �
 round may carry several questions), then park and wait. The headless rule is "one
 round, then stop," not "one question."
 
-1. Make the spec edits you ARE confident about (if any), or none.
+1. Stage no spec and plan no work: a clarification round is the ONE ungated run, so it
+   must touch ONLY the request post.
 2. In `apply.py`, the remote action is the question round posted as a **comment (or
    comments)** on the spec-change post, plus adding the label
    `spec-change:status:awaiting_input` (NOT `awaiting_approval` — that one is the
    runtime's APR plan gate). Record the round in `plan.json` (the `questions` key)
    so a re-trigger does not re-ask.
-3. Enqueue as normal and stop. The human answers on the remote (a one-word `OK` takes
-   all your suggestions); the next poll re-triggers this route with their reply in the
-   post comments.
+3. Write the files and stop. The runtime sees a request-post-only run and runs
+   `apply.py` straight away (no approval). The human answers on the remote (a one-word
+   `OK` takes all your suggestions); the next poll re-triggers this route with their
+   reply in the post comments.
 
 Do not guess past a material ambiguity. A focused, well-suggested round beats a wrong
 spec. Chat mode asks the same round live (`references/chat-mode.md`).
@@ -181,19 +191,24 @@ spec. Chat mode asks the same round live (`references/chat-mode.md`).
 - **Local truth for reading, remote truth for the system.** You read the local
   cache to plan; the remote is the system's source of truth, so every change you
   intend must go into `apply.py`, never applied to the local DB directly.
-- **Spec edits are local files; work-breakdown changes are remote posts.** Keep
-  the two outputs separate and consistent.
+- **Spec edits are STAGED, never written to live spec/.** Read live `spec/` for
+  context; write every created/edited doc into
+  `<specseed_dir>/storage/spec-change/<id>/spec/` at its live relative path. The
+  runtime promotes them on approval. Work-breakdown changes are remote posts in
+  `apply.py`. Keep the outputs separate and consistent.
 - **Stay within the tracking contract.** Mutate the remote only through the
   `resolve_remote()` tracker's methods; never reach around it. Every method
   returns a `TrackingResult(ok, error, data)`; the script must check `ok` and
   fail loudly. The one provider gap: GitHub issues cannot be hard-deleted, so
   use `set_entry_closed` there (`delete_entry` is fine on local and GitLab).
-- **One request, one run.** Do the route, write the script, enqueue, stop.
-- **No posts before approval.** A run that creates work or settles docs creates
-  NOTHING on the tracker — it enqueues a **proposal** (`enqueue_spec_change_propose`),
-  and the runtime runs your `apply.py` only after a human approves the `APR-NNNN`
-  plan. Issues are then born `:status:todo`. You never create work posts or release
-  claimable work yourself. (See "Approval before work".)
+- **One request, one run.** Do the route, stage the spec, write `plan.json` + the
+  script, stop. Never enqueue, never pick the gate.
+- **No posts before approval.** A run that creates work or touches the spec creates
+  NOTHING on the tracker. You write the files and stop; the runtime derives the gate
+  in code and runs your `apply.py` only after a human approves the `APR-NNNN` plan
+  (and promotes the staged spec into live `spec/` first). Issues are then born
+  `:status:todo`. The one ungated run is a clarification round. You never create work
+  posts, promote spec, or release claimable work yourself. (See "Approval before work".)
 
 ## Action gates (awareness only)
 

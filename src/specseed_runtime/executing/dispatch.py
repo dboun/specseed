@@ -41,9 +41,13 @@ from specseed_runtime.executing import platform_log
 from specseed_runtime.executing.context import ExecutionContext
 from specseed_runtime.executing import prompts
 from specseed_runtime.scheduling.spec_change import (
+    DEFAULT_SCRIPT_NAME,
     SPEC_CHANGE_ACTION,
     SPEC_CHANGE_PROPOSE_ACTION,
+    enqueue_spec_change_propose,
+    enqueue_spec_change_run,
     spec_change_dir,
+    staged_spec_files,
 )
 from specseed_runtime.state_machines.approvals import (
     approval_request_comment,
@@ -198,11 +202,13 @@ def _spec_change_actionable(status: Optional[str], action: Optional[str]) -> boo
 
 
 def _has_pending_spec_change_run(ctx: "ExecutionContext", post_id: Any) -> bool:
-    """True if an apply.py for this request is already queued to run.
+    """True if a follow-up for this request is already queued (apply.py OR a proposal).
 
     Several distinct events (the body edit, the ``draft`` label removal) can each
-    decide SPEC_CHANGE for one request before its apply.py executes. The first run
-    already wrote+enqueued the script, so any later trigger should wait for it
+    decide SPEC_CHANGE for one request before the runtime's follow-up executes. The
+    first run already wrote the files and the runtime enqueued the follow-up - a
+    proposal (``propose_spec_change``, which parks the request) or a direct apply
+    (``run_spec_change_script``). Either way any later trigger should wait for it
     rather than re-running the (expensive) worker over the same request.
     """
     if post_id in (None, ""):
@@ -211,8 +217,9 @@ def _has_pending_spec_change_run(ctx: "ExecutionContext", post_id: Any) -> bool:
         rows = ctx.db.tasks_for(post_id)
     except Exception:
         return False
+    follow_up = {SPEC_CHANGE_ACTION, SPEC_CHANGE_PROPOSE_ACTION}
     for row in rows or []:
-        if row.get("status") == "pending" and row.get("action") == SPEC_CHANGE_ACTION:
+        if row.get("status") == "pending" and row.get("action") in follow_up:
             return True
     return False
 
@@ -1159,6 +1166,14 @@ def _run_work(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
                 retryable=True,
             )
         detail = "agent ran intent {0}".format(intent)
+        if intent == AgentIntent.SPEC_CHANGE:
+            # Code-enforced gate: the agent wrote plan.json + apply.py (+ staged
+            # spec) and stopped - it does NOT enqueue. The runtime reads the output
+            # and decides whether to gate (propose) or apply directly (clarification).
+            try:
+                detail = "{0}; {1}".format(detail, _enqueue_spec_change_followup(ctx, entity, post_id))
+            except Exception as exc:  # never lose the run over an enqueue hiccup
+                detail = "{0}; follow-up enqueue failed: {1!r}".format(detail, exc)
         if intent in (AgentIntent.IMPLEMENT, AgentIntent.REVIEW):
             try:
                 transition = advance.apply_post_work_transition(
@@ -1207,6 +1222,82 @@ def _read_plan(ctx: ExecutionContext, request_id: Any) -> Optional[dict]:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
+
+
+# plan.json keys that, populated, mean the run creates/retires work and MUST be
+# approved. ``edits``/``labels``/``comments`` are judged per-target below (a
+# clarification round touches only the request itself, which never gates).
+_PROPOSE_PLAN_KEYS = ("creates", "settle_docs", "closes", "deletes")
+
+
+def _touches_other_posts(plan: dict, request_id: Any) -> bool:
+    """True if any edit/label/comment in the plan targets a post OTHER than the request.
+
+    A clarification round only comments on the request post and flips its own
+    ``spec-change:status`` label; that is the human interaction, not an apply, so it
+    is the one run that does not gate. Anything aimed at another post is real work.
+    """
+    req = str(request_id)
+    for entry in (plan.get("edits") or []) + (plan.get("comments") or []):
+        if str(entry.get("post_id") if "post_id" in entry else entry.get("post")) != req:
+            return True
+    for change in plan.get("labels") or []:
+        if str(change.get("post_id") if "post_id" in change else change.get("post")) != req:
+            return True
+    return False
+
+
+def _classify_spec_change(ctx: ExecutionContext, request_id: Any) -> str:
+    """Decide the runtime's follow-up for a finished spec-change run, from its OUTPUT.
+
+    The agent no longer chooses the gate (it cannot be trusted to). The runtime reads
+    what the run actually produced - ``plan.json`` + the staged spec - and decides:
+
+    * ``"propose"`` - the run creates work OR touches the spec (staged docs,
+      settle_docs, or a mutation aimed at another post). Gate it: post the plan
+      summary + APR, park ``awaiting_approval``, create/promote NOTHING until a human
+      approves.
+    * ``"direct"`` - a pure clarification round: it only comments on the request and
+      flips the request's own status label, creating no work and staging no spec. Run
+      apply.py straight away so the question reaches the human.
+    * ``"none"`` - the run produced no actionable plan.
+    """
+    plan = _read_plan(ctx, request_id)
+    if plan is None:
+        return "none"
+    needs_approval = bool(staged_spec_files(request_id, ctx.storage)) or any(
+        plan.get(key) for key in _PROPOSE_PLAN_KEYS
+    ) or _touches_other_posts(plan, request_id)
+    if needs_approval:
+        return "propose"
+    if plan.get("comments") or plan.get("labels"):
+        return "direct"
+    return "none"
+
+
+def _enqueue_spec_change_followup(ctx: ExecutionContext, entity: Any, request_id: Any) -> str:
+    """Queue the runtime-owned follow-up to a finished spec-change run.
+
+    Plan-first, code-enforced: the agent wrote ``plan.json`` + ``apply.py`` (+ staged
+    spec) and stopped. The runtime - not the agent - now decides whether the run gates
+    (``_classify_spec_change``) and enqueues the matching task. A proposal parks the
+    request awaiting approval; a clarification applies directly.
+    """
+    route = _spec_change_route(entity)
+    kind = _classify_spec_change(ctx, request_id)
+    if kind == "propose":
+        enqueue_spec_change_propose(request_id=str(request_id), route=route, db=ctx.db)
+        platform_log.log_event("spec_change_propose_enqueued", post_id=request_id, route=route)
+        return "spec-change planned; proposal enqueued (awaiting approval)"
+    if kind == "direct":
+        script = spec_change_dir(str(request_id), ctx.storage) / DEFAULT_SCRIPT_NAME
+        enqueue_spec_change_run(
+            script, request_id=request_id, route=route, db=ctx.db, close_request=False
+        )
+        platform_log.log_event("spec_change_direct_enqueued", post_id=request_id, route=route)
+        return "spec-change clarification; direct apply enqueued"
+    platform_log.log_event("spec_change_no_followup", post_id=request_id, route=route)
+    return "spec-change run produced no actionable plan; nothing enqueued"
 
 
 def _request_labels(post: Any) -> list[str]:

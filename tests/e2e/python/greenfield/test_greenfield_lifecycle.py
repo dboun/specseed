@@ -17,18 +17,20 @@ Scenario (every approval step covered):
 1. configure a fresh target repo; start the listener (it seeds labels + posts).
 2. fill the seeded draft adapt post with a bootstrap prompt, drop ``draft``.
 3. two discussion rounds (worker parks ``awaiting_input``; answers wake it).
-4. sprint-1 breakdown is PROPOSED (plan-first): the runtime posts the plan summary
-   + APR-0001 and parks the request ``awaiting_approval`` - NO work posts yet.
-5. approve the request (settles spec docs, request -> done); only now does the
-   deferred apply.py create the 2 epics, 4 tickets, 4 sprint-1 issues (born todo).
-6. each sprint-1 issue parks for implement approval (``auto_implement_issue`` off);
-   approve each by its own id (thumbs-up and ``approve <id>``); each runs
-   implement -> review -> done; one issue fails review once first; roll-up
-   closes tickets + epic.
-7. a manual ``todo`` hotfix issue parks for implement approval, approved by id.
-8. ``spec-change:plan-next-sprint`` post: propose + APR-0002, approve the request
-   (apply creates sprint-2 issues todo), approve each issue; second epic rolls up;
-   SCHEDULE shows sprint 2 ongoing.
+4. sprint-1 breakdown is PROPOSED (plan-first, runtime-owned gate): the worker only
+   STAGES the spec + writes plan.json/apply.py; the runtime posts the plan summary
+   + APR-0001 and parks the request ``awaiting_approval`` - NO work posts, live spec
+   untouched.
+5. approve the request on its APR comment (promotes the staged spec into live spec/,
+   settles it, request -> done); only now does the deferred apply.py create the
+   2 epics, 4 tickets, 4 sprint-1 issues (born todo).
+6. each sprint-1 issue passes two gates approved on the gate COMMENT: implement
+   (``auto_implement_issue`` off) then merge (``merge_to_primary`` off). Issues merge
+   in dependency order; one fails review once first; roll-up closes tickets + epic.
+7. a manual ``todo`` hotfix issue runs the same implement + merge gate sequence.
+8. ``spec-change:plan-next-sprint`` post: propose + APR (number floats, gates mint
+   APR ids), approve on the APR comment (apply creates sprint-2 issues todo),
+   drive each issue to done; second epic rolls up; SCHEDULE shows sprint 2 ongoing.
 9. CONTROL: STATUS gets a reply; STOP shuts the listener down cleanly.
 """
 
@@ -95,6 +97,21 @@ def comment_with(boss, post_id, text: str, author: str | None = None):
         if text in (comment.body or "") and (author is None or comment.author == author):
             return comment
     return None
+
+
+def approve_apr(harness, boss, request_id, desc: str):
+    """Approve a spec-change request by reacting 👍 on its APR request COMMENT.
+
+    The APR plan gate counts reactions on the latest approval-request COMMENT, not
+    on the post (a standing post reaction can't re-fire a superseded gate). So a
+    human approves by reacting on that comment, exactly like the UI gate button.
+    """
+    comment = harness.wait_for(
+        lambda: comment_with(boss, request_id, "approval-request"),
+        f"APR request comment on {desc}",
+    )
+    _ok(boss.add_entry_comment_reaction(request_id, comment.id, "thumbs_up"),
+        f"approve {desc} via APR comment")
 
 
 def entry_done(boss, post_id, tier: str) -> bool:
@@ -211,13 +228,52 @@ def _ticket_titles(sprint: int) -> list[str]:
     return [ticket["title"] for ticket in SCRIPT["tickets"] if ticket["sprint"] == sprint]
 
 
+def _approve_gate_comments(boss, post_id, reacted: set) -> None:
+    """React 👍 on every approval-request COMMENT on this post not yet acted on.
+
+    One helper covers each gate an issue passes through - the implement-approval gate
+    AND the merge gate - because both are a fresh APR-marker comment, and a
+    re-prepared merge gate is a new comment with no reaction. Reacting on the comment
+    (not the post) is how a gate is approved, exactly like the UI gate button.
+    """
+    for comment in comments_of(boss, post_id):
+        if "approval-request" in (comment.body or "") and comment.id not in reacted:
+            _ok(boss.add_entry_comment_reaction(post_id, comment.id, "thumbs_up"),
+                f"approve gate comment {comment.id} on post {post_id}")
+            reacted.add(comment.id)
+
+
+def _drive_issues_to_done(harness: Greenfield, boss, ids: dict, desc: str) -> None:
+    """Approve every gate for these issues until the whole batch is done (on primary).
+
+    `auto_implement_issue` off and `merge_to_primary` off, so each issue passes an
+    implement-approval gate and then a merge gate. Issues with `Depends on:` links
+    implement and merge in dependency order (a dependent is held until its dep merges
+    to primary), so we can't approve up front - we poll, approving whichever gate each
+    issue currently presents, until every issue is done.
+    """
+    reacted: set = set()
+    deadline = time.monotonic() + WAIT_S
+    while time.monotonic() < deadline:
+        for pid in ids.values():
+            _approve_gate_comments(boss, pid, reacted)
+        if all(entry_done(boss, pid, "issue") for pid in ids.values()):
+            return
+        if harness.proc is not None and harness.proc.poll() is not None:
+            pytest.fail(f"listener exited while driving {desc}{harness.diagnostics()}")
+        time.sleep(POLL_S)
+    not_done = [str(pid) for pid in ids.values() if not entry_done(boss, pid, "issue")]
+    pytest.fail(f"timed out driving {desc} to done; still open: {not_done}{harness.diagnostics()}")
+
+
 def _approve_issue_batch(harness: Greenfield, boss, titles: list[str]) -> dict[str, object]:
-    """Approve a batch of issues at the implement-approval gate, then await done.
+    """Drive a batch of issues through implement + merge gates to done.
 
     Plan-first: issues are created `todo` and the runtime parks each
-    `awaiting_approval` because `auto_implement_issue` is off. The human approves by
-    the issue's own id - half by thumbs-up, half by `approve <id>` - then each runs
-    implement -> review -> done (closed). Returns {title: post_id}.
+    `awaiting_approval` because `auto_implement_issue` is off. The human approves on
+    the gate COMMENT (not the post); after implement + review each issue readies a
+    merge gate (merge_to_primary off), approved the same way, then merges to primary
+    and closes. Returns {title: post_id}.
     """
     ids: dict[str, object] = {}
     for title in titles:
@@ -231,18 +287,7 @@ def _approve_issue_batch(harness: Greenfield, boss, titles: list[str]) -> dict[s
             lambda pid=post.id: comment_with(boss, pid, "requires human approval"),
             f"issue {title!r} carries the implement-approval note",
         )
-
-    for index, title in enumerate(titles):
-        if index % 2 == 0:
-            _ok(boss.add_entry_reaction(ids[title], "thumbs_up"), f"thumbs up {title!r}")
-        else:
-            _ok(boss.add_entry_comment(ids[title], f"approve {ids[title]}"), f"approve {title!r}")
-
-    for title in titles:
-        harness.wait_for(
-            lambda pid=ids[title]: entry_done(boss, pid, "issue"),
-            f"issue {title!r} implemented, reviewed and closed",
-        )
+    _drive_issues_to_done(harness, boss, ids, f"sprint issues {titles}")
     return ids
 
 
@@ -297,17 +342,21 @@ def test_greenfield_full_lifecycle(harness):
     # The plan only proposes work; the epics/tickets/issues do NOT exist until the
     # human approves the request below.
     assert find_post(boss, SCRIPT["epics"][0]["title"]) is None, "no work created before approval"
+    # Plan-first staging: the spec edits are STAGED, not written to live spec/. Live
+    # spec/ stays untouched until approval, so a buggy/unapproved run can't corrupt it.
     spec_dir = harness.target / ".specseed" / "spec"
-    assert (spec_dir / "vision.md").is_file() and (spec_dir / "srs.md").is_file()
+    assert not (spec_dir / "vision.md").exists(), "spec must NOT land in live spec/ before approval"
 
-    # ---- 6. approve the request: spec settles, apply creates the work ----- #
-    _ok(boss.add_entry_reaction(request_id, "thumbs_up"), "approve spec-change request")
+    # ---- 6. approve the request: spec promotes + settles, apply creates the work #
+    approve_apr(harness, boss, request_id, "spec-change request")
     harness.wait_for(
         lambda: "spec-change:status:done" in labels_of(boss, request_id),
         "request settled to done",
     )
-    harness.wait_for(lambda: comment_with(boss, request_id, "Spec settled"),
-                     "settle note on the request")
+    harness.wait_for(lambda: comment_with(boss, request_id, "Spec promoted"),
+                     "promote+settle note on the request")
+    # Promotion landed the staged docs into live spec/ on approval.
+    assert (spec_dir / "vision.md").is_file() and (spec_dir / "srs.md").is_file()
     vision = (spec_dir / "vision.md").read_text(encoding="utf-8")
     assert "settled: true" in vision and "settled_at:" in vision
     # Now the deferred apply.py has created the breakdown.
@@ -358,8 +407,9 @@ def test_greenfield_full_lifecycle(harness):
     )
     harness.wait_for(lambda: comment_with(boss, hotfix_id, "requires human approval"),
                      "hotfix approval-needed note")
-    _ok(boss.add_entry_comment(hotfix_id, f"approve {hotfix_id}"), "approve hotfix by id")
-    harness.wait_for(lambda: entry_done(boss, hotfix_id, "issue"), "hotfix done")
+    # Same gate sequence as any issue: implement gate + merge gate, approved on the
+    # comment, then merged to primary and closed.
+    _drive_issues_to_done(harness, boss, {"hotfix": hotfix_id}, "hotfix issue")
 
     # ---- 9. sprint 2 via plan-next-sprint -------------------------------- #
     sprint2_request = _ok(
@@ -370,8 +420,14 @@ def test_greenfield_full_lifecycle(harness):
         ),
         "create plan-next-sprint request",
     ).id
-    harness.wait_for(lambda: comment_with(boss, sprint2_request, "APR-0002"), "APR-0002 request")
-    _ok(boss.add_entry_reaction(sprint2_request, "thumbs_up"), "approve sprint-2 request")
+    # The APR number is NOT 0002: implement + merge gates mint APR ids from the same
+    # monotonic counter, so the plan-next-sprint APR is whatever comes next. Wait on
+    # the parked state, then approve on the APR comment by marker (not by number).
+    harness.wait_for(
+        lambda: "spec-change:status:awaiting_approval" in labels_of(boss, sprint2_request),
+        "sprint-2 request parked awaiting approval",
+    )
+    approve_apr(harness, boss, sprint2_request, "sprint-2 request")
     harness.wait_for(
         lambda: "spec-change:status:done" in labels_of(boss, sprint2_request),
         "sprint-2 request done",

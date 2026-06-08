@@ -66,9 +66,13 @@ If recon found agent-rules files:
 
 If no agent-rules found, skip; the runtime supplies defaults.
 
-## 4. Produce the spec (`<specseed_dir>/spec/`)
+## 4. Produce the spec (staged)
 
-Same artifacts and order as `adapt.md` cold start, sourced from code + imported docs:
+Read live `spec/` (usually empty here) for context; write every doc into the staging
+tree `<specseed_dir>/storage/spec-change/<id>/spec/<same relative path>`
+(`spec_change_spec_dir(id)`), never to live `spec/`. The runtime promotes the staged
+docs into live `spec/` on approval. Same artifacts and order as `adapt.md` cold start,
+sourced from code + imported docs:
 
 - `vision.md` from README / the request post / inferred purpose.
 - `*-srs.md` reqs reverse-engineered from actual behavior (what the code does becomes
@@ -148,13 +152,14 @@ is the source of truth from now on. Never set up ongoing sync.
 
 ## Finish
 
-Per the protocol: `plan.json` (with `plan_summary` + `apr`) -> `apply.py` ->
-`enqueue_spec_change_propose(...)` -> stop. If you planned any remaining-work issue,
-write a `plan_summary` summarizing the breakdown (overall + every epic/ticket/issue
-title with a one-line blurb, plus the risk picture); the runtime posts it + the
-`APR-NNNN` request and parks the request `spec-change:status:awaiting_approval`. Nothing
-is created until a human approves; on approval `apply.py` creates the posts. Already-built
-`:status:done` posts (mapped from existing code) carry no new work — if the run only
-maps existing code and settles docs with nothing to create, it still proposes (the
-approval is the settle). Use async clarification for any material behavior you could not
-determine from the code.
+Per the protocol: stage the spec, write `plan.json` (with `plan_summary` + `apr`) +
+`apply.py`, then stop. The runtime gates it. Write a `plan_summary` summarizing the
+breakdown (overall + every epic/ticket/issue title with a one-line blurb, plus the risk
+picture); the runtime posts it + the `APR-NNNN` request and parks the request
+`spec-change:status:awaiting_approval`. Nothing is created or promoted until a human
+approves; on approval the runtime promotes the staged spec into live `spec/` and runs
+`apply.py`, which creates the posts. Already-built `:status:done` posts (mapped from
+existing code) carry no new work — a run that only maps existing code and stages docs
+with nothing to create still gates as a proposal (the staged spec is enough; the approval
+is the settle). Use async clarification for any material behavior you could not determine
+from the code.

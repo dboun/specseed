@@ -95,15 +95,17 @@ Record the full decision:
 - `sprint_shift` describing what moved from current to next sprint
 
 If clarification is needed instead, `plan.json` should contain only the clarifying
-comment(s) + the `spec-change:status:awaiting_input` label, enqueued as a **direct
-apply** (`enqueue_spec_change_run`).
+comment(s) + the `spec-change:status:awaiting_input` label (touching only the request
+post). The runtime sees a request-post-only run and applies it straight away (no
+approval).
 
 ## Finish
 
-Per the protocol: `plan.json` (with `plan_summary` + `apr`) -> `apply.py` ->
-`enqueue_spec_change_propose(...)` -> stop. If the run plans any work, the runtime
-posts the `plan_summary` + `APR-NNNN` and parks the request
-`spec-change:status:awaiting_approval`; `apply.py` creates the posts only on approval.
+Per the protocol: write `plan.json` (with `plan_summary` + `apr`) + `apply.py`, then
+stop. The runtime gates it: a run that plans any work is a proposal, so it posts the
+`plan_summary` + `APR-NNNN` and parks the request `spec-change:status:awaiting_approval`;
+`apply.py` creates the posts only on approval. (Inject stages no spec; the gate trips on
+the `creates` in `plan.json`.)
 
 ## Boundary
 

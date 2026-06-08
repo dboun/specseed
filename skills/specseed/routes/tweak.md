@@ -18,10 +18,12 @@ follow `routes/adapt.md` for this request. Note the bump in `plan.json`.
 
 1. **Locate.** From the request post, find the one spec file (or the one work
    post) to touch. If ambiguous which, use async clarification.
-2. **Edit.** Apply the change in place under `<specseed_dir>/spec/`:
-   - SRS req add/change -> edit the table row; regenerate `reqs.json`.
-   - priority / wording change -> edit in place, same id.
-   - typo in `vision.md` / prose -> fix; re-check the em-dash ban.
+2. **Edit (staged).** Read the live doc for context, write the changed copy into the
+   staging tree `<specseed_dir>/storage/spec-change/<id>/spec/<same relative path>`
+   (`spec_change_spec_dir(id)`); never write to live `spec/`:
+   - SRS req add/change -> edit the table row; regenerate `reqs.json` (staged too).
+   - priority / wording change -> edit the staged copy, same id.
+   - typo in `vision.md` / prose -> fix in the staged copy; re-check the em-dash ban.
 3. **One work post, maybe.** The common pairing is "add this req AND a ticket for
    it". That stays a tweak: one `creates` (ticket at `:status:todo`,
    `satisfies_reqs` the new req) or one label/comment change in `plan.json`. A
@@ -29,11 +31,13 @@ follow `routes/adapt.md` for this request. Note the bump in `plan.json`.
    is an **issue** (claimable), it is planned `:status:todo` (with its `type:`
    label) and the run **proposes** with an `APR-NNNN` like every work-creating route
    (plan-first: nothing is created until approval).
-4. **Finish.** If the tweak plans a new issue, write `plan_summary` + `apr` and
-   `enqueue_spec_change_propose(...)` -> stop (the runtime creates it on approval).
-   Otherwise it is a **direct apply** (`enqueue_spec_change_run`): a label/comment
-   change, or a doc-only fix where `plan.json` just moves the request post to `done`
-   (a label swap + close), so the request closes out.
+4. **Finish.** A tweak that plans an issue OR edits the spec (even a doc-only fix, which
+   now STAGES the change) is a **proposal**: write the staged spec + `plan.json` (with
+   `plan_summary` + `apr`) + `apply.py`, then stop. The runtime gates it: posts the
+   summary + `APR-NNNN`, parks `awaiting_approval`, and on approval promotes the spec and
+   runs `apply.py`. The ONLY direct (ungated) path is a **clarification round** that
+   touches only the request post (a comment + `awaiting_input`); the runtime runs that
+   straight away. There is no "label swap + close" direct path any more.
 
 ## Escalate to adapt when
 

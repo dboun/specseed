@@ -828,6 +828,13 @@ class SpecChangeRequestSettleTest(_Base):
         (self.root / "spec").mkdir(parents=True, exist_ok=True)
         (self.root / "spec" / name).write_text(text, encoding="utf-8")
 
+    def _stage_doc(self, ctx, rid, rel, text="# staged SRS\n"):
+        from specseed_runtime.scheduling.spec_change import spec_change_spec_dir
+        dest = spec_change_spec_dir(rid, ctx.storage) / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(text, encoding="utf-8")
+        return dest
+
     def test_approval_settles_docs_and_finalizes(self) -> None:
         ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
         rid, entity = self._request_entity()
@@ -905,8 +912,32 @@ class SpecChangeRequestSettleTest(_Base):
         ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
         rid, entity = self._request_entity()
         detail = advance.resolve_spec_change_request(ctx, entity, _SR2(approved_by=["alice"]))
-        self.assertIn("0 docs", detail)
+        self.assertIn("settled 0", detail)
         self.assertIn("spec-change:status:done", self._remote_labels(rid))
+
+    def test_approval_promotes_staged_spec_into_live_tree(self) -> None:
+        # Plan-first staging: the worker wrote the doc into the request's staging dir,
+        # NOT live spec/. Approval is what copies it into the live tree, then settles it.
+        ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
+        rid, entity = self._request_entity()
+        self._stage_doc(ctx, rid, "api-srs.md", text="---\ncomponent: api\n---\n\n# new SRS\n")
+        self._write_plan(ctx, rid, ["spec/api-srs.md"])
+        live = self.root / "spec" / "api-srs.md"
+        self.assertFalse(live.exists())  # nothing in live spec/ before approval
+        detail = advance.resolve_spec_change_request(ctx, entity, _SR2(approved_by=["alice"]))
+        self.assertIn("promoted 1", detail)
+        self.assertTrue(live.exists())  # promoted on approval
+        body = live.read_text(encoding="utf-8")
+        self.assertIn("# new SRS", body)
+        self.assertIn("settled: true", body)  # promoted THEN settled
+
+    def test_rejection_does_not_promote_staged_spec(self) -> None:
+        ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
+        rid, entity = self._request_entity()
+        self._stage_doc(ctx, rid, "api-srs.md")
+        self._write_plan(ctx, rid, ["spec/api-srs.md"])
+        advance.resolve_spec_change_request(ctx, entity, _SR2(rejected_by=["alice"]))
+        self.assertFalse((self.root / "spec" / "api-srs.md").exists())  # never promoted
 
     def test_dispatch_resolves_request_without_agent(self) -> None:
         # An approve comment on the request must settle + finalize deterministically,

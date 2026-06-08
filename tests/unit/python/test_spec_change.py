@@ -21,6 +21,8 @@ from specseed_runtime.scheduling.spec_change import (
     enqueue_spec_change_run,
     spec_change_dir,
     spec_change_root,
+    spec_change_spec_dir,
+    staged_spec_files,
 )
 from specseed_runtime.tracking.resolve_remote import (
     resolve_local,
@@ -36,6 +38,23 @@ class SpecChangePathsTest(unittest.TestCase):
             root = spec_change_root(storage)
             self.assertEqual(root, Path(storage) / "spec-change")
             self.assertEqual(spec_change_dir(42, storage), root / "42")
+
+    def test_spec_change_spec_dir_mirrors_live_spec_under_request(self) -> None:
+        with tempfile.TemporaryDirectory() as storage:
+            self.assertEqual(
+                spec_change_spec_dir(42, storage),
+                Path(storage) / "spec-change" / "42" / "spec",
+            )
+
+    def test_staged_spec_files_lists_files_recursively(self) -> None:
+        with tempfile.TemporaryDirectory() as storage:
+            self.assertEqual(staged_spec_files(7, storage), [])  # nothing staged
+            staged = spec_change_spec_dir(7, storage)
+            (staged / "components").mkdir(parents=True)
+            (staged / "sad.md").write_text("# sad\n", encoding="utf-8")
+            (staged / "components" / "api-srs.md").write_text("# srs\n", encoding="utf-8")
+            found = {p.relative_to(staged).as_posix() for p in staged_spec_files(7, storage)}
+            self.assertEqual(found, {"sad.md", "components/api-srs.md"})
 
 
 class EnqueueSpecChangeTest(unittest.TestCase):

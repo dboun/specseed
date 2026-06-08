@@ -138,13 +138,15 @@ not opt-out.)
 
 The triggering post carries `spec-change:<route>` plus a
 `spec-change:status:<state>` label: `open, awaiting_input, awaiting_approval,
-approved, done, rejected`. The runtime drives the status on a **proposal**: a run
-that plans work or settles docs enqueues `enqueue_spec_change_propose`, and the
-runtime moves the request to `awaiting_approval` (posting the plan summary +
-`APR-NNNN`) and, on approval, to `done` (running the deferred `apply.py` that
-creates the posts). You set a status yourself only for a clarification question
-(a direct apply): `awaiting_input`, never `awaiting_approval`. Record intent in
-`plan.json`. Replies to the request go on this post as comments.
+approved, done, rejected`. The worker never enqueues; the runtime owns the status. It
+reads `plan.json` + the staging dir after the run: a run that stages spec or plans
+work / settles docs / touches any post but the request is a **proposal**, so the runtime
+moves the request to `awaiting_approval` (posting the plan summary + `APR-NNNN`) and, on
+approval, to `done` (promoting the staged spec, then running the deferred `apply.py` that
+creates the posts). You set a status yourself only for a clarification round (the one
+ungated run, touching only the request post): `awaiting_input`, never
+`awaiting_approval`. Record intent in `plan.json`. Replies to the request go on this post
+as comments.
 
 ## Reactions + the approval gate
 

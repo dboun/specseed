@@ -72,6 +72,32 @@ def spec_change_dir(request_id: str, storage: Optional[str | Path] = None) -> Pa
     return spec_change_root(storage) / str(request_id)
 
 
+def spec_change_spec_dir(request_id: str, storage: Optional[str | Path] = None) -> Path:
+    """``storage/spec-change/<request_id>/spec`` - the STAGED spec for a request.
+
+    Plan-first: a spec-change worker never edits live ``<specseed_dir>/spec/`` in
+    place. It writes each created/edited doc here, mirroring the same relative path
+    it has under ``spec/`` (so ``spec/sad.md`` stages at ``.../spec/sad.md``). The
+    runtime promotes these into the live tree ONLY on approval. An unapproved or
+    buggy run therefore cannot corrupt the real spec.
+    """
+    return spec_change_dir(request_id, storage) / "spec"
+
+
+def staged_spec_files(
+    request_id: str, storage: Optional[str | Path] = None
+) -> list[Path]:
+    """Every staged spec file for a request (recursive), or ``[]`` if none.
+
+    Used by the runtime to (a) classify a run as work/spec-touching - so it must
+    be gated - and (b) promote the files into live ``spec/`` on approval.
+    """
+    staged = spec_change_spec_dir(request_id, storage)
+    if not staged.is_dir():
+        return []
+    return sorted(p for p in staged.rglob("*") if p.is_file())
+
+
 def enqueue_spec_change_run(
     script_path: str | Path,
     request_id: Optional[str | int] = None,

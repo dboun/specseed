@@ -20,21 +20,22 @@ be empty (greenfield) — fine. Mint a local slug for the request id.
 (`question-protocol.md`), wait for the reply in the conversation, continue. The
 async-comment path does not apply.
 
-**Outputs** are the same artifacts laid out like an installed tree, so the human can
-drop them into a repo or resume in Claude Code:
+**Outputs** are the same three artifacts laid out like an installed tree, so the human
+can drop them into a repo or resume in Claude Code. Spec edits are STAGED (never written
+to live `spec/`), same as runner mode:
 
 ```
-spec/...                              # spec edits (vision/SRS/SAD/SDD/adr.csv/reqs.json)
+storage/spec-change/<id>/spec/...     # STAGED spec edits, mirroring the live spec/ tree
 storage/spec-change/<id>/plan.json    # the work-breakdown delta (incl. settle_docs)
 storage/spec-change/<id>/apply.py     # the reconcile script (inert here)
 ```
 
 Produce `apply.py` exactly as the protocol's header says; it does not run here (no
 remote, no executor) but ships so the human can run it later under a real runner. Keep
-the approval gate intact in `plan.json` (issues `:status:awaiting_approval`, the
-`APR-NNNN` intent recorded) so the gate holds when wired in. Do not "approve" in chat.
+the approval gate intact in `plan.json` (issues planned `:status:todo`, the `APR-NNNN`
+intent recorded) so the runtime gates it when wired in. Do not "approve" in chat.
 
 **Handoff: one zip.** Bundle the working dir into a single `.zip` and offer it for
 download. Don't paste spec / plan / script contents into the chat — the file is the
-deliverable; the chat gets a short summary + the download. No enqueue, no `apply.py`
-run, no git.
+deliverable; the chat gets a short summary + the download. Nothing to enqueue anyway (the
+no-enqueue rule is universal), no `apply.py` run, no git.

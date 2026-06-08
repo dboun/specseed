@@ -120,17 +120,24 @@ tests/integration/python/            # opt-in integration tests (marker: integra
   `executing/inflight.py` ledgers child pids; startup kills orphans + requeues stranded `in_progress`.
 - **plan-first approval / settle-on-approval** (`executing/dispatch.propose_spec_change` +
   `advance.resolve_spec_change_request`, wired in `dispatch._run_work`) - NOTHING is created on the tracker
-  before approval. A work-creating / spec-settling run enqueues `propose_spec_change` (`scheduling/spec_change`);
+  before approval, and the GATE DECISION IS CODE-OWNED, not the agent's (0.17.0). The worker writes
+  `plan.json` + `apply.py` + STAGED spec, then STOPS - it never enqueues and never picks whether the run
+  gates. After the run `dispatch._classify_spec_change`/`_enqueue_spec_change_followup` read the OUTPUT and
+  decide: a run that creates work or touches spec (staged spec file, `plan.json` creates/settle_docs/closes/
+  deletes, or an edit/label/comment aimed at another post) PROPOSES; only a pure clarification round (touches
+  just the request post) applies directly. A proposal enqueues `propose_spec_change` (`scheduling/spec_change`):
   the runtime posts `plan.json.plan_summary` + the `APR-NNNN` request and parks the REQUEST
-  `spec-change:status:awaiting_approval` (creates no posts). On 👍/`approve` the runtime stamps
-  `settled: true`+`settled_at` on `plan.json.settle_docs`, moves the request to `done`, and ENQUEUES the worker's
-  deferred `apply.py` (`run_spec_change_script`, tagged `close_request`) which now creates the
-  epics/tickets/issues (issues born `todo`); the RUNTIME closes the request in code after that apply
-  succeeds (`dispatch._close_finalized_request`), NOT the agent's `plan.json.closes` (that list is only
+  `spec-change:status:awaiting_approval` (creates no posts, live spec untouched). On 👍/`approve` the runtime
+  PROMOTES the staged spec (`advance._promote_staged_spec`: copies `storage/spec-change/<id>/spec/` into live
+  `spec/`) THEN stamps `settled: true`+`settled_at` on `plan.json.settle_docs`, moves the request to `done`,
+  and ENQUEUES the worker's deferred `apply.py` (`run_spec_change_script`, tagged `close_request`) which now
+  creates the epics/tickets/issues (issues born `todo`); the RUNTIME closes the request in code after that
+  apply succeeds (`dispatch._close_finalized_request`), NOT the agent's `plan.json.closes` (that list is only
   for OTHER posts a change retires). A spec-only run with nothing to apply closes in resolve.
-  Reject -> closed, nothing created. Deterministic, no agent. The skill never writes `settled`; adapt is the only
-  route that reopens a settled doc. A mechanical run (clarification round, sprint label shuffle) skips propose and
-  enqueues `run_spec_change_script` directly.
+  Reject -> closed, nothing promoted or created. Deterministic, no agent. The skill never writes `settled`;
+  adapt is the only route that reopens a settled doc. **Spec is STAGED, never edited live** - an unapproved or
+  buggy run can't corrupt `spec/` (matters now that spec is out of git). Helpers in `scheduling/spec_change.py`:
+  `spec_change_spec_dir`/`staged_spec_files`.
 - **merge gate** (`advance.WorkTransition{prepare,merge}` + `_settle_or_merge`/`open_merge_gate_ready`, run by
     `dispatch._run_gate_action`/`_prepare_and_gate`/`_execute_merge`) - advance owns remote STATE + decides whether a
     finished issue READIES/merges NOW; dispatch owns git + runs it. An issue is NOT done until its code is on primary,
