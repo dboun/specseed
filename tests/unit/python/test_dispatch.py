@@ -807,7 +807,7 @@ class RuntimeGitLifecycleTest(DispatchTestBase):
         self.assertEqual(_git_ops.current_branch(self.root), "main")
         self.assertFalse((self.root / "new.py").exists())
         # the issue branch exists and carries the committed file
-        branch = "feat-0001-do-the-thing"
+        branch = "feat-0001-do-the-thing-{0}".format(eid)
         self.assertEqual(
             self._git("rev-parse", "--verify", f"refs/heads/{branch}").returncode, 0
         )
@@ -837,7 +837,7 @@ class RuntimeGitLifecycleTest(DispatchTestBase):
         self.assertIn("issue:status:awaiting_approval", labels)
         # the work branch still exists, intact for the approved merge (or a manual one)
         self.assertEqual(
-            self._git("rev-parse", "--verify", "refs/heads/feat-0002-thing").returncode, 0
+            self._git("rev-parse", "--verify", "refs/heads/feat-0002-thing-{0}".format(eid)).returncode, 0
         )
 
     def test_merge_enabled_merges_branch_into_primary(self) -> None:
@@ -964,15 +964,17 @@ class RuntimeGitLifecycleTest(DispatchTestBase):
             self.ctx,
             {"action": "handle_label_added", "post_id": str(second), "payload": {"label": "status:todo"}},
         )
-        # two distinct branches exist
-        self.assertEqual(self._git("rev-parse", "--verify", "refs/heads/feat-0001-first").returncode, 0)
-        self.assertEqual(self._git("rev-parse", "--verify", "refs/heads/feat-0002-second").returncode, 0)
+        # two distinct branches exist (post id folded on the end)
+        first_branch = "feat-0001-first-{0}".format(first)
+        second_branch = "feat-0002-second-{0}".format(second)
+        self.assertEqual(self._git("rev-parse", "--verify", "refs/heads/" + first_branch).returncode, 0)
+        self.assertEqual(self._git("rev-parse", "--verify", "refs/heads/" + second_branch).returncode, 0)
         # FEAT-0001's branch carries only its own file
-        self._git("checkout", "feat-0001-first")
+        self._git("checkout", first_branch)
         self.assertTrue((self.root / "a.py").exists())
         self.assertFalse((self.root / "b.py").exists())
         # FEAT-0002 was cut from primary, NOT from the sibling: it has b.py and NOT a.py
-        self._git("checkout", "feat-0002-second")
+        self._git("checkout", second_branch)
         self.assertTrue((self.root / "b.py").exists())
         self.assertFalse((self.root / "a.py").exists())
 
@@ -1004,9 +1006,8 @@ class RuntimeGitLifecycleTest(DispatchTestBase):
         )
         # dep done -> gate passed, agent ran (not held)
         self.assertFalse(out.requeue)
-        self.assertEqual(len(self.runner.calls) if hasattr(self, "runner") else 1, 1) if False else None
         # the dependent's branch carries the dep's merged scaffold AND the new work
-        self._git("checkout", "feat-0001-build-on-scaffold")
+        self._git("checkout", "feat-0001-build-on-scaffold-{0}".format(feat))
         self.assertTrue((self.root / "scaffold.py").exists())  # built ON the dep, not recreated
         self.assertTrue((self.root / "feat.py").exists())
 
@@ -1021,7 +1022,11 @@ class RuntimeGitLifecycleTest(DispatchTestBase):
         self._commit("-m", "base")
         a = self._seed_both("FEAT-0006 A", ["tier:issue", "status:awaiting_approval"])
         b = self._seed_both("FEAT-0007 B", ["tier:issue", "status:awaiting_approval"])
-        for branch, fn in (("feat-0006-a", "a.txt"), ("feat-0007-b", "b.txt")):
+        # branch names must match branch_name() (post id folded on the end) so the
+        # reprepare sweep, which derives B's branch from its entity, finds it.
+        branch_a = "feat-0006-a-{0}".format(a)
+        branch_b = "feat-0007-b-{0}".format(b)
+        for branch, fn in ((branch_a, "a.txt"), (branch_b, "b.txt")):
             self._git("checkout", "-b", branch)
             (self.root / fn).write_text("x\n", encoding="utf-8")
             self._git("add", "-A")
@@ -1035,7 +1040,7 @@ class RuntimeGitLifecycleTest(DispatchTestBase):
         self.remote.add_entry_comment(b, gate)
 
         entity_a, _ = load_entity(self.ctx, str(a))
-        note = dispatch_mod._execute_merge(self.ctx, entity_a, "feat-0006-a", {"task_id": None})
+        note = dispatch_mod._execute_merge(self.ctx, entity_a, branch_a, {"task_id": None})
         self.assertIn("merged", note)
         # B got a SECOND gate comment (re-readied) -> its earlier approval is invalidated.
         gate_comments = [

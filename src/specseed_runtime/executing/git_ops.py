@@ -54,22 +54,24 @@ def _slug(text: str) -> str:
 
 
 def branch_name(entity: Any) -> str:
-    """Deterministic, stable per-issue branch name: ``<human-id>-<slug>``.
+    """Deterministic, stable per-issue branch name: ``<human-id>-<slug>-<post_id>``.
 
-    Parses a leading human id (``FEAT-0001``) out of the title and slugs the rest;
-    falls back to ``issue-<post_id>`` when no human id is present. Stable across
-    runs so an issue bounced back from review reuses its branch.
+    Parses a leading human id (``FEAT-0001``) out of the title and slugs the rest,
+    then folds the post id onto the END so two posts that share a human id (or carry
+    no human id at all) can NEVER collide onto one branch - the post id is unique per
+    entity. Stable across runs so an issue bounced back from review reuses its branch.
     """
     title = str(getattr(entity, "title", "") or "")
-    post_id = str(getattr(entity, "post_id", "") or "").strip()
+    post_id = _slug(str(getattr(entity, "post_id", "") or ""))
     m = _HUMAN_ID_RE.match(title)
     if m:
-        human = m.group(1).lower()
+        head = m.group(1).lower()
         slug = _slug(m.group(2))
+        head = f"{head}-{slug}" if slug else head
     else:
-        human = f"issue-{post_id}" if post_id else "issue"
         slug = _slug(title)
-    name = f"{human}-{slug}" if slug else human
+        head = f"issue-{slug}" if slug else "issue"
+    name = f"{head}-{post_id}" if post_id else head
     return name.strip("-") or (f"issue-{post_id}" if post_id else "specseed-work")
 
 

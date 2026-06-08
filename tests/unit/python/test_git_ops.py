@@ -25,19 +25,28 @@ class _Entity:
 
 class BranchNameTest(unittest.TestCase):
     def test_human_id_and_slug(self) -> None:
+        # post id folded onto the end for uniqueness (default _Entity post_id="7").
         self.assertEqual(
             git_ops.branch_name(_Entity(title="FEAT-0001 Implement the CLI entry point")),
-            "feat-0001-implement-the-cli-entry-point",
+            "feat-0001-implement-the-cli-entry-point-7",
         )
 
-    def test_falls_back_to_post_id_without_human_id(self) -> None:
+    def test_falls_back_to_slug_and_post_id_without_human_id(self) -> None:
         self.assertEqual(
             git_ops.branch_name(_Entity(post_id="42", title="just a title")),
-            "issue-42-just-a-title",
+            "issue-just-a-title-42",
         )
 
     def test_empty_title_uses_post_id(self) -> None:
         self.assertEqual(git_ops.branch_name(_Entity(post_id="9", title="")), "issue-9")
+
+    def test_same_human_id_distinct_posts_dont_collide(self) -> None:
+        # Two posts carrying the SAME human id must map to DIFFERENT branches.
+        a = git_ops.branch_name(_Entity(post_id="7", title="FEAT-0001 Do a thing"))
+        b = git_ops.branch_name(_Entity(post_id="8", title="FEAT-0001 Do a thing"))
+        self.assertNotEqual(a, b)
+        self.assertEqual(a, "feat-0001-do-a-thing-7")
+        self.assertEqual(b, "feat-0001-do-a-thing-8")
 
 
 @unittest.skipUnless(_HAS_GIT, "git not available")
