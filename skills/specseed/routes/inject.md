@@ -101,6 +101,11 @@ approval).
 
 ## Finish
 
+**Before stopping, validate the dependency graph:** run
+`scripts/dependencies_validate.py <plan.json>`. Fix every error (dangling / malformed /
+cycle) and resolve every warning (a tests/QA issue with no `Depends on:` — add the dep or
+confirm it stands alone). See **Issue dependencies** in `work-breakdown.md`.
+
 Per the protocol: write `plan.json` (with `plan_summary` + `apr`) + `apply.py`, then
 stop. The runtime gates it: a run that plans any work is a proposal, so it posts the
 `plan_summary` + `APR-NNNN` and parks the request `spec-change:status:awaiting_approval`;

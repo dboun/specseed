@@ -74,6 +74,9 @@ or the local tracker DB. Use them instead of hand-computing what they own:
 - `requirements_analyze.py` — cycle / orphan / dangling-ref detection over `reqs.json`.
 - `critical_path.py` — longest dependency chain over the ticket delta in `plan.json`.
 - `sprint_pack.py` — cohesion-aware, dependency-respecting sprint packing of that delta.
+- `dependencies_validate.py` — ISSUE-level dep check over `plan.json.creates`: dangling /
+  malformed / cyclic `Depends on:` links fail; a tests/QA issue with no dep warns. The
+  runtime gate enforces only declared deps, so run this before emitting (work-breakdown.md).
 
 They are helpers, not the contract: the two outputs are still the spec edits +
 `apply.py`. Work-item type and difficulty are carried as `type:<kind>` and

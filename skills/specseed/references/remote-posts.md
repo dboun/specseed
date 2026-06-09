@@ -71,10 +71,19 @@ parent ticket and any dependencies. Plain markdown:
 ```
 Epic: #12
 Issues: #41, #42, #43
+Depends on: #40
 ```
 
 `satisfies_reqs` (ticket → SRS req ids) and dependencies are written as body
 text too. Posts are flat; the structure is the links.
+
+**`Depends on:` is the only thing the runtime gate reads to hold a dependent.** Declare
+every issue that needs another issue's code/interface/output (tests -> the code they test,
+a consumer -> its producer); an undeclared dep is a race, not a soft order. The `#` is
+mandatory. For an item created in the same plan use the title placeholder
+`Depends on: #{id:<exact title>}` (apply.py substitutes the real id); for an existing post
+use `#NN`. Validate with `scripts/dependencies_validate.py` (see `work-breakdown.md` ->
+Issue dependencies).
 
 ## Dashboards (permanent management posts)
 

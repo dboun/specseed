@@ -28,6 +28,7 @@ reqgen = _load("requirements_generate_json")
 reqan = _load("requirements_analyze")
 cp = _load("critical_path")
 sp = _load("sprint_pack")
+dv = _load("dependencies_validate")
 
 
 _SRS = """# API SRS
@@ -167,6 +168,123 @@ class SprintPackTest(unittest.TestCase):
     def test_single_oversized_ticket_gets_its_own_sprint(self):
         tickets = {"A": {"depends_on": [], "effort": 999}}
         self.assertEqual(sp.pack(tickets, budget=10), {"sprints": [["A"]]})
+
+
+class DependenciesValidateTest(unittest.TestCase):
+    """Validate the issue dependency graph in plan.json - dangling/malformed/cyclic
+    deps fail; a consumer-shaped issue with no dep warns. Mirrors the real plan.json
+    shape: deps live in body text as `Depends on: #{id:<title>}` placeholders."""
+
+    def _issue(self, title, body="", labels=None):
+        return {
+            "tier": "issue",
+            "title": title,
+            "labels": labels or ["issue", "issue:status:todo"],
+            "body": body,
+        }
+
+    def _ticket(self, title):
+        return {"tier": "ticket", "title": title, "labels": ["ticket", "ticket:status:todo"], "body": ""}
+
+    def test_clean_plan_ok(self):
+        plan = {"creates": [
+            self._ticket("TICKET-001 Storage"),
+            self._issue("FEAT-001 Write storage.py", "Parent: #{id:TICKET-001 Storage}\n"),
+            self._issue(
+                "FEAT-002 Write tests for storage.py",
+                "Parent: #{id:TICKET-001 Storage}\nDepends on: #{id:FEAT-001 Write storage.py}\n",
+            ),
+        ]}
+        r = dv.validate(plan)
+        self.assertTrue(r["ok"], r["errors"])
+        self.assertEqual(r["errors"], [])
+        self.assertEqual(r["warnings"], [])  # tests issue HAS a dep -> no nag
+        self.assertEqual(r["stats"]["n_dep_edges"], 1)
+        self.assertLess(
+            r["topo_order"].index("FEAT-001 Write storage.py"),
+            r["topo_order"].index("FEAT-002 Write tests for storage.py"),
+        )
+
+    def test_dangling_placeholder_is_error(self):
+        plan = {"creates": [
+            self._issue("FEAT-002 Tests", "Depends on: #{id:FEAT-001 Nope}\n"),
+        ]}
+        r = dv.validate(plan)
+        self.assertFalse(r["ok"])
+        self.assertTrue(any("no created item has that title" in e for e in r["errors"]))
+
+    def test_bare_placeholder_missing_hash_is_error(self):
+        plan = {"creates": [
+            self._issue("A", "Depends on: {id:B}\n"),
+            self._issue("B"),
+        ]}
+        r = dv.validate(plan)
+        self.assertFalse(r["ok"])
+        self.assertTrue(any("leading # is mandatory" in e for e in r["errors"]))
+
+    def test_empty_depends_line_is_error(self):
+        plan = {"creates": [self._issue("A", "Depends on:\n")]}
+        r = dv.validate(plan)
+        self.assertFalse(r["ok"])
+        self.assertTrue(any("no #ref" in e for e in r["errors"]))
+
+    def test_cycle_is_error(self):
+        plan = {"creates": [
+            self._issue("A", "Depends on: #{id:B}\n"),
+            self._issue("B", "Depends on: #{id:A}\n"),
+        ]}
+        r = dv.validate(plan)
+        self.assertFalse(r["ok"])
+        self.assertTrue(any("cycle" in e for e in r["errors"]))
+
+    def test_literal_dep_to_existing_post_ok(self):
+        # A real #NN points at an already-existing post (not in this plan): valid, no
+        # intra-plan edge, no dangling.
+        plan = {"creates": [self._issue("FEAT-003 Build on shipped code", "Depends on: #12\n")]}
+        r = dv.validate(plan)
+        self.assertTrue(r["ok"], r["errors"])
+        self.assertEqual(r["stats"]["n_dep_edges"], 0)
+
+    def test_tests_issue_without_dep_warns_but_passes(self):
+        # The reported bug: a "tests for X" issue with no Depends on. Warn, do not fail.
+        plan = {"creates": [
+            self._issue("FEAT-001 Write storage.py"),
+            self._issue("FEAT-002 Write tests for storage.py", "Parent: #{id:TICKET-001 X}\n"),
+        ]}
+        r = dv.validate(plan)
+        self.assertTrue(r["ok"])  # warning only
+        self.assertTrue(any("reads as a tests issue" in w for w in r["warnings"]))
+
+    def test_qa_issue_without_dep_warns(self):
+        plan = {"creates": [
+            self._issue("VERIFY-001 Acceptance pass", labels=["issue", "issue:status:todo", "type:qa"]),
+        ]}
+        r = dv.validate(plan)
+        self.assertTrue(r["ok"])
+        self.assertTrue(any("reads as a QA issue" in w for w in r["warnings"]))
+
+    def test_placeholder_not_miscounted_as_literal_id(self):
+        # `#{id:FEAT-001 ...}` must resolve as a placeholder, never leak a literal id.
+        plan = {"creates": [
+            self._issue("FEAT-001 Impl"),
+            self._issue("FEAT-002 Tests", "Depends on: #{id:FEAT-001 Impl}\n"),
+        ]}
+        deps = dv._parse_deps("Depends on: #{id:FEAT-001 Impl}\n")
+        self.assertEqual(deps["placeholders"], ["FEAT-001 Impl"])
+        self.assertEqual(deps["literals"], [])
+        self.assertTrue(dv.validate(plan)["ok"])
+
+    def test_main_exit_codes_and_file_input(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        good = Path(tmp.name) / "good.json"
+        good.write_text(json.dumps({"creates": [
+            self._issue("A"), self._issue("B", "Depends on: #{id:A}\n"),
+        ]}), encoding="utf-8")
+        self.assertEqual(dv.main(["prog", str(good)]), 0)
+        bad = Path(tmp.name) / "bad.json"
+        bad.write_text(json.dumps({"creates": [self._issue("B", "Depends on: #{id:missing}\n")]}), encoding="utf-8")
+        self.assertEqual(dv.main(["prog", str(bad)]), 1)
 
 
 if __name__ == "__main__":

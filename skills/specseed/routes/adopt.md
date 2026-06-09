@@ -152,6 +152,11 @@ is the source of truth from now on. Never set up ongoing sync.
 
 ## Finish
 
+**Before stopping, validate the dependency graph:** run
+`scripts/dependencies_validate.py <plan.json>`. Fix every error (dangling / malformed /
+cycle) and resolve every warning (a tests/QA issue with no `Depends on:` — add the dep or
+confirm it stands alone). See **Issue dependencies** in `work-breakdown.md`.
+
 Per the protocol: stage the spec, write `plan.json` (with `plan_summary` + `apr`) +
 `apply.py`, then stop. The runtime gates it. Write a `plan_summary` summarizing the
 breakdown (overall + every epic/ticket/issue title with a one-line blurb, plus the risk

@@ -71,7 +71,10 @@ a valid slice. Slices may skip layers; the rule is observability.
 4. Set issue artifacts (code paths, tests, migrations) and plan notes; set the
    `type:` label and the `difficulty:` label.
 5. Insert integration issues at merge points.
-6. Body-link both directions (epic <-> tickets, ticket <-> issues, depends-on).
+6. Body-link both directions (epic <-> tickets, ticket <-> issues, depends-on). Declare
+   EVERY issue->issue dependency per **Issue dependencies** (below): a tests/consumer issue
+   that needs another issue's code must carry `Depends on:` — the runtime enforces only
+   what you write. Then run `scripts/dependencies_validate.py <plan.json>` and clear it.
 7. **Run the risk-detection & gating pass** (below) before sprint planning.
 8. Label every post: tier + status. Epics/tickets AND **issues at `:status:todo`**
    in `plan.json.creates` — but nothing is created until the plan is approved
@@ -106,6 +109,44 @@ existing repo whose layout is already set (adopt route). Then fold the minimal s
 (a couple of files, the `.gitignore`) into the first feature issue instead — do not
 manufacture a ceremonial scaffold issue. Naming is a soft convention (a clear title,
 optional `-scaffold` suffix), not enforced.
+
+## Issue dependencies (declare them — the runtime only enforces what you write)
+
+Every issue branch is cut fresh from primary, so an issue can only see code that has
+already MERGED. The runtime dependency gate holds an issue until each `Depends on:` it
+declares is `done` (== on primary). But the gate enforces **only the links you write into
+the body** — it cannot infer intent. An undeclared dependency is not a soft dependency; it
+is a race, and the dependent will start too early against code that is not there yet.
+
+**The rule — mandatory, not a judgment call:** if an issue needs another issue's code,
+interface, or output to do its job, it MUST carry `Depends on: #<that issue>`. This is
+NOT about ordering by number or by ticket; it is logical need. The cases that bite most:
+
+- **tests depend on the thing they test.** A "write tests for X" issue depends on the "X"
+  issue. (The classic miss: tests run, X is not merged, the tests have nothing to import.)
+- **a consumer depends on its producer.** Wiring/CLI/integration that imports a module
+  depends on the issue that writes that module; an issue parsing a format depends on the
+  one that defines it.
+- **scaffold foundation** (above) and **QA-last** (below) are just named instances of this
+  same rule.
+
+Cross-ticket need is the same rule, but you usually express it one tier up: if work in
+ticket B needs ticket A's code, give **ticket** B `Depends on: #A` (a ticket reaches
+`done` only when all its issues merge, so this holds every B issue until all of A lands).
+Drop to an issue->issue cross-ticket dep only when one specific issue in B needs one
+specific issue in A and waiting for all of A would stall B needlessly.
+
+Write deps in the body as `Depends on: #{id:<exact title>}` for an item this plan creates
+(the `#` is mandatory; `apply.py` substitutes the real id), or `Depends on: #NN` for an
+already-existing post. See `references/remote-posts.md`.
+
+**Validate before you emit.** Run `scripts/dependencies_validate.py <plan.json>`. It
+fails (exit 1) on a dangling ref, a malformed dep line, or a **cycle** among the created
+issues; resolve a cycle the same way as a requirement cycle (split / extract interface /
+reorder, below). It also WARNS when a tests/QA-shaped issue declares no dep at all — for
+each warning, either add the missing dep or satisfy yourself the issue truly stands alone
+(e.g. it exercises code already on primary). Re-run until errors are clear and every
+warning is accounted for.
 
 ## Critical path (ticket tier, project-level)
 
