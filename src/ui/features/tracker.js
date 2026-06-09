@@ -176,7 +176,10 @@ export function createTracker({ repo, ctx }) {
     return (
       items.map(postCard).join("") +
       `<div class="pager">
-        <button class="btn btn-ghost" data-page="prev" ${state.page === 0 ? "disabled" : ""}>← Prev</button>
+        ${state.page === 0
+          // Looks disabled, but stays clickable: double-click is the radar easter egg.
+          ? `<button class="btn btn-ghost egg-disabled" data-page="prev" data-radar-egg>← Prev</button>`
+          : `<button class="btn btn-ghost" data-page="prev">← Prev</button>`}
         <span class="pager-info">page ${state.page + 1} / ${pages} · ${list.length} posts</span>
         <button class="btn btn-ghost" data-page="next" ${state.page >= pages - 1 ? "disabled" : ""}>Next →</button>
       </div>`
@@ -440,23 +443,24 @@ export function createTracker({ repo, ctx }) {
   }
 
   // -- radar sweep ------------------------------------------------------ #
-  // One clockwise scan across `container`; each target glows the instant the
-  // sweep line crosses its angle (delay = sweep position). Pure CSS animation +
-  // a little geometry, no deps. Self-cleaning, honours reduced-motion.
+  // One clockwise scan across the whole VIEWPORT — a fixed background layer that
+  // sits behind every UI element, so nothing clips it. Each target glows the
+  // instant the sweep line crosses its angle (delay = sweep position). Pure CSS
+  // animation + a little geometry, no deps. Self-cleaning, honours reduced-motion.
   const RADAR_DUR = 2200;
-  function radarSweep(container, targets) {
-    if (!container || !targets.length) return;
+  function radarSweep(targets) {
+    targets = (targets || []).filter(Boolean);
+    if (!targets.length) return;
     if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    container.querySelector(":scope > .radar-sweep")?.remove(); // one sweep at a time
+    document.querySelector(".radar-sweep")?.remove(); // one sweep at a time
     const sweep = document.createElement("div");
     sweep.className = "radar-sweep";
     sweep.style.setProperty("--radar-dur", `${RADAR_DUR}ms`);
-    container.appendChild(sweep);
-    const box = container.getBoundingClientRect();
-    const cx = box.left + box.width / 2;
-    const cy = box.top + box.height / 2;
-    // size the disc to the LARGER of the two sides, so the beam reaches the far edge
-    sweep.style.setProperty("--radar-size", `${Math.round(Math.max(box.width, box.height))}px`);
+    // centre on the viewport; size the disc to the larger viewport side
+    const cx = window.innerWidth / 2;
+    const cy = window.innerHeight / 2;
+    sweep.style.setProperty("--radar-size", `${Math.round(Math.max(window.innerWidth, window.innerHeight))}px`);
+    document.body.appendChild(sweep);
     for (const el of targets) {
       const r = el.getBoundingClientRect();
       // angle clockwise from 12 o'clock to the target's centre
@@ -609,8 +613,9 @@ export function createTracker({ repo, ctx }) {
     }
     const pg = t.closest("[data-page]");
     if (pg) {
-      state.page += pg.dataset.page === "next" ? 1 : -1;
-      if (state.page < 0) state.page = 0;
+      const next = Math.max(0, state.page + (pg.dataset.page === "next" ? 1 : -1));
+      if (next === state.page) return; // no-op (e.g. the egg-able first-page Prev)
+      state.page = next;
       repaintList();
       return;
     }
@@ -775,7 +780,7 @@ export function createTracker({ repo, ctx }) {
           const cards = fresh
             .map((id) => document.querySelector(`.post-card[data-open-post="${id}"]`))
             .filter(Boolean);
-          radarSweep(document.querySelector(".tracker-grid"), cards);
+          radarSweep(cards);
         }
       }
       state.seenPostIds = new Set(state.posts.map((p) => String(p.id)));
@@ -796,7 +801,7 @@ export function createTracker({ repo, ctx }) {
             if (added.length) {
               const host = document.querySelector("[data-drawer]");
               const els = added.map((cid) => host?.querySelector(`[data-comment-id="${cid}"]`)).filter(Boolean);
-              radarSweep(host, els);
+              radarSweep(els);
             }
           }
           state.seenCommentIds = new Set(ids);
@@ -809,16 +814,27 @@ export function createTracker({ repo, ctx }) {
     }
   }
 
+  // Easter egg: double-click the (disabled-looking) first-page "Prev" and the radar
+  // irradiates EVERY visible post card at once. Self-contained document listener so
+  // the shell stays untouched; only live while the Tracker tab is mounted.
+  function handleDblClick(event) {
+    if (!event.target.closest("[data-radar-egg]")) return;
+    event.preventDefault();
+    radarSweep([...document.querySelectorAll(".post-card")]);
+  }
+
   function afterRender() {
     if (!state.external) {
       refreshQueueDot(); // initial paint; the interval keeps it current
       timer = setInterval(autoRefresh, 5000);
+      document.addEventListener("dblclick", handleDblClick);
     }
   }
 
   function dispose() {
     if (timer) clearInterval(timer);
     clearTimeout(searchTimer);
+    document.removeEventListener("dblclick", handleDblClick);
   }
 
   return { load, html, afterRender, handleClick, handleSubmit, handleInput, dispose };

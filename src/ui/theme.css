@@ -59,6 +59,8 @@ a { color: var(--accent-2); }
 }
 .btn:hover { border-color: var(--accent); color: #fff; }
 .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+/* looks exactly like :disabled (and never lights on hover) but stays clickable - the radar easter egg */
+.btn.egg-disabled, .btn.egg-disabled:hover { opacity: 0.4; cursor: not-allowed; border-color: var(--line-2); color: var(--ink); }
 .btn.sm { padding: 5px 10px; font-size: 12px; }
 .btn-primary {
   background: linear-gradient(180deg, var(--accent), #1cc6a6);
@@ -287,9 +289,7 @@ button.chip { cursor: pointer; }
 .post-foot .chip-row { flex: 1; min-width: 0; }
 .reply-count { margin-top: 8px; font-family: var(--mono); font-size: 11px; color: var(--muted); white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; }
 
-.tracker-grid { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); gap: 16px; align-items: start; }
-/* keep content above the radar sweep overlay (z-index:0) */
-.post-list, .drawer-host { position: relative; z-index: 1; }
+.tracker-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); gap: 16px; align-items: start; }
 .post-list { display: flex; flex-direction: column; gap: 10px; }
 .post-card {
   background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
@@ -307,11 +307,10 @@ button.chip { cursor: pointer; }
 .post-meta { color: var(--muted); font-size: 12px; }
 
 /* --- radar sweep: one subtle clockwise scan when a post/comment arrives --- */
-/* overlay sits behind the cards/drawer (z-index:0); the cards carry z-index:1 */
-.drawer { position: relative; z-index: 1; }
+/* a fixed full-viewport background layer behind all UI (the app wrapper is z:1) */
 .radar-sweep {
-  position: absolute; inset: 0; z-index: 0;
-  pointer-events: none; border-radius: 12px; overflow: hidden;
+  position: fixed; inset: 0; z-index: 0;
+  pointer-events: none; overflow: hidden;
   animation: radar-fade var(--radar-dur, 2200ms) ease-in-out forwards;
 }
 /* the rotating wedge: a thin bright leading edge with a short fading tail */
