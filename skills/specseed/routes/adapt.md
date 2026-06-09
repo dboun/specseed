@@ -190,7 +190,8 @@ When the request retires an entire feature, not one req:
 
 **Before stopping, validate the dependency graph:** when this run creates issues, run
 `scripts/dependencies_validate.py <plan.json>`. Fix every error (dangling / malformed /
-cycle) and resolve every warning (a tests/QA issue with no `Depends on:` — add the dep or
+cycle / orphaned post: an issue with no ticket, a ticket with no epic, or a parent ref to
+nothing or the wrong tier) and resolve every warning (a tests/QA issue with no `Depends on:` — add the dep or
 confirm it stands alone). See **Issue dependencies** in `work-breakdown.md`.
 
 Per the protocol: stage the spec, write `plan.json` (with `plan_summary` + `apr`) +

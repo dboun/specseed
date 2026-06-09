@@ -1,11 +1,14 @@
-"""dependencies_validate.py - validate the ISSUE dependency graph in plan.json (stdlib only).
+"""dependencies_validate.py - validate the work-breakdown links in plan.json (stdlib only).
 
 A skill helper, sibling to ``requirements_analyze.py`` but one tier down: it checks the
-``Depends on:`` links the breakdown writes into the bodies of the work items in
-``plan.json.creates``, BEFORE ``apply.py`` creates anything. The runtime dependency gate
-(``executing/dispatch.py``) only enforces a dep it can PARSE from the post body, so a
-typo'd, cyclic, or simply-missing link silently lets a dependent run too early. This
-catches that mechanically instead of trusting the agent to have gotten it right.
+body links the breakdown writes into the work items in ``plan.json.creates``, BEFORE
+``apply.py`` creates anything. The runtime (``executing/dispatch.py`` for the dependency
+gate, ``entities/entity_base`` for the tree) only acts on a link it can PARSE from the
+post body, so a typo'd, cyclic, or simply-missing link silently lets a dependent run too
+early OR drops a post into the orphan bucket. This catches both mechanically instead of
+trusting the agent to have gotten it right. Two link kinds are checked:
+  * ``Depends on:`` - the issue->issue dependency DAG (the gate);
+  * parent links (``Ticket:``/``Epic:``/``Parent:``) - the epic->ticket->issue tree.
 
 Deps live in body text, not a structured field (see ``references/spec-change-protocol.md``).
 A create references another create that has no provider id yet by title placeholder
@@ -17,7 +20,11 @@ Errors (exit 1, must fix):
     substitute it, so the link evaporates and the gate never holds);
   * malformed - a ``Depends on:`` line with a bare ``{id:..}`` (no ``#``) or no ref at all
     (the body parser needs the ``#``; bare refs are dropped);
-  * cycle - the created issues' intra-plan deps form a loop (nothing could ever start).
+  * cycle - the created issues' intra-plan deps form a loop (nothing could ever start);
+  * orphan - a decomposed issue with no ticket link, or a ticket with no epic link (the
+    post lands loose, unreachable from the roadmap); a parent ``#{id:Title}`` that
+    matches no created item; or a parent link pointing at the wrong tier. A lone issue
+    in a plan that creates no tickets (a standalone bug/chore) is exempt.
 
 Warnings (exit 0, but surfaced for the route to resolve): an issue that LOOKS like it
 consumes a sibling - a ``type:qa`` issue, or one whose title/body reads as tests - yet
@@ -48,6 +55,12 @@ _BARE_PLACEHOLDER_RE = re.compile(r"(?<!#)\{id:([^}]+)\}")
 _LITERAL_ID_RE = re.compile(r"#\s*([0-9]+|[A-Za-z]+-[0-9]+)")
 # An issue that reads as tests - so its missing dep is suspicious.
 _TESTS_RE = re.compile(r"\btest(s|ing|ed)?\b", re.IGNORECASE)
+# Parent link in a body. Mirrors the runtime parser (entities/entity_base._PARENT_RE):
+# an issue links its ticket, a ticket its epic, via `Ticket:`/`Epic:`/`Parent:`. In a
+# plan the target may not have an id yet, so the ref is a `#{id:Title}` placeholder
+# (apply.py substitutes it) OR a literal `#NN` to an already-existing post.
+_PARENT_PLACEHOLDER_RE = re.compile(r"\b(?:Ticket|Epic|Parent)\s*:\s*#\{id:([^}]+)\}", re.IGNORECASE)
+_PARENT_LITERAL_RE = re.compile(r"\b(?:Ticket|Epic|Parent)\s*:\s*#\s*([0-9]+|[A-Za-z]+-[0-9]+)", re.IGNORECASE)
 
 
 def _tier_of(item: dict) -> str | None:
@@ -96,6 +109,18 @@ def _parse_deps(body: str) -> dict:
         if not seg_ph and not seg_lit and not seg_bare:
             empty = True
     return {"placeholders": placeholders, "literals": literals, "bare": bare, "empty": empty}
+
+
+def _parse_parent(body: str) -> dict:
+    """The parent link in a body, if any. Placeholder (a created title) takes precedence
+    over a literal id (an existing post). Returns {placeholder, literal} (each or None)."""
+    ph = _PARENT_PLACEHOLDER_RE.search(body or "")
+    if ph:
+        return {"placeholder": ph.group(1).strip(), "literal": None}
+    lit = _PARENT_LITERAL_RE.search(body or "")
+    if lit:
+        return {"placeholder": None, "literal": lit.group(1).strip()}
+    return {"placeholder": None, "literal": None}
 
 
 def validate(plan: dict) -> dict:
@@ -162,6 +187,45 @@ def validate(plan: dict) -> dict:
         topo = list(TopologicalSorter(graph).static_order())
     except CycleError as exc:
         errors.append("dependency cycle among created issues: {0}".format(exc.args[1]))
+
+    # Hierarchy links: an issue belongs to a ticket, a ticket to an epic. The runtime
+    # places posts in the tree ONLY from a parseable parent link (entities/entity_base.
+    # parse_parent), so a missing or dangling one drops the post into the orphan bucket
+    # ("Issues without a ticket"). Same failure mode as a dropped dep: catch it here.
+    # Standalone issues (a lone bug/chore filed with no ticket in the plan) are exempt -
+    # the rule is "if you DECOMPOSED it, wire it", so an issue must link a ticket only
+    # when the plan also creates tickets; a ticket must always link an epic.
+    n_tickets_created = sum(1 for i in items if i["tier"] == "ticket")
+    for item in items:
+        title = item["title"]
+        if not title:
+            continue  # already errored above
+        tier = item["tier"]
+        if tier == "epic":
+            continue  # epics have no parent
+        parent = _parse_parent(item["body"])
+        kind = "ticket" if tier == "issue" else "epic"
+        link = "Ticket: #NN" if tier == "issue" else "Epic: #NN"
+        if parent["placeholder"]:
+            ptier = by_title.get(parent["placeholder"])
+            if ptier is None:
+                errors.append(
+                    "{0!r} links parent #{{id:{1}}} but no created item has that title "
+                    "(apply.py can't resolve it; the post would orphan)".format(title, parent["placeholder"])
+                )
+            elif ptier != kind:
+                errors.append(
+                    "{0!r} ({1}) links a parent that is a {2}, not a {3}".format(title, tier, ptier, kind)
+                )
+        elif not parent["literal"]:
+            # No parent link at all. A ticket always needs an epic; an issue needs a
+            # ticket only when this plan is a decomposition (it creates tickets).
+            if tier == "ticket" or n_tickets_created:
+                errors.append(
+                    "{0!r} ({1}) has no parent {2} link (`{3}`); the runtime can't place "
+                    "it, so it lands as a loose post. Decomposed work must link its parent.".format(
+                        title, tier, kind, link)
+                )
 
     # Likely-missing dep: a consumer-shaped issue with no declared dep at all. A warning,
     # not an error - a tests issue MAY legitimately cover code already on primary.

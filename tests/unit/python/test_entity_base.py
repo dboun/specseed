@@ -48,6 +48,12 @@ class ParseParentTest(unittest.TestCase):
     def test_human_id(self) -> None:
         self.assertEqual(parse_parent("Ticket: #PROJ-0007"), "PROJ-0007")
 
+    def test_generic_parent_word(self) -> None:
+        # `Parent: #NN` is the intuitive word; accepted as a synonym so a link written
+        # that way is not silently dropped (it is also the protocol example's form).
+        self.assertEqual(parse_parent("Parent: #6\nImplement storage.py"), "6")
+        self.assertEqual(parse_parent("Parent: #TICKET-001"), "TICKET-001")
+
     def test_none_when_absent(self) -> None:
         self.assertIsNone(parse_parent("Depends on: #5\nno parent here"))
         self.assertIsNone(parse_parent(None))

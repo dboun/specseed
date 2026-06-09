@@ -183,12 +183,16 @@ class DependenciesValidateTest(unittest.TestCase):
             "body": body,
         }
 
-    def _ticket(self, title):
-        return {"tier": "ticket", "title": title, "labels": ["ticket", "ticket:status:todo"], "body": ""}
+    def _ticket(self, title, body=""):
+        return {"tier": "ticket", "title": title, "labels": ["ticket", "ticket:status:todo"], "body": body}
+
+    def _epic(self, title):
+        return {"tier": "epic", "title": title, "labels": ["epic", "epic:status:todo"], "body": ""}
 
     def test_clean_plan_ok(self):
         plan = {"creates": [
-            self._ticket("TICKET-001 Storage"),
+            self._epic("EPIC-001 Core"),
+            self._ticket("TICKET-001 Storage", "Epic: #{id:EPIC-001 Core}\n"),
             self._issue("FEAT-001 Write storage.py", "Parent: #{id:TICKET-001 Storage}\n"),
             self._issue(
                 "FEAT-002 Write tests for storage.py",
@@ -247,9 +251,10 @@ class DependenciesValidateTest(unittest.TestCase):
 
     def test_tests_issue_without_dep_warns_but_passes(self):
         # The reported bug: a "tests for X" issue with no Depends on. Warn, do not fail.
+        # Standalone issues (no ticket in the plan) so the parent-link rule stays clear.
         plan = {"creates": [
             self._issue("FEAT-001 Write storage.py"),
-            self._issue("FEAT-002 Write tests for storage.py", "Parent: #{id:TICKET-001 X}\n"),
+            self._issue("FEAT-002 Write tests for storage.py"),
         ]}
         r = dv.validate(plan)
         self.assertTrue(r["ok"])  # warning only
@@ -273,6 +278,70 @@ class DependenciesValidateTest(unittest.TestCase):
         self.assertEqual(deps["placeholders"], ["FEAT-001 Impl"])
         self.assertEqual(deps["literals"], [])
         self.assertTrue(dv.validate(plan)["ok"])
+
+    def test_issue_without_ticket_in_decomposition_is_error(self):
+        # The reported failure: a plan that creates tickets but an issue carries no parent
+        # link -> it orphans ("Issues without a ticket"). Error, not warning.
+        plan = {"creates": [
+            self._epic("EPIC-001 Core"),
+            self._ticket("TICKET-001 Storage", "Epic: #{id:EPIC-001 Core}\n"),
+            self._issue("FEAT-001 Write storage.py"),  # no parent link
+        ]}
+        r = dv.validate(plan)
+        self.assertFalse(r["ok"])
+        self.assertTrue(any("no parent ticket link" in e for e in r["errors"]), r["errors"])
+
+    def test_ticket_without_epic_is_error(self):
+        # The reported failure: tickets created with no epic link -> "Tickets without an
+        # epic". A ticket always belongs to an epic, even in a tiny project.
+        plan = {"creates": [
+            self._ticket("TICKET-001 Storage"),
+            self._issue("FEAT-001 Write storage.py", "Ticket: #{id:TICKET-001 Storage}\n"),
+        ]}
+        r = dv.validate(plan)
+        self.assertFalse(r["ok"])
+        self.assertTrue(any("no parent epic link" in e for e in r["errors"]), r["errors"])
+
+    def test_parent_word_link_is_accepted(self):
+        # `Parent:` is a valid synonym (matches the runtime parser) - not flagged.
+        plan = {"creates": [
+            self._epic("EPIC-001 Core"),
+            self._ticket("TICKET-001 Storage", "Parent: #{id:EPIC-001 Core}\n"),
+            self._issue("FEAT-001 Impl", "Parent: #{id:TICKET-001 Storage}\n"),
+        ]}
+        r = dv.validate(plan)
+        self.assertTrue(r["ok"], r["errors"])
+
+    def test_dangling_parent_placeholder_is_error(self):
+        plan = {"creates": [
+            self._ticket("TICKET-001 Storage", "Epic: #{id:EPIC-404 Nope}\n"),
+        ]}
+        r = dv.validate(plan)
+        self.assertFalse(r["ok"])
+        self.assertTrue(any("would orphan" in e for e in r["errors"]), r["errors"])
+
+    def test_parent_pointing_at_wrong_tier_is_error(self):
+        # An issue whose parent placeholder resolves to an epic, not a ticket.
+        plan = {"creates": [
+            self._epic("EPIC-001 Core"),
+            self._issue("FEAT-001 Impl", "Parent: #{id:EPIC-001 Core}\n"),
+        ]}
+        r = dv.validate(plan)
+        self.assertFalse(r["ok"])
+        self.assertTrue(any("not a ticket" in e for e in r["errors"]), r["errors"])
+
+    def test_standalone_issue_with_literal_ticket_ok(self):
+        # inject adds an issue under an already-existing ticket via a literal id. Valid,
+        # no created ticket needed.
+        plan = {"creates": [self._issue("BUG-007 Fix crash", "Ticket: #42\n")]}
+        r = dv.validate(plan)
+        self.assertTrue(r["ok"], r["errors"])
+
+    def test_lone_issue_no_tickets_is_exempt(self):
+        # A standalone bug/chore filed with no ticket in the plan: parentless is fine.
+        plan = {"creates": [self._issue("BUG-007 Fix crash")]}
+        r = dv.validate(plan)
+        self.assertTrue(r["ok"], r["errors"])
 
     def test_main_exit_codes_and_file_input(self):
         tmp = tempfile.TemporaryDirectory()

@@ -66,16 +66,24 @@ already-settled doc (and it re-settles on the next approval); `plan-next-sprint`
 ## Relationships (body links, not labels)
 
 In a ticket body, link its epic and its issues; in an issue body, link its
-parent ticket and any dependencies. Plain markdown:
+parent ticket and any dependencies. Plain markdown, one token per line:
 
 ```
-Epic: #12
-Issues: #41, #42, #43
-Depends on: #40
+# in a ticket body            # in an issue body
+Epic: #12                     Ticket: #12
+Issues: #41, #42, #43         Depends on: #40
+Depends on: #9
 ```
 
-`satisfies_reqs` (ticket → SRS req ids) and dependencies are written as body
-text too. Posts are flat; the structure is the links.
+**The parent token is what the runtime reads to build the tree** (`entities/
+entity_base.parse_parent`): a ticket's `Epic: #NN`, an issue's `Ticket: #NN`. The
+generic `Parent: #NN` is accepted as a synonym for either. Anything else (no link,
+a misspelled keyword) is NOT parsed, so the post lands in the orphan bucket ("Issues
+without a ticket"). Every decomposed issue MUST carry a ticket link and every ticket
+an epic link, so the tree is never inferred from order. `satisfies_reqs` (ticket →
+SRS req ids) and dependencies are written as body text too. Posts are flat; the
+structure is the links. `scripts/dependencies_validate.py` checks both the parent
+tree and the dependency DAG over `plan.json.creates` (see `work-breakdown.md`).
 
 **`Depends on:` is the only thing the runtime gate reads to hold a dependent.** Declare
 every issue that needs another issue's code/interface/output (tests -> the code they test,

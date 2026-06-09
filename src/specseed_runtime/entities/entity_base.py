@@ -32,9 +32,12 @@ STATUS_LABEL_PREFIX = "status:"
 # or a plain "Depends on: #61" line. We extract the `#NN` ids after the phrase.
 _DEPENDS_ON_RE = re.compile(r"depends\s+on\s*:?\s*(.+)", re.IGNORECASE)
 _ID_TOKEN_RE = re.compile(r"#\s*([0-9]+|[A-Za-z]+-[0-9]+)")
-# Parent link in a post body: an issue links its `Ticket: #NN`, a ticket its
-# `Epic: #NN` (remote-posts.md). The immediate parent is the first of these.
-_PARENT_RE = re.compile(r"\b(?:Ticket|Epic)\s*:\s*#\s*([0-9]+|[A-Za-z]+-[0-9]+)", re.IGNORECASE)
+# Parent link in a post body: an issue links its ticket, a ticket its epic
+# (remote-posts.md). Tier-specific `Ticket: #NN` / `Epic: #NN` are canonical, but the
+# generic `Parent: #NN` is the intuitive word agents reach for, so accept it too - the
+# tier of the linked post is checked elsewhere, this just extracts the id. The immediate
+# parent is the first such link in the body.
+_PARENT_RE = re.compile(r"\b(?:Ticket|Epic|Parent)\s*:\s*#\s*([0-9]+|[A-Za-z]+-[0-9]+)", re.IGNORECASE)
 
 
 def parse_depends_on(body: Optional[str]) -> list[str]:
@@ -64,7 +67,8 @@ def parse_depends_on(body: Optional[str]) -> list[str]:
 
 def parse_parent(body: Optional[str]) -> Optional[str]:
     """Immediate parent id from a post body's link (``Ticket: #NN`` for an issue,
-    ``Epic: #NN`` for a ticket). Returns the id without ``#``, or None."""
+    ``Epic: #NN`` for a ticket, or the generic ``Parent: #NN``). Returns the id
+    without ``#``, or None."""
     if not body:
         return None
     m = _PARENT_RE.search(body)

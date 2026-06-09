@@ -62,9 +62,11 @@ is yours to fit the route, but keep it explicit. Suggested:
   "request_id": "<id>",
   "route": "adapt",
   "creates": [
-    {"tier": "ticket", "title": "PROJ-0001 ...", "body": "...",
+    {"tier": "epic", "title": "EPIC-0001 ...", "body": "...",
+     "labels": ["epic", "epic:status:todo"]},
+    {"tier": "ticket", "title": "PROJ-0001 ...", "body": "Epic: #{id:EPIC-0001 ...}",
      "labels": ["ticket", "ticket:status:todo"]},
-    {"tier": "issue", "title": "FEAT-0001 ...", "body": "Parent: #{id:PROJ-0001 ...}",
+    {"tier": "issue", "title": "FEAT-0001 ...", "body": "Ticket: #{id:PROJ-0001 ...}",
      "labels": ["issue", "issue:status:todo", "type:feature", "difficulty:hard"]}
   ],
   "edits":   [{"post_id": 12, "body": "..."}],
@@ -97,9 +99,13 @@ no post exists until it is approved.
 **Cross-references between creates:** post ids don't exist until `apply.py` runs, so
 a child body references its parent as `#{id:<parent title>}` — the template below
 substitutes the real id at create time while preserving the leading `#`. Never hardcode
-guessed ids (`#1`, `#2`). For dependency lines, the `#` is mandatory; bare
-`Depends on: {id:...}` / `Depends on: 9` is invalid because the dependency gate will
-not enforce it.
+guessed ids (`#1`, `#2`). The PARENT keyword matters: a ticket links its epic with
+`Epic: #{id:...}`, an issue its ticket with `Ticket: #{id:...}` (`Parent:` also works);
+the runtime builds the tree only from these, so a missing or misspelled keyword orphans
+the post. Every issue links a ticket, every ticket an epic. For dependency lines, the
+`#` is mandatory; bare `Depends on: {id:...}` / `Depends on: 9` is invalid because the
+dependency gate will not enforce it. Validate both link kinds with
+`scripts/dependencies_validate.py` before emitting.
 
 `apply.py` reads `plan.json` and applies it — but only AFTER approval (see the gate).
 Keeping the data and the executor separate means a human can eyeball the delta and the

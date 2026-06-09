@@ -14,9 +14,14 @@ under `skills/specseed/scripts/` (run them; do not hand-compute what a script ow
 | ticket | PM, user-visible value | story, description, product acceptance criteria, `satisfies_reqs`, the critical-path `depends_on` DAG |
 | issue | technical, claimable | technical acceptance criteria, artifacts, plan notes. INVEST applies HERE |
 
-An issue may belong to a ticket; a ticket may belong to an epic. No separate "story"
-tier (a user story is a `## Story` section in a ticket body). Relationships are body
-links, not labels (`remote-posts.md`).
+**Every issue belongs to a ticket; every ticket belongs to an epic.** A planned
+breakdown is a full tree, never loose posts: link each issue to its ticket
+(`Ticket: #NN`) and each ticket to its epic (`Epic: #NN`). Even a tiny single-ticket
+project gets one grouping epic (it is one post, and the roadmap renders from epics).
+The lone exception is a standalone issue filed directly (a one-off bug/chore via
+`inject`/`tweak` with no ticket) - that may be parentless. No separate "story" tier (a
+user story is a `## Story` section in a ticket body). Relationships are body links, not
+labels (`remote-posts.md`).
 
 ## IDs (human-facing, in the body/title)
 
@@ -71,10 +76,13 @@ a valid slice. Slices may skip layers; the rule is observability.
 4. Set issue artifacts (code paths, tests, migrations) and plan notes; set the
    `type:` label and the `difficulty:` label.
 5. Insert integration issues at merge points.
-6. Body-link both directions (epic <-> tickets, ticket <-> issues, depends-on). Declare
-   EVERY issue->issue dependency per **Issue dependencies** (below): a tests/consumer issue
-   that needs another issue's code must carry `Depends on:` — the runtime enforces only
-   what you write. Then run `scripts/dependencies_validate.py <plan.json>` and clear it.
+6. Body-link both directions: every ticket carries `Epic: #NN`, every issue `Ticket: #NN`
+   (`remote-posts.md` for the exact tokens - the runtime builds the tree only from these,
+   so an unlinked post orphans). Declare EVERY issue->issue dependency per **Issue
+   dependencies** (below): a tests/consumer issue that needs another issue's code must
+   carry `Depends on:` — the runtime enforces only what you write. Then run
+   `scripts/dependencies_validate.py <plan.json>` and clear it (it checks BOTH the parent
+   tree and the dependency DAG: an orphaned issue/ticket or a dangling parent is an error).
 7. **Run the risk-detection & gating pass** (below) before sprint planning.
 8. Label every post: tier + status. Epics/tickets AND **issues at `:status:todo`**
    in `plan.json.creates` — but nothing is created until the plan is approved
@@ -141,9 +149,11 @@ Write deps in the body as `Depends on: #{id:<exact title>}` for an item this pla
 already-existing post. See `references/remote-posts.md`.
 
 **Validate before you emit.** Run `scripts/dependencies_validate.py <plan.json>`. It
-fails (exit 1) on a dangling ref, a malformed dep line, or a **cycle** among the created
-issues; resolve a cycle the same way as a requirement cycle (split / extract interface /
-reorder, below). It also WARNS when a tests/QA-shaped issue declares no dep at all — for
+fails (exit 1) on a dangling ref, a malformed dep line, a **cycle** among the created
+issues, or a broken parent link (a decomposed issue with no ticket, a ticket with no
+epic, a parent `#{id:...}` that resolves to nothing or to the wrong tier); resolve a
+cycle the same way as a requirement cycle (split / extract interface / reorder, below).
+It also WARNS when a tests/QA-shaped issue declares no dep at all — for
 each warning, either add the missing dep or satisfy yourself the issue truly stands alone
 (e.g. it exercises code already on primary). Re-run until errors are clear and every
 warning is accounted for.
