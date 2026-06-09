@@ -1,4 +1,5 @@
 import { api } from "./api.js";
+import { openAgentOutput } from "./agent_output.js";
 import { closeModal, escapeHtml, formatTime, modal, reactionIcon, toast } from "../ui/components.js";
 import { renderMarkdown } from "../ui/markdown.js";
 
@@ -226,12 +227,27 @@ export function createTracker({ repo, ctx }) {
   const inReview = (post) =>
     (post.labels || []).some((l) => /(^|:)status:in_review$/.test(l.name));
 
+  // Ephemeral, our-UI-only: while an agent works this post, an outlined box sits at
+  // the end of the comments (just above the composer) and opens the live 'Agent
+  // output' popup. It vanishes on its own once the run ends (agent_running clears on
+  // the next poll) - nothing kept.
+  function agentWorkingBox(post) {
+    if (!post.agent_running || !post.agent_task_id) return "";
+    return `
+      <button type="button" class="agent-working" data-agent-output="${escapeHtml(post.agent_task_id)}">
+        <span class="state-dot running"></span>
+        <span class="agent-working-text">Agent is working on this…</span>
+        <span class="agent-working-cta">View output</span>
+      </button>`;
+  }
+
   function commentsBlock(post, composer) {
     const comments = post.comments || [];
     const locked = composer && inReview(post);
     return `
       <div class="section-title">comments</div>
       ${comments.map((c) => commentHtml(c, post)).join("") || `<div class="muted">No comments.</div>`}
+      ${agentWorkingBox(post)}
       ${locked
         ? `<div class="muted comment-locked">Comments are locked while this issue is in code review. They reopen once it finishes.</div>`
         : composer
@@ -462,6 +478,8 @@ export function createTracker({ repo, ctx }) {
   // -- events ----------------------------------------------------------- #
   async function handleClick(event) {
     const t = event.target;
+    const ao = t.closest("[data-agent-output]");
+    if (ao) return openAgentOutput(repo.id, ao.dataset.agentOutput, { autoClose: true });
     const open = t.closest("[data-open-post]");
     if (open) return openPost(open.dataset.openPost);
     if (t.closest("[data-new-post]")) return openNewPost();

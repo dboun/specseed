@@ -40,6 +40,7 @@ def _add_repo_root_to_path() -> None:
 _add_repo_root_to_path()
 
 from specseed_runtime import registry
+from specseed_runtime import storage_paths
 from specseed_runtime.configuring import configure
 from specseed_runtime.executing import agent_runner
 from specseed_runtime.executing import runner_control
@@ -333,6 +334,11 @@ def _read_tasks(storage: str | Path, queue: tuple[int, int] = (0, 50), errors: t
             (queue[1], queue[0]),
         ).fetchall()
         out["tasks"]["items"] = [dict(r) for r in rows]
+        # Flag rows that have a live/finished agent-output log so the UI can offer
+        # an 'Output' button (cheap existence check over the small visible page).
+        out_dir = storage_paths.agent_output_dir(storage)
+        for item in out["tasks"]["items"]:
+            item["has_output"] = (out_dir / f"{item['task_id']}.log").exists()
         # Join the originating task so each error carries its action/post/attempts
         # (task_errors outlive their task by design, hence the LEFT JOIN).
         out["errors"]["total"] = conn.execute("SELECT COUNT(*) FROM task_errors").fetchone()[0]
@@ -508,25 +514,40 @@ def _needs_approval(post: dict) -> bool:
     return False
 
 
-def _in_progress_post_ids(storage: str | Path) -> set[str]:
-    """Post ids with work-lane task currently running (agent/git work)."""
+def _in_progress_post_tasks(storage: str | Path) -> dict[str, str]:
+    """Map each post with a running work-lane task to that task's id (newest wins).
+
+    Drives the post-card dot, the inline 'Agent is working on this…' box, and the
+    task id the 'Agent output' popup tails. Degrades to {} on any db hiccup."""
     try:
         conn = sqlite3.connect(f"file:{_queue_db(storage)}?mode=ro", uri=True, timeout=5.0)
         columns = _task_columns(conn)
         lane_clause = "AND lane = ?" if "lane" in columns else ""
         args = (LANE_WORK,) if "lane" in columns else ()
-        ids = {
-            str(row[0])
-            for row in conn.execute(
-                "SELECT DISTINCT post_id FROM tasks "
-                f"WHERE status = 'in_progress' AND post_id IS NOT NULL {lane_clause}",
-                args,
-            )
-        }
+        mapping: dict[str, str] = {}
+        for post_id, task_id in conn.execute(
+            "SELECT post_id, task_id FROM tasks "
+            f"WHERE status = 'in_progress' AND post_id IS NOT NULL {lane_clause} "
+            "ORDER BY task_id DESC",
+            args,
+        ):
+            mapping.setdefault(str(post_id), str(task_id))
         conn.close()
-        return ids
+        return mapping
     except sqlite3.Error:
-        return set()  # indicator degrades gracefully
+        return {}  # indicator degrades gracefully
+
+
+def _in_progress_post_ids(storage: str | Path) -> set[str]:
+    """Post ids with a work-lane task currently running (agent/git work)."""
+    return set(_in_progress_post_tasks(storage))
+
+
+def _agent_running_fields(post: dict, running: dict[str, str]) -> None:
+    """Stamp agent_running + agent_task_id (the in-flight work task to tail)."""
+    pid = str(post.get("id"))
+    post["agent_running"] = pid in running
+    post["agent_task_id"] = running.get(pid)
 
 
 def _enrich_list(record: dict, posts: object) -> object:
@@ -548,7 +569,7 @@ def _enrich_list(record: dict, posts: object) -> object:
         conn.close()
     except sqlite3.Error:
         pass  # chips degrade gracefully; the list itself still renders
-    running = _in_progress_post_ids(record["storage"])
+    running = _in_progress_post_tasks(record["storage"])
     for post in posts:
         if not isinstance(post, dict):
             continue
@@ -556,10 +577,45 @@ def _enrich_list(record: dict, posts: object) -> object:
         post["comment_count"] = count
         post["comments_text"] = bodies
         post["needs_approval"] = _needs_approval(post)
-        post["agent_running"] = str(post.get("id")) in running
+        _agent_running_fields(post, running)
         stamps = [s for s in (post.get("updated_at"), last_comment_at) if s]
         post["last_activity_at"] = max(stamps) if stamps else post.get("updated_at")
     return posts
+
+
+def _enrich_one(record: dict, post: object) -> object:
+    """Stamp agent_running + agent_task_id on a single post detail (drawer view)."""
+    if isinstance(post, dict):
+        _agent_running_fields(post, _in_progress_post_tasks(record["storage"]))
+    return post
+
+
+def _read_agent_output(storage: str | Path, task_id: object, tail_bytes: int = 256 * 1024) -> str:
+    """Tail of a work task's live agent-output log, or "" if none exists yet."""
+    path = storage_paths.agent_output_file(task_id, storage)
+    try:
+        size = path.stat().st_size
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            if size > tail_bytes:
+                fh.seek(size - tail_bytes)
+                fh.readline()  # drop the partial first line after the seek
+            return fh.read()
+    except OSError:
+        return ""
+
+
+def _task_status(storage: str | Path, task_id: object) -> str | None:
+    """Current queue status of a task (pending/in_progress/success/failed), or None."""
+    db = _queue_db(storage)
+    if not db.exists():
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5.0)
+        row = conn.execute("SELECT status FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
+        conn.close()
+        return row[0] if row else None
+    except sqlite3.Error:
+        return None
 
 
 def _toggle_entry_reaction(record: dict, entry_id, reaction: str) -> dict:
@@ -684,6 +740,9 @@ class Handler(BaseHTTPRequestHandler):
         if tail == ["monitor"] and self.command == "GET":
             self._monitor(record, query)
             return
+        if tail[:1] == ["work-output"] and self.command == "GET":
+            self._work_output(record, tail[1:])
+            return
         if tail == ["runner"] and self.command == "POST":
             self._runner(record)
             return
@@ -762,6 +821,26 @@ class Handler(BaseHTTPRequestHandler):
                     "errors": queue["errors"],
                     "log": _read_log(Path(storage) / "platform.log", log_offset, log_limit),
                     "gate": _config_gate({**status, **queue["counts"]}),
+                },
+            }
+        )
+
+    def _work_output(self, record: dict, sub: list[str]) -> None:
+        # /api/repos/<id>/work-output/<task_id> - live agent stdout for a work run.
+        if not sub:
+            self._json({"ok": False, "error": "task id required"}, status=404)
+            return
+        task_id = sub[0]
+        storage = record["storage"]
+        status = _task_status(storage, task_id)
+        self._json(
+            {
+                "ok": True,
+                "data": {
+                    "task_id": task_id,
+                    "status": status,
+                    "running": status == "in_progress",
+                    "text": _read_agent_output(storage, task_id),
                 },
             }
         )
@@ -849,7 +928,7 @@ class Handler(BaseHTTPRequestHandler):
         post_id = tail[0]
         sub = tail[1:]
         if not sub and self.command == "GET":
-            self._json({"ok": True, "data": _ok(tracker.get_entry(post_id))})
+            self._json({"ok": True, "data": _enrich_one(record, _ok(tracker.get_entry(post_id)))})
             return
         if not sub and self.command == "PATCH":
             body = self._body()

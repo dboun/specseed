@@ -1,4 +1,5 @@
 import { api } from "./api.js";
+import { openAgentOutput } from "./agent_output.js";
 import { closeModal, escapeHtml, formatTime, modal, toast } from "../ui/components.js";
 
 const POLL_MS = 3000;
@@ -158,6 +159,15 @@ export function createMonitor({ repo, ctx, refreshTopbar }) {
     return "";
   }
 
+  // Any work_run with a captured output log gets a permanent 'Output' button -
+  // live while it runs, and afterwards (success or failed) to inspect what happened.
+  function outputButton(t) {
+    if (t.has_output) {
+      return `<button class="btn btn-ghost sm" data-agent-output="${escapeHtml(t.task_id)}" title="view agent output">Output</button>`;
+    }
+    return "";
+  }
+
   function queueTable() {
     const tasks = data?.queue?.items || [];
     if (!tasks.length) return `<div class="empty-state">Queue is empty.</div>`;
@@ -177,7 +187,7 @@ export function createMonitor({ repo, ctx, refreshTopbar }) {
               <td><span class="tag tag-${escapeHtml(t.status)}">${escapeHtml(STATUS_LABEL[t.status] || t.status)}</span></td>
               <td>${escapeHtml(t.attempts)}</td>
               <td class="muted">${escapeHtml(t.last_attempted_at ? formatTime(t.last_attempted_at) : "—")}</td>
-              <td class="row-actions">${retryButton(t)}</td>
+              <td class="row-actions">${outputButton(t)}${retryButton(t)}</td>
             </tr>`
             )
             .join("")}
@@ -340,6 +350,8 @@ export function createMonitor({ repo, ctx, refreshTopbar }) {
   }
 
   async function handleClick(event) {
+    const ao = event.target.closest("[data-agent-output]");
+    if (ao) return openAgentOutput(repo.id, ao.dataset.agentOutput, { autoClose: false });
     const action = event.target.closest("[data-runner-action]");
     if (action) {
       busy = true;

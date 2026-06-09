@@ -59,6 +59,7 @@ from specseed_runtime.state_machines.approvals import (
 )
 from specseed_runtime.state_machines.base import evaluate_entity_state
 from specseed_runtime.platform_identity import platform_comment
+from specseed_runtime import storage_paths
 from specseed_runtime.storage_paths import SPECSEED_STORAGE_ENV
 
 
@@ -138,8 +139,16 @@ def _run_agent(
     are ledgered against ``task_id`` for startup orphan reclaim."""
     runner = ctx.runner
     on_start = None
+    live_log = None
     if task_id is not None:
         on_start = lambda pid, binary: inflight.record(ctx.storage, task_id, pid, binary)  # noqa: E731
+        # Live stdout feed for the UI's 'Agent output' popup, keyed by work task.
+        # Ephemeral + best-effort: prune the window, then point the runner at the file.
+        try:
+            storage_paths.prune_agent_output(ctx.storage)
+            live_log = str(storage_paths.agent_output_file(task_id, ctx.storage))
+        except OSError:
+            live_log = None
     try:
         if hasattr(runner, "chain_for"):  # RunnerChains
             return runner.run(
@@ -150,6 +159,7 @@ def _run_agent(
                 timeout_s=ctx.agent_timeout_s,
                 on_start=on_start,
                 intent=intent,
+                live_log=live_log,
             )
         return runner.run(
             prompt,
@@ -158,6 +168,7 @@ def _run_agent(
             timeout_s=ctx.agent_timeout_s,
             on_start=on_start,
             intent=intent,
+            live_log=live_log,
         )
     finally:
         if task_id is not None:
@@ -1211,9 +1222,12 @@ def _run_work(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
 def _read_plan(ctx: ExecutionContext, request_id: Any) -> Optional[dict]:
     path = spec_change_dir(str(request_id), ctx.storage) / "plan.json"
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
+    # A weaker model can emit a bare scalar/list as plan.json; anything that is not
+    # a JSON object is not a plan we can read. Guard here so callers never .get() a str.
+    return data if isinstance(data, dict) else None
 
 
 # plan.json keys that, populated, mean the run creates/retires work and MUST be
@@ -1234,6 +1248,8 @@ def _validate_depends_on_links(plan: dict) -> None:
     bad: list[str] = []
     entries = list(plan.get("creates") or []) + list(plan.get("edits") or [])
     for entry in entries:
+        if not isinstance(entry, dict):
+            continue  # a malformed (non-object) entry has no links to validate
         title = str(entry.get("title") or entry.get("post_id") or entry.get("post") or "?")
         body = str(entry.get("body") or "")
         for m in _PLAN_DEPENDS_RE.finditer(body):
@@ -1262,9 +1278,13 @@ def _touches_other_posts(plan: dict, request_id: Any) -> bool:
     """
     req = str(request_id)
     for entry in (plan.get("edits") or []) + (plan.get("comments") or []):
+        if not isinstance(entry, dict):
+            return True  # can't prove it stays on the request -> gate it (safe default)
         if str(entry.get("post_id") if "post_id" in entry else entry.get("post")) != req:
             return True
     for change in plan.get("labels") or []:
+        if not isinstance(change, dict):
+            return True
         if str(change.get("post_id") if "post_id" in change else change.get("post")) != req:
             return True
     return False

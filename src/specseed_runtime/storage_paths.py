@@ -57,3 +57,35 @@ def skill_version_file(specseed_dir: str | Path | None = None) -> Path:
     """skills/specseed/version.txt - the version of the code that is running."""
     base = Path(specseed_dir) if specseed_dir else default_specseed_dir()
     return base / "skills" / "specseed" / "version.txt"
+
+
+def agent_output_dir(storage: str | Path | None = None) -> Path:
+    """storage/agent-output/ - live per-task agent stdout logs.
+
+    Ephemeral debug feed for the UI ('Agent output' popup). One <task_id>.log per
+    work run, written live as the agent talks. Not source of truth, never
+    migrated; pruned to a recent window (prune_agent_output)."""
+    base = Path(storage) if storage else default_storage_dir()
+    return base / "agent-output"
+
+
+def agent_output_file(task_id: object, storage: str | Path | None = None) -> Path:
+    """The live output log for one work task: storage/agent-output/<task_id>.log."""
+    return agent_output_dir(storage) / f"{task_id}.log"
+
+
+def prune_agent_output(storage: str | Path | None = None, keep: int = 200) -> None:
+    """Keep only the ``keep`` newest output logs; drop the rest. Best-effort.
+
+    The feed is ephemeral and never remembered, so old logs are pure clutter -
+    trim them by mtime so the dir can't grow without bound."""
+    out_dir = agent_output_dir(storage)
+    try:
+        logs = sorted(out_dir.glob("*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError:
+        return
+    for stale in logs[keep:]:
+        try:
+            stale.unlink()
+        except OSError:
+            pass

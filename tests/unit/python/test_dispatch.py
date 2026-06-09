@@ -515,6 +515,26 @@ class SpecChangeGateDecisionTest(DispatchTestBase):
         rid = self._seed_local_entry("Adapt", ["spec-change:adapt"])
         self.assertEqual(dispatch_mod._classify_spec_change(self.ctx, str(rid)), "none")
 
+    def test_classify_survives_non_object_plan(self) -> None:
+        # A weaker model can write a bare JSON scalar/list as plan.json. It must read
+        # as "no plan", never crash with AttributeError("'str' object ... 'get'").
+        rid = self._seed_local_entry("Adapt", ["spec-change:adapt"])
+        d = self._spec_dir(rid)
+        (d / "plan.json").write_text(json.dumps("just a string"), encoding="utf-8")
+        self.assertEqual(dispatch_mod._classify_spec_change(self.ctx, str(rid)), "none")
+
+    def test_classify_survives_string_entries_in_lists(self) -> None:
+        # creates/comments holding bare strings (not objects) must not crash.
+        rid = self._seed_local_entry("Adapt", ["spec-change:adapt"])
+        self._write_plan(rid, {"creates": ["make a feature"]})
+        self.assertEqual(dispatch_mod._classify_spec_change(self.ctx, str(rid)), "propose")
+
+    def test_classify_string_comment_gates_as_propose(self) -> None:
+        # A non-object comment can't be proven to target the request -> gate it.
+        rid = self._seed_local_entry("Adapt", ["spec-change:adapt"])
+        self._write_plan(rid, {"comments": ["a clarifying question"]})
+        self.assertEqual(dispatch_mod._classify_spec_change(self.ctx, str(rid)), "propose")
+
     def test_work_run_enqueues_proposal_not_apply(self) -> None:
         rid = self._seed_local_entry("Adapt", ["spec-change:adapt"])
         self._write_plan(rid, {"creates": [{"title": "FEAT-0001"}]})

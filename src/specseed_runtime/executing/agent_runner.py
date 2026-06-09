@@ -121,6 +121,102 @@ def _unlink(path: str) -> None:
         pass
 
 
+# -- live feed: claude stream-json -> readable lines ----------------------- #
+# `claude -p --output-format stream-json` writes one self-contained JSON event
+# per line. We turn each into a short, human-readable line for the 'Agent output'
+# popup: thinking, assistant text, tool calls (with a one-field input summary),
+# and tool results. Display-only and defensive - any unexpected shape is skipped,
+# never raised (the run must not depend on this).
+
+_STREAM_LINE_MAX = 200
+
+
+def _condense(text: str, limit: int = _STREAM_LINE_MAX) -> str:
+    """Collapse whitespace to a single line, truncated with an ellipsis."""
+    flat = " ".join(str(text).split())
+    return flat if len(flat) <= limit else flat[: limit - 1] + "…"
+
+
+def _tool_input_summary(inp: object) -> str:
+    """One representative field of a tool's input (path/command/pattern/...)."""
+    if not isinstance(inp, dict):
+        return ""
+    for key in ("file_path", "path", "command", "pattern", "query", "url", "prompt", "description"):
+        val = inp.get(key)
+        if val:
+            return _condense(val, 160)
+    try:
+        return _condense(json.dumps(inp, separators=(",", ":")), 160)
+    except (TypeError, ValueError):
+        return ""
+
+
+def _result_first_line(content: object) -> str:
+    """First text line of a tool_result's content (string or block list)."""
+    text = ""
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text" and block.get("text"):
+                text = block["text"]
+                break
+    text = text.strip()
+    return text.splitlines()[0] if text else ""
+
+
+def _format_assistant_blocks(content: object) -> list[str]:
+    out: list[str] = []
+    if not isinstance(content, list):
+        return out
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        bt = block.get("type")
+        if bt == "text":
+            txt = (block.get("text") or "").strip()
+            if txt:
+                out.append("● " + _condense(txt))
+        elif bt == "thinking":
+            txt = (block.get("thinking") or "").strip()
+            if txt:
+                out.append("● Thinking: " + _condense(txt))
+        elif bt == "tool_use":
+            name = block.get("name") or "tool"
+            summary = _tool_input_summary(block.get("input"))
+            out.append("● {0}({1})".format(name, summary) if summary else "● " + str(name))
+    return out
+
+
+def format_claude_stream_line(raw: str) -> str:
+    """One stream-json line -> newline-terminated display text (or "")."""
+    line = (raw or "").strip()
+    if not line:
+        return ""
+    try:
+        obj = json.loads(line)
+    except (ValueError, TypeError):
+        # Not JSON (a stray warning/log line): show it verbatim so nothing is lost.
+        return raw if raw.endswith("\n") else raw + "\n"
+    if not isinstance(obj, dict):
+        return ""
+    kind = obj.get("type")
+    if kind == "assistant":
+        shown = _format_assistant_blocks((obj.get("message") or {}).get("content"))
+    elif kind == "user":
+        content = (obj.get("message") or {}).get("content")
+        shown = []
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    first = _result_first_line(block.get("content"))
+                    if first:
+                        shown.append("  └ " + _condense(first))
+    else:
+        shown = []  # system/result/etc: housekeeping, nothing to show
+    return "".join(s + "\n" for s in shown)
+
+
 @dataclass
 class AgentResult:
     """Outcome of one agent run."""
@@ -159,6 +255,7 @@ class AgentRunner:
         timeout_s: float = DEFAULT_AGENT_TIMEOUT_S,
         on_start: Optional[Callable[[int, str], None]] = None,
         intent: Optional[str] = None,
+        live_log: Optional[str | Path] = None,
     ) -> AgentResult:
         raise NotImplementedError
 
@@ -181,6 +278,15 @@ class SubprocessAgentRunner(AgentRunner):
 
     def build_command(self, prompt: str, cwd: str | Path) -> list[str]:
         raise NotImplementedError
+
+    def format_stream_line(self, raw: str) -> str:
+        """Turn one raw stdout line into display text for the live feed.
+
+        Base behaviour is passthrough - codex exec already streams readable
+        reasoning + actions. Providers whose stdout is machine-encoded (claude
+        ``--output-format stream-json``) override this to humanise it. Returns
+        the (newline-terminated) text to append, or ``""`` to drop the line."""
+        return raw
 
     def _child_env(self, result_file: Optional[str] = None) -> Optional[dict[str, str]]:
         env = {**os.environ, **self.env_overrides}
@@ -205,6 +311,7 @@ class SubprocessAgentRunner(AgentRunner):
         timeout_s: float = DEFAULT_AGENT_TIMEOUT_S,
         on_start: Optional[Callable[[int, str], None]] = None,
         intent: Optional[str] = None,
+        live_log: Optional[str | Path] = None,
     ) -> AgentResult:
         argv = self.build_command(prompt, cwd)
         # Per-run result file the agent writes its JSON outcome to. Pre-created
@@ -231,6 +338,7 @@ class SubprocessAgentRunner(AgentRunner):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                bufsize=1,  # line-buffered: lines reach the live feed as they arrive
                 env=self._child_env(result_path),
             )
         except (OSError, ValueError) as exc:
@@ -252,12 +360,33 @@ class SubprocessAgentRunner(AgentRunner):
 
         chunks: list[str] = []
         drained = threading.Event()
+        # Optional live feed: humanise each stdout line and append it to a file the
+        # UI tails ('Agent output' popup). Best-effort and ephemeral - a write error
+        # never disturbs the run, and the raw stdout still flows into `chunks`.
+        live = None
+        if live_log is not None:
+            try:
+                Path(live_log).parent.mkdir(parents=True, exist_ok=True)
+                live = open(live_log, "w", encoding="utf-8")
+            except OSError:
+                live = None
 
         def _drain() -> None:
             try:
                 assert proc.stdout is not None
-                for line in proc.stdout:
+                # readline (not `for line in proc.stdout`) so each line lands the
+                # moment the child flushes it - the file iterator's read-ahead would
+                # otherwise hold the live feed back until a big buffer fills.
+                for line in iter(proc.stdout.readline, ""):
                     chunks.append(line)
+                    if live is not None:
+                        try:
+                            shown = self.format_stream_line(line)
+                            if shown:
+                                live.write(shown)
+                                live.flush()
+                        except (OSError, ValueError):
+                            pass
             except (OSError, ValueError):
                 pass
             finally:
@@ -300,6 +429,11 @@ class SubprocessAgentRunner(AgentRunner):
 
         returncode = proc.wait()
         drained.wait(timeout=self.grace)
+        if live is not None:
+            try:
+                live.close()
+            except OSError:
+                pass
         stdout = "".join(chunks)
         duration = time.monotonic() - start
 
@@ -385,13 +519,22 @@ class ClaudeAgentRunner(SubprocessAgentRunner):
         self.config_dir = config_dir
 
     def build_command(self, prompt: str, cwd: str | Path) -> list[str]:
+        # stream-json (requires --verbose) emits one JSON event per line as the
+        # agent thinks/acts, so the live feed shows the work in flight instead of
+        # just a final dump. The structured result still arrives via
+        # $SPECSEED_RESULT_FILE - stdout format is display-only.
         return [
             self.binary, "-p",
             "--model", self.model,
             "--permission-mode", self.permission_mode,
             "--allowedTools", self.allowed_tools,
             "--max-turns", str(self.max_turns),
+            "--verbose",
+            "--output-format", "stream-json",
         ]
+
+    def format_stream_line(self, raw: str) -> str:
+        return format_claude_stream_line(raw)
 
 
 class CodexAgentRunner(SubprocessAgentRunner):
@@ -530,6 +673,7 @@ class RunnerChains:
         timeout_s: float = DEFAULT_AGENT_TIMEOUT_S,
         on_start: Optional[Callable[[int, str], None]] = None,
         intent: Optional[str] = None,
+        live_log: Optional[str | Path] = None,
     ) -> AgentResult:
         chain = self.chain_for(function)
         last: Optional[AgentResult] = None
@@ -541,7 +685,7 @@ class RunnerChains:
                 )
             result = runner.run(
                 prompt, cwd=cwd, cancel=cancel, timeout_s=timeout_s,
-                on_start=on_start, intent=intent,
+                on_start=on_start, intent=intent, live_log=live_log,
             )
             last = result
             if getattr(result, "killed", False):
@@ -624,9 +768,10 @@ class FakeAgentRunner(AgentRunner):
         timeout_s: float = DEFAULT_AGENT_TIMEOUT_S,
         on_start: Optional[Callable[[int, str], None]] = None,
         intent: Optional[str] = None,
+        live_log: Optional[str | Path] = None,
     ) -> AgentResult:
         call = {"prompt": prompt, "cwd": str(cwd), "timeout_s": timeout_s, "cancel": cancel,
-                "on_start": on_start, "intent": intent}
+                "on_start": on_start, "intent": intent, "live_log": live_log}
         self.calls.append(call)
         if self.side_effect is not None:
             return self.side_effect(call)

@@ -231,6 +231,96 @@ class EnrichListTest(unittest.TestCase):
         self.assertTrue(all(not n.startswith(("type:", "difficulty:")) for n in server.IMPORTANT_LABELS))
 
 
+def _make_queue_rows(storage: Path, rows) -> None:
+    """rows: (post_id, status, lane). Full (lane+priority) schema."""
+    conn = sqlite3.connect(storage / "specseed.db")
+    conn.executescript(
+        """
+        CREATE TABLE tasks (
+            task_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            action TEXT NOT NULL, post_id TEXT,
+            payload TEXT NOT NULL DEFAULT '{}',
+            status TEXT NOT NULL DEFAULT 'pending',
+            attempts INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL, last_attempted_at TEXT, not_before TEXT,
+            lane TEXT NOT NULL DEFAULT 'control', priority INTEGER NOT NULL DEFAULT 50
+        );
+        CREATE TABLE task_errors (
+            error_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id INTEGER NOT NULL, message TEXT NOT NULL, executed_at TEXT NOT NULL
+        );
+        """
+    )
+    for post_id, status, lane in rows:
+        conn.execute(
+            "INSERT INTO tasks(action, post_id, status, created_at, lane) VALUES (?, ?, ?, ?, ?)",
+            ("work_run", post_id, status, "2026-01-01T00:00:00Z", lane),
+        )
+    conn.commit()
+    conn.close()
+
+
+class AgentOutputServerTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.storage = Path(self.tmp.name)
+        self.record = {"storage": str(self.storage)}
+
+    def test_in_progress_post_tasks_maps_running_work_to_task_id(self) -> None:
+        # 1: post "7" work in_progress (task 1); 2: control in_progress (ignored);
+        # 3: post "7" pending (ignored). Newest in_progress work wins per post.
+        _make_queue_rows(self.storage, [("7", "in_progress", "work"),
+                                        ("8", "in_progress", "control"),
+                                        ("7", "pending", "work")])
+        mapping = server._in_progress_post_tasks(self.storage)
+        self.assertEqual(mapping, {"7": "1"})
+        self.assertEqual(server._in_progress_post_ids(self.storage), {"7"})
+
+    def test_enrich_one_stamps_agent_fields(self) -> None:
+        _make_queue_rows(self.storage, [("7", "in_progress", "work")])
+        running = server._enrich_one(self.record, {"id": 7})
+        self.assertTrue(running["agent_running"])
+        self.assertEqual(running["agent_task_id"], "1")
+        idle = server._enrich_one(self.record, {"id": 99})
+        self.assertFalse(idle["agent_running"])
+        self.assertIsNone(idle["agent_task_id"])
+
+    def test_enrich_one_non_dict_passthrough(self) -> None:
+        self.assertEqual(server._enrich_one(self.record, None), None)
+
+    def test_read_agent_output_reads_log_else_empty(self) -> None:
+        self.assertEqual(server._read_agent_output(self.storage, 1), "")
+        out = self.storage / "agent-output"
+        out.mkdir()
+        (out / "1.log").write_text("● Read(a.py)\n● done\n", encoding="utf-8")
+        self.assertEqual(server._read_agent_output(self.storage, 1), "● Read(a.py)\n● done\n")
+
+    def test_read_agent_output_tails_large_file(self) -> None:
+        out = self.storage / "agent-output"
+        out.mkdir()
+        (out / "1.log").write_text("\n".join(f"line {i}" for i in range(100000)), encoding="utf-8")
+        tail = server._read_agent_output(self.storage, 1, tail_bytes=200)
+        self.assertLessEqual(len(tail.encode("utf-8")), 200)
+        self.assertTrue(tail.endswith("line 99999"))
+
+    def test_task_status(self) -> None:
+        self.assertIsNone(server._task_status(self.storage, 1))  # no db
+        _make_queue_rows(self.storage, [("7", "in_progress", "work"), ("8", "success", "work")])
+        self.assertEqual(server._task_status(self.storage, 1), "in_progress")
+        self.assertEqual(server._task_status(self.storage, 2), "success")
+        self.assertIsNone(server._task_status(self.storage, 999))
+
+    def test_read_tasks_flags_has_output(self) -> None:
+        _make_queue_rows(self.storage, [("7", "in_progress", "work"), ("8", "success", "work")])
+        out = self.storage / "agent-output"
+        out.mkdir()
+        (out / "1.log").write_text("x", encoding="utf-8")  # task 1 has a log; task 2 doesn't
+        items = {it["task_id"]: it["has_output"] for it in server._read_tasks(self.storage)["tasks"]["items"]}
+        self.assertTrue(items[1])
+        self.assertFalse(items[2])
+
+
 class InFutureTest(unittest.TestCase):
     def test_none_and_blank_are_not_future(self) -> None:
         self.assertFalse(server._in_future(None))

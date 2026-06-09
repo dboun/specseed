@@ -30,6 +30,7 @@ from specseed_runtime.executing.agent_runner import (
     build_runner_chains,
     default_model,
     default_runner_chains,
+    format_claude_stream_line,
     list_codex_model_slugs,
     model_presets,
     runner_from_spec,
@@ -113,6 +114,13 @@ class RunnerFromSpecTest(unittest.TestCase):
         self.assertIsInstance(runner, CodexAgentRunner)
         self.assertEqual(runner.effort, "high")
         self.assertEqual(runner.env_overrides, {"CODEX_HOME": "/d"})
+
+    def test_claude_command_streams_json_for_the_live_feed(self) -> None:
+        # stream-json (which requires --verbose) is what makes the agent's work
+        # visible live in the UI; the result still comes via $SPECSEED_RESULT_FILE.
+        argv = ClaudeAgentRunner().build_command("prompt", "/cwd")
+        self.assertIn("--verbose", argv)
+        self.assertEqual(argv[argv.index("--output-format") + 1], "stream-json")
 
     def test_codex_command_skips_git_repo_check(self) -> None:
         # A target need not be a git repo; without --skip-git-repo-check codex
@@ -368,6 +376,105 @@ class SubprocessFailureTailTest(unittest.TestCase):
         result = _EchoRunner(0).run("p", cwd=self._tmp.name, timeout_s=30)
         self.assertTrue(result.ok)
         self.assertIsNone(self._complete_event()["stdout_tail"])
+
+
+class ClaudeStreamFormatTest(unittest.TestCase):
+    """`format_claude_stream_line`: stream-json events -> readable feed lines."""
+
+    def _ev(self, obj) -> str:
+        return format_claude_stream_line(json.dumps(obj))
+
+    def test_assistant_text(self) -> None:
+        out = self._ev({"type": "assistant", "message": {"content": [{"type": "text", "text": "Done."}]}})
+        self.assertEqual(out, "● Done.\n")
+
+    def test_thinking_is_prefixed(self) -> None:
+        out = self._ev({"type": "assistant", "message": {"content": [{"type": "thinking", "thinking": "hmm  why"}]}})
+        self.assertEqual(out, "● Thinking: hmm why\n")
+
+    def test_tool_use_shows_name_and_input_field(self) -> None:
+        out = self._ev({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "Read", "input": {"file_path": "spec/x.md"}}]}})
+        self.assertEqual(out, "● Read(spec/x.md)\n")
+
+    def test_tool_use_without_known_field_falls_back_to_compact_json(self) -> None:
+        out = self._ev({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "Weird", "input": {"foo": "bar"}}]}})
+        self.assertIn("Weird(", out)
+        self.assertIn("foo", out)
+
+    def test_tool_result_is_a_child_line(self) -> None:
+        out = self._ev({"type": "user", "message": {"content": [
+            {"type": "tool_result", "content": [{"type": "text", "text": "14 passed\nmore"}]}]}})
+        self.assertEqual(out, "  └ 14 passed\n")
+
+    def test_system_and_result_events_are_dropped(self) -> None:
+        self.assertEqual(self._ev({"type": "system", "subtype": "init"}), "")
+        self.assertEqual(self._ev({"type": "result", "subtype": "success", "result": "x"}), "")
+
+    def test_non_json_is_shown_verbatim(self) -> None:
+        # a stray non-JSON warning line must not be lost
+        self.assertEqual(format_claude_stream_line("oops not json\n"), "oops not json\n")
+
+    def test_blank_line_is_empty(self) -> None:
+        self.assertEqual(format_claude_stream_line("   \n"), "")
+
+
+class _TwoLineRunner(SubprocessAgentRunner):
+    """Plain child that prints two lines (passthrough live feed). NOT an agent."""
+
+    def __init__(self) -> None:
+        super().__init__(poll_interval=0.05)
+
+    def build_command(self, prompt, cwd) -> list[str]:
+        return [sys.executable, "-c", "import sys; sys.stdin.read(); print('line one'); print('line two')"]
+
+
+class _ClaudeStreamEchoRunner(SubprocessAgentRunner):
+    """Child that emits two stream-json events; humanised via the claude formatter."""
+
+    def __init__(self) -> None:
+        super().__init__(poll_interval=0.05)
+
+    def build_command(self, prompt, cwd) -> list[str]:
+        events = [
+            json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Read", "input": {"file_path": "a.py"}}]}}),
+            json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "all good"}]}}),
+        ]
+        code = "import sys; sys.stdin.read();" + "".join("print({0!r});".format(e) for e in events)
+        return [sys.executable, "-c", code]
+
+    def format_stream_line(self, raw: str) -> str:
+        return format_claude_stream_line(raw)
+
+
+class LiveLogTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+
+    def test_passthrough_writes_raw_lines(self) -> None:
+        log = Path(self._tmp.name) / "out.log"
+        result = _TwoLineRunner().run("p", cwd=self._tmp.name, timeout_s=30, live_log=str(log))
+        self.assertTrue(result.ok)
+        self.assertEqual(log.read_text(encoding="utf-8"), "line one\nline two\n")
+
+    def test_claude_formatter_humanises_the_feed(self) -> None:
+        log = Path(self._tmp.name) / "out.log"
+        result = _ClaudeStreamEchoRunner().run("p", cwd=self._tmp.name, timeout_s=30, live_log=str(log))
+        self.assertTrue(result.ok)
+        self.assertEqual(log.read_text(encoding="utf-8"), "● Read(a.py)\n● all good\n")
+
+    def test_no_live_log_means_no_file(self) -> None:
+        result = _TwoLineRunner().run("p", cwd=self._tmp.name, timeout_s=30)
+        self.assertTrue(result.ok)
+        self.assertEqual(list(Path(self._tmp.name).glob("*.log")), [])
+
+    def test_fake_runner_records_live_log(self) -> None:
+        fake = FakeAgentRunner(result=AgentResult(ok=True, returncode=0))
+        fake.run("p", cwd="/tmp", live_log="/tmp/x.log")
+        self.assertEqual(fake.calls[-1]["live_log"], "/tmp/x.log")
 
 
 if __name__ == "__main__":

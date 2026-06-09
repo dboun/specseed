@@ -425,6 +425,27 @@ textarea { resize: vertical; min-height: 70px; }
 .modal-card { background: var(--panel); border: 1px solid var(--line-2); border-radius: 16px; padding: 24px; width: 100%; max-width: 440px; max-height: 90vh; overflow: auto; box-shadow: 0 40px 100px -30px #000; }
 .modal-card.wide { max-width: 560px; }
 
+/* Inline "Agent is working on this…" box in the post comments (our UI only). */
+.agent-working {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  margin: 4px 0 12px; padding: 10px 14px; cursor: pointer; text-align: left;
+  border: 1px solid var(--accent); border-radius: 999px;
+  background: rgba(56,225,192,0.06); color: var(--ink); font: inherit;
+}
+.agent-working:hover { background: rgba(56,225,192,0.12); }
+.agent-working-text { flex: 1; color: var(--accent); font-weight: 600; }
+.agent-working-cta { color: var(--muted); font-size: 12px; }
+
+/* Live "Agent output" popup. */
+.agent-output-card { max-width: 820px; display: flex; flex-direction: column; gap: 12px; padding: 18px 20px; }
+.agent-output-head { display: flex; align-items: center; justify-content: space-between; }
+.agent-output-title { display: flex; align-items: center; gap: 8px; font-weight: 700; }
+.agent-output-body {
+  margin: 0; padding: 14px; height: 60vh; overflow: auto;
+  background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 10px;
+  font-size: 12.5px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--ink);
+}
+
 .toast {
   position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); z-index: 200;
   background: var(--panel-2); color: var(--ink); border: 1px solid var(--line-2);

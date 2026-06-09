@@ -6,10 +6,15 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import tempfile
+
 from specseed_runtime.storage_paths import (
     SPECSEED_STORAGE_ENV,
+    agent_output_dir,
+    agent_output_file,
     default_specseed_dir,
     default_storage_dir,
+    prune_agent_output,
     storage_db_path,
 )
 
@@ -48,6 +53,34 @@ class DefaultStorageDirTest(unittest.TestCase):
                 storage_db_path("specseed.db"),
                 Path("/tmp/target/.specseed/storage/specseed.db"),
             )
+
+
+class AgentOutputTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.storage = Path(self._tmp.name)
+
+    def test_paths_are_flat_under_agent_output(self) -> None:
+        self.assertEqual(agent_output_dir(self.storage), self.storage / "agent-output")
+        self.assertEqual(agent_output_file(42, self.storage), self.storage / "agent-output" / "42.log")
+
+    def test_prune_keeps_newest_n(self) -> None:
+        out = agent_output_dir(self.storage)
+        out.mkdir(parents=True)
+        # mtimes ascending with task id so "newest" is deterministic
+        for i in range(5):
+            p = out / f"{i}.log"
+            p.write_text("x", encoding="utf-8")
+            import os
+            os.utime(p, (1000 + i, 1000 + i))
+        prune_agent_output(self.storage, keep=2)
+        survivors = sorted(p.name for p in out.glob("*.log"))
+        self.assertEqual(survivors, ["3.log", "4.log"])
+
+    def test_prune_missing_dir_is_noop(self) -> None:
+        prune_agent_output(self.storage, keep=2)  # no agent-output dir yet
+        self.assertFalse(agent_output_dir(self.storage).exists())
 
 
 if __name__ == "__main__":

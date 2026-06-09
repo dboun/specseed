@@ -40,6 +40,8 @@ export const api = {
   },
   runner: (id, action) => post(`${base(id)}/runner`, { action }),
   retryTask: (id, taskId) => post(`${base(id)}/tasks/${enc(taskId)}/retry`),
+  // live agent stdout for a work task: { task_id, status, running, text }
+  workOutput: (id, taskId) => request(`${base(id)}/work-output/${enc(taskId)}`),
 
   // configuration
   getConfig: (id) => request(`${base(id)}/config`),
