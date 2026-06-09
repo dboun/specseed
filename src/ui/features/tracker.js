@@ -441,9 +441,40 @@ export function createTracker({ repo, ctx }) {
     const qt = document.querySelector(".quick-toggles");
     if (qt) qt.outerHTML = quickToggles();
   }
+  // Snapshot the comment composer (value + caret + focus) so a drawer repaint can
+  // run WHILE the user is typing without wiping a half-written comment or stealing
+  // focus. This is what lets comments stream in live regardless of composer state.
+  function captureComposer(host) {
+    const ta = host.querySelector("[data-comment-form] textarea");
+    if (!ta) return null;
+    return {
+      value: ta.value,
+      start: ta.selectionStart,
+      end: ta.selectionEnd,
+      focused: document.activeElement === ta,
+    };
+  }
+  function restoreComposer(host, saved) {
+    if (!saved) return;
+    const ta = host.querySelector("[data-comment-form] textarea");
+    if (!ta) return;
+    if (saved.value) ta.value = saved.value;
+    if (saved.focused) {
+      ta.focus({ preventScroll: true });
+      try {
+        ta.setSelectionRange(saved.start, saved.end);
+      } catch {
+        /* setSelectionRange unsupported on some input types */
+      }
+    }
+  }
   function repaintDrawer() {
     const host = document.querySelector("[data-drawer]");
-    if (host) host.innerHTML = drawerHtml();
+    if (host) {
+      const composer = captureComposer(host);
+      host.innerHTML = drawerHtml();
+      restoreComposer(host, composer);
+    }
     // On mobile the detail view takes over the content area (CSS hides the list);
     // toggling this class drives that. Desktop layout ignores it.
     document.querySelector("[data-tracker-root]")?.classList.toggle("detail", !!state.selected);
@@ -661,14 +692,12 @@ export function createTracker({ repo, ctx }) {
   // so new comments/labels show up live (guarded by drawerBusy below).
   let timer = null;
   let polling = false;
-  // A drawer repaint rebuilds its DOM: it would wipe an edit form, a half-typed
-  // comment, and steal focus. Refresh the open post only when none of that is live.
+  // A drawer repaint rebuilds its DOM. The comment composer survives it
+  // (capture/restoreComposer), so only the title/body EDIT FORM needs protection -
+  // rebuilding it mid-edit would discard the in-progress edit. Everything else
+  // (incoming comments, reactions, labels, the agent-working box) repaints freely.
   function drawerBusy() {
-    if (state.editing) return true;
-    const drawer = document.querySelector("[data-drawer]");
-    if (!drawer) return false;
-    if (drawer.contains(document.activeElement)) return true;
-    return [...drawer.querySelectorAll("input, textarea")].some((el) => el.value.trim());
+    return state.editing;
   }
   // Queue dot in the tab head: glows only while the repo has queued/running work.
   async function refreshQueueDot() {
@@ -693,19 +722,22 @@ export function createTracker({ repo, ctx }) {
     polling = true;
     try {
       await refreshQueueDot();
-      if (state.selectedId) {
-        if (drawerBusy()) return;
+      // Always keep the card list current - even with a post open in the drawer.
+      // The list carries no input state, so a repaint is safe every tick; this is
+      // what makes cards (and their running-dots) update live as posts change.
+      await reloadPosts();
+      repaintList();
+      // Additionally refresh the open post so new comments / the agent-working box
+      // stream in. Guarded only by an active edit form (see drawerBusy).
+      if (state.selectedId && !drawerBusy()) {
         const id = state.selectedId;
         const fresh = await api.getPost(repo.id, id);
-        // re-check after the await: the user may have started typing or switched posts
+        // re-check after the await: the user may have started editing or switched posts
         if (String(state.selectedId) !== String(id) || drawerBusy()) return;
         if (JSON.stringify(fresh) !== JSON.stringify(state.selected)) {
           state.selected = fresh;
           repaintDrawer();
         }
-      } else {
-        await reloadPosts();
-        repaintList();
       }
     } catch {
       /* transient; next tick retries */
