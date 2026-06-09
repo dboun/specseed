@@ -455,6 +455,8 @@ export function createTracker({ repo, ctx }) {
     const box = container.getBoundingClientRect();
     const cx = box.left + box.width / 2;
     const cy = box.top + box.height / 2;
+    // size the disc to the LARGER of the two sides, so the beam reaches the far edge
+    sweep.style.setProperty("--radar-size", `${Math.round(Math.max(box.width, box.height))}px`);
     for (const el of targets) {
       const r = el.getBoundingClientRect();
       // angle clockwise from 12 o'clock to the target's centre

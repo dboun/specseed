@@ -317,12 +317,15 @@ button.chip { cursor: pointer; }
 /* the rotating wedge: a thin bright leading edge with a short fading tail */
 .radar-sweep::before {
   content: ""; position: absolute;
-  width: 230%; height: 230%; left: 50%; top: 50%;
+  width: var(--radar-size, 230%); height: var(--radar-size, 230%); left: 50%; top: 50%;
   background: conic-gradient(from 0deg,
     rgba(56, 225, 192, 0.22) 0deg,
     rgba(56, 225, 192, 0.05) 16deg,
     rgba(56, 225, 192, 0) 64deg,
     rgba(56, 225, 192, 0) 360deg);
+  /* radial falloff -> the wedge's far end follows the circle instead of the box's flat corner */
+  -webkit-mask: radial-gradient(closest-side, #000 80%, transparent 100%);
+          mask: radial-gradient(closest-side, #000 80%, transparent 100%);
   animation: radar-rot var(--radar-dur, 2200ms) linear forwards;
 }
 @keyframes radar-rot {
