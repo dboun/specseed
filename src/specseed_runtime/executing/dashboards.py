@@ -208,9 +208,14 @@ def _render_roadmap(nodes: dict) -> str:
 
 # A sprint section header (``## SPRINT_... — name  (state)``) vs the top ``# SCHEDULE``.
 _SPRINT_HEADER_RE = re.compile(r"^##\s+\S")
-# A ticket line carries its post id (``[PROJ-0001](#7)``) and a ``(done/total)`` counter.
+# A ticket line carries its post id (``[PROJ-0001](#7)``) and a counter. The counter
+# is ``(done/total)``, optionally with cancelled-issue notes (``(1/2 + 1 wont_do)``);
+# matching the notes too keeps the rewrite idempotent on its own previous output.
 _TICKET_ID_RE = re.compile(r"\(#(\d+)\)")
-_COUNTER_RE = re.compile(r"\(\s*\d+\s*/\s*\d+\s*\)")
+_COUNTER_RE = re.compile(r"\(\s*\d+\s*/\s*\d+[^)]*\)")
+# Terminal-but-not-done: the issue's code will never land, so it leaves the
+# done/total denominator and is noted separately on the counter.
+_CANCELLED = ("deprecated", "wont_do")
 # The trailing sprint-state annotation, e.g. ``... Foundation sprint  (ongoing)``.
 _STATE_RE = re.compile(r"\((?:done|ongoing|planned)\)\s*$")
 
@@ -218,10 +223,11 @@ _STATE_RE = re.compile(r"\((?:done|ongoing|planned)\)\s*$")
 def refresh_schedule_body(body: Optional[str], nodes: dict) -> Optional[str]:
     """Return ``body`` with derived bits recomputed from live work, else unchanged.
 
-    Rewrites two things only, in place: each ticket line's ``(done/total)`` counter
-    (its issues that are ``done`` over its total) and each sprint header's trailing
-    ``(done|ongoing|planned)`` state. Everything else - which tickets sit in which
-    sprint, their order, hours, ★ - is the skill's and is left exactly as written.
+    Rewrites two things only, in place: each ticket line's counter (its ``done``
+    issues over its live total, plus ``+ N deprecated`` / ``+ N wont_do`` notes for
+    cancelled ones, which drop out of the denominator) and each sprint header's
+    trailing ``(done|ongoing|planned)`` state. Everything else - which tickets sit
+    in which sprint, their order, hours, ★ - is the skill's and is left as written.
     """
     if not body:
         return body
@@ -245,8 +251,8 @@ def refresh_schedule_body(body: Optional[str], nodes: dict) -> Optional[str]:
             if current_header is not None:
                 header_tickets[current_header].append(tid)
             if tid in progress:
-                done, total = progress[tid]
-                line = _COUNTER_RE.sub("({0}/{1})".format(done, total), line, count=1)
+                counter = _format_counter(*progress[tid])
+                line = _COUNTER_RE.sub(lambda _m: counter, line, count=1)
         out.append(line)
 
     for index, tids in header_tickets.items():
@@ -261,17 +267,37 @@ def refresh_schedule_body(body: Optional[str], nodes: dict) -> Optional[str]:
 
 
 def _ticket_progress(nodes: dict) -> dict:
-    """``{ticket_id: (done, total)}`` over issue nodes grouped by their ticket parent."""
-    progress: dict[str, tuple] = {}
+    """``{ticket_id: (done, live_total, {cancelled_status: n})}`` over issue nodes.
+
+    A cancelled issue (``deprecated``/``wont_do``) is counted in its own bucket and
+    excluded from ``live_total`` - its code will never land, so it neither completes
+    nor blocks the ticket; it is only surfaced as a note on the counter.
+    """
+    progress: dict[str, list] = {}
     for node in nodes.values():
         if node["tier"] != "issue":
             continue
         tid = node.get("ticket")
         if not tid:
             continue
-        done, total = progress.get(tid, (0, 0))
-        progress[tid] = (done + (1 if node["status"] == "done" else 0), total + 1)
-    return progress
+        entry = progress.setdefault(tid, [0, 0, {}])
+        status = node["status"]
+        if status in _CANCELLED:
+            entry[2][status] = entry[2].get(status, 0) + 1
+        else:
+            entry[1] += 1
+            if status == "done":
+                entry[0] += 1
+    return {tid: (done, total, cancelled) for tid, (done, total, cancelled) in progress.items()}
+
+
+def _format_counter(done: int, total: int, cancelled: dict) -> str:
+    """``(done/total)`` plus ``+ N deprecated`` / ``+ N wont_do`` notes for cancelled work."""
+    parts = ["{0}/{1}".format(done, total)]
+    for status in _CANCELLED:
+        if cancelled.get(status):
+            parts.append("{0} {1}".format(cancelled[status], status))
+    return "({0})".format(" + ".join(parts))
 
 
 def _sprint_state(statuses: list) -> Optional[str]:

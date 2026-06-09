@@ -137,6 +137,24 @@ class DashboardTest(unittest.TestCase):
         self.assertIn("(0/2)", schedule)
         self.assertIn("(planned)", schedule)
 
+    def test_schedule_counter_notes_cancelled_issues(self) -> None:
+        self._seed_dashboards()
+        t = self._mk("Ship", ["ticket", "ticket:status:in_progress"], "Issues: #5, #6, #7, #8\n")
+        self._mk("A", ["issue", "issue:status:done"], "Ticket: #{0}\n".format(t))
+        self._mk("B", ["issue", "issue:status:in_progress"], "Ticket: #{0}\n".format(t))
+        self._mk("C", ["issue", "issue:status:wont_do"], "Ticket: #{0}\n".format(t))
+        self._mk("D", ["issue", "issue:status:deprecated"], "Ticket: #{0}\n".format(t))
+        self._seed_schedule(t)
+
+        dashboards.refresh_dashboards(self.remote)
+        schedule = self._body(self._id_of("SCHEDULE"))
+        # cancelled issues drop out of the denominator and are noted, deprecated first
+        self.assertIn("(1/2 + 1 deprecated + 1 wont_do)", schedule)
+
+        # idempotent on its own richer output
+        second = dashboards.refresh_dashboards(self.remote)
+        self.assertNotIn("SCHEDULE", second["updated"])
+
     def test_schedule_seed_placeholder_untouched(self) -> None:
         self._seed_dashboards()
         placeholder = "# SCHEDULE\n\n_No sprints planned yet._\n"
