@@ -246,6 +246,12 @@ _PE_REASON = {
         "give concrete fix options. Update the body; add a comment summarizing "
         "what changed since your last report."
     ),
+    "fatal": (
+        "This failure is not auto-retryable - a deterministic refusal, bad "
+        "payload, or crash that a re-run cannot fix. No retries will happen. "
+        "Find the root cause, then REWRITE the post body with what you found and "
+        "concrete fix options. The body currently holds only the raw error stub."
+    ),
     "reply": (
         "The human replied on the thread. Read their last comment and answer it "
         "as a comment. Update the body only if the situation materially changed."

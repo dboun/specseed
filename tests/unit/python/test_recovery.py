@@ -159,14 +159,32 @@ class RecoveryTest(unittest.TestCase):
         self.assertEqual(self.db.get_task(task["task_id"])["status"], "failed")
 
     # -- guards ------------------------------------------------------------ #
-    def test_non_retryable_failure_does_nothing(self) -> None:
+    def test_non_retryable_failure_posts_and_engages_agent_no_retry(self) -> None:
+        # A deterministic failure can't be fixed by re-running, but it must still
+        # surface: a platform_error post + the resolve agent, with NO retry queued.
         task = self._failed_task()
         summary = recovery.on_failure(
             db=self.db, config=self.config, remote=self.remote,
-            task=task, outcome=_outcome(retryable=False),
+            task=task, outcome=_outcome(retryable=False, error="missing apr.id"),
         )
-        self.assertEqual(summary, {"retried": False, "post_id": None, "agent": False})
-        self.assertEqual(self._error_posts(), [])
+        self.assertFalse(summary["retried"])
+        self.assertTrue(summary["agent"])
+        self.assertIsNotNone(summary["post_id"])
+        # the failed task stays failed - no retry scheduled
+        self.assertEqual(self.db.get_task(task["task_id"])["status"], "failed")
+        # one post, body says retries are off and the raw error is quoted
+        posts = self._error_posts()
+        self.assertEqual(len(posts), 1)
+        detail = self.remote.get_entry(posts[0].id).data
+        self.assertIn("Automatic retries are off", detail.body)
+        self.assertIn("missing apr.id", detail.body)
+        # the resolve agent is engaged with the non-retryable reason
+        resolve_tasks = [
+            t for t in (self.db.get_task(i) for i in range(1, 50))
+            if t and t["action"] == recovery.PLATFORM_ERROR_ACTION
+        ]
+        self.assertEqual(len(resolve_tasks), 1)
+        self.assertEqual(resolve_tasks[0]["payload"]["reason"], "fatal")
 
     def test_recovery_never_recovers_itself(self) -> None:
         task = self._failed_task(action=recovery.PLATFORM_ERROR_ACTION)

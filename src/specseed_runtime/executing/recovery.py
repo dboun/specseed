@@ -1,12 +1,14 @@
 """recovery.py - what happens after a task fails: retries, the error post, the agent.
 
 Failure used to be invisible: a ``task_errors`` row and a log line, the post in
-limbo, no way back but recreating it. Now a retryable failure becomes remote
-state and a scheduled retry:
+limbo, no way back but recreating it. Now EVERY non-self failure becomes remote
+state; a retryable one also earns scheduled retries:
 
-1. **Retry with backoff.** The failed task requeues with ``not_before`` =
-   now + 1' / 5' / 15' / 15'... (``claim_next`` honors it). Capped by
-   ``config.recovery.max_retries``.
+1. **Retry with backoff (retryable only).** A retryable failure requeues with
+   ``not_before`` = now + 1' / 5' / 15' / 15'... (``claim_next`` honors it),
+   capped by ``config.recovery.max_retries``. A NON-retryable failure (a
+   deterministic refusal, bad payload, or crash - a re-run can't fix it) skips
+   retries but still posts and engages the agent at once.
 2. **One ``platform_error`` post per task.** The runtime creates it on the
    first failure (deterministic - exists even when no agent is configured),
    body = what failed + the error + what happens next. Every retry outcome
@@ -235,11 +237,15 @@ def on_failure(
         return summary
 
     cfg = recovery_config(config)
-    if not cfg["enabled"] or not getattr(outcome, "retryable", False):
+    if not cfg["enabled"]:
         return summary
+    retryable = bool(getattr(outcome, "retryable", False))
 
     attempts = int(task.get("attempts") or 1)
-    exhausted = attempts > cfg["max_retries"]
+    # A non-retryable failure (deterministic refusal, bad payload, crash) won't
+    # fix itself on a re-run: skip retries, but still surface it - post + engage
+    # the agent now (delay_s None drives the "retries off" post body).
+    exhausted = (not retryable) or attempts > cfg["max_retries"]
     delay_s: Optional[int] = None if exhausted else retry_delay_s(attempts)
 
     # The post first: failure becomes remote state even if the requeue below
@@ -282,17 +288,26 @@ def on_failure(
 
     if exhausted:
         if post_id is not None:
-            _comment(
-                remote,
-                post_id,
-                f"Tried {attempts} times; still failing. No more automatic retries. "
-                "An agent will take a deeper look and report here - replies with "
-                "instructions are read.",
-            )
-            _enqueue_resolve(db, post_id, task, reason="exhausted")
+            # A freshly created post already states the situation in its body;
+            # only comment when escalating an EXISTING post (retries ran out).
+            if not created:
+                note = (
+                    f"Tried {attempts} times; still failing. No more automatic retries. "
+                    if retryable
+                    else "This failure will not be retried automatically. "
+                )
+                _comment(
+                    remote,
+                    post_id,
+                    note + "An agent will take a deeper look and report here - "
+                    "replies with instructions are read.",
+                )
+            _enqueue_resolve(db, post_id, task, reason="exhausted" if retryable else "fatal")
             summary["agent"] = True
         platform_log.log_event(
-            "task_retries_exhausted", task_id=task_id, attempts=attempts
+            "task_retries_exhausted" if retryable else "task_not_retryable",
+            task_id=task_id,
+            attempts=attempts,
         )
         return summary
 
