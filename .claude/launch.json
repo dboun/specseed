@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "specseed-ui",
+      "runtimeExecutable": "src/specseed",
+      "runtimeArgs": ["serve"],
+      "port": 5051
+    }
+  ]
+}

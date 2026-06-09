@@ -287,7 +287,9 @@ button.chip { cursor: pointer; }
 .post-foot .chip-row { flex: 1; min-width: 0; }
 .reply-count { margin-top: 8px; font-family: var(--mono); font-size: 11px; color: var(--muted); white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; }
 
-.tracker-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); gap: 16px; align-items: start; }
+.tracker-grid { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); gap: 16px; align-items: start; }
+/* keep content above the radar sweep overlay (z-index:0) */
+.post-list, .drawer-host { position: relative; z-index: 1; }
 .post-list { display: flex; flex-direction: column; gap: 10px; }
 .post-card {
   background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
@@ -303,6 +305,48 @@ button.chip { cursor: pointer; }
 @keyframes dot-pulse { 50% { opacity: 0.35; } }
 .post-title { font-weight: 600; margin: 4px 0 2px; }
 .post-meta { color: var(--muted); font-size: 12px; }
+
+/* --- radar sweep: one subtle clockwise scan when a post/comment arrives --- */
+/* overlay sits behind the cards/drawer (z-index:0); the cards carry z-index:1 */
+.drawer { position: relative; z-index: 1; }
+.radar-sweep {
+  position: absolute; inset: 0; z-index: 0;
+  pointer-events: none; border-radius: 12px; overflow: hidden;
+  animation: radar-fade var(--radar-dur, 2200ms) ease-in-out forwards;
+}
+/* the rotating wedge: a thin bright leading edge with a short fading tail */
+.radar-sweep::before {
+  content: ""; position: absolute;
+  width: 230%; height: 230%; left: 50%; top: 50%;
+  background: conic-gradient(from 0deg,
+    rgba(56, 225, 192, 0.22) 0deg,
+    rgba(56, 225, 192, 0.05) 16deg,
+    rgba(56, 225, 192, 0) 64deg,
+    rgba(56, 225, 192, 0) 360deg);
+  animation: radar-rot var(--radar-dur, 2200ms) linear forwards;
+}
+@keyframes radar-rot {
+  from { transform: translate(-50%, -50%) rotate(0deg); }
+  to   { transform: translate(-50%, -50%) rotate(360deg); }
+}
+@keyframes radar-fade {
+  0% { opacity: 0; } 10% { opacity: 1; } 82% { opacity: 1; } 100% { opacity: 0; }
+}
+/* the target glows the moment the line passes (delay set per-element in JS) */
+.radar-ping { position: relative; }
+.radar-ping::after {
+  content: ""; position: absolute; inset: -1px; border-radius: inherit;
+  pointer-events: none; z-index: 2;
+  animation: radar-glow 1100ms ease-out var(--ping-delay, 0ms) both;
+}
+@keyframes radar-glow {
+  0%   { box-shadow: 0 0 0 0 rgba(56, 225, 192, 0); }
+  16%  { box-shadow: 0 0 16px 1px rgba(56, 225, 192, 0.45), 0 0 0 1px rgba(56, 225, 192, 0.55) inset; }
+  100% { box-shadow: 0 0 0 0 rgba(56, 225, 192, 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .radar-sweep, .radar-ping::after { display: none; }
+}
 
 .pager { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 8px; }
 .pager-info { font-family: var(--mono); font-size: 12px; color: var(--muted); }

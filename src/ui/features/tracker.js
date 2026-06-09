@@ -19,6 +19,8 @@ export function createTracker({ repo, ctx }) {
     selected: null,
     editing: false, // drawer title/body edit mode
     addLabelOpen: false, // add-label dropdown stays open across repaints
+    seenPostIds: null, // baseline of known post ids; new ids trigger a radar sweep
+    seenCommentIds: null, // baseline of comment ids on the open post (radar sweep on new ones)
   };
 
   async function load() {
@@ -28,6 +30,9 @@ export function createTracker({ repo, ctx }) {
       return;
     }
     await reloadPosts();
+    // Baseline the known posts so the very first paint never sweeps everything;
+    // only posts that appear AFTER this get the radar treatment.
+    state.seenPostIds = new Set(state.posts.map((p) => String(p.id)));
   }
 
   async function reloadPosts() {
@@ -404,7 +409,7 @@ export function createTracker({ repo, ctx }) {
       .split(MERGE_GATE_MARKER).join("")
       .split(WORK_MERGE_GATE_MARKER).join("");
     return `
-      <article class="approval-box ${resolved ? "resolved" : ""}">
+      <article class="approval-box ${resolved ? "resolved" : ""}" data-comment-id="${escapeHtml(String(comment.id))}">
         <div class="approval-body">${renderMarkdown(body)}</div>
         ${resolved
           ? `<div class="approval-status">${resolved === "approved" ? "✅ Approved" : "🚫 Rejected"}</div>`
@@ -415,7 +420,7 @@ export function createTracker({ repo, ctx }) {
   function commentHtml(comment, post) {
     if (isApprovalComment(comment)) return approvalBox(comment, post);
     return `
-      <article class="comment">
+      <article class="comment" data-comment-id="${escapeHtml(String(comment.id))}">
         <div class="comment-meta">${escapeHtml(comment.author || "unknown")} · ${escapeHtml(formatTime(comment.updated_at || comment.created_at))}</div>
         <div class="comment-body">${renderMarkdown(comment.body || "")}</div>
         <div class="reaction-strip sm">${reactionButtons(comment.reactions, "comment", comment.id)}</div>
@@ -432,6 +437,36 @@ export function createTracker({ repo, ctx }) {
           ${reactionIcon(kind)}<span>${count}</span></button>`;
       })
       .join("");
+  }
+
+  // -- radar sweep ------------------------------------------------------ #
+  // One clockwise scan across `container`; each target glows the instant the
+  // sweep line crosses its angle (delay = sweep position). Pure CSS animation +
+  // a little geometry, no deps. Self-cleaning, honours reduced-motion.
+  const RADAR_DUR = 2200;
+  function radarSweep(container, targets) {
+    if (!container || !targets.length) return;
+    if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    container.querySelector(":scope > .radar-sweep")?.remove(); // one sweep at a time
+    const sweep = document.createElement("div");
+    sweep.className = "radar-sweep";
+    sweep.style.setProperty("--radar-dur", `${RADAR_DUR}ms`);
+    container.appendChild(sweep);
+    const box = container.getBoundingClientRect();
+    const cx = box.left + box.width / 2;
+    const cy = box.top + box.height / 2;
+    for (const el of targets) {
+      const r = el.getBoundingClientRect();
+      // angle clockwise from 12 o'clock to the target's centre
+      let ang = (Math.atan2(r.left + r.width / 2 - cx, cy - (r.top + r.height / 2)) * 180) / Math.PI;
+      if (ang < 0) ang += 360;
+      el.style.setProperty("--ping-delay", `${Math.round((RADAR_DUR * ang) / 360)}ms`);
+      el.classList.remove("radar-ping");
+      void el.offsetWidth; // restart the animation if mid-flight
+      el.classList.add("radar-ping");
+      el.addEventListener("animationend", () => el.classList.remove("radar-ping"), { once: true });
+    }
+    setTimeout(() => sweep.remove(), RADAR_DUR + 200);
   }
 
   // -- partial repaint -------------------------------------------------- #
@@ -486,6 +521,9 @@ export function createTracker({ repo, ctx }) {
       state.selected = await api.getPost(repo.id, id);
       state.editing = false;
       state.addLabelOpen = false;
+      // Baseline existing comments so opening a post doesn't sweep its history;
+      // only comments that stream in afterwards ping.
+      state.seenCommentIds = new Set((state.selected.comments || []).map((c) => String(c.id)));
       repaintDrawer();
       repaintList();
     } catch (err) {
@@ -727,6 +765,18 @@ export function createTracker({ repo, ctx }) {
       // what makes cards (and their running-dots) update live as posts change.
       await reloadPosts();
       repaintList();
+      // Radar: any post id we hadn't seen last tick gets a sweep + ping (only the
+      // cards actually on the current page can be lit; off-page ones just update).
+      if (state.seenPostIds) {
+        const fresh = state.posts.map((p) => String(p.id)).filter((id) => !state.seenPostIds.has(id));
+        if (fresh.length) {
+          const cards = fresh
+            .map((id) => document.querySelector(`.post-card[data-open-post="${id}"]`))
+            .filter(Boolean);
+          radarSweep(document.querySelector(".tracker-grid"), cards);
+        }
+      }
+      state.seenPostIds = new Set(state.posts.map((p) => String(p.id)));
       // Additionally refresh the open post so new comments / the agent-working box
       // stream in. Guarded only by an active edit form (see drawerBusy).
       if (state.selectedId && !drawerBusy()) {
@@ -737,6 +787,17 @@ export function createTracker({ repo, ctx }) {
         if (JSON.stringify(fresh) !== JSON.stringify(state.selected)) {
           state.selected = fresh;
           repaintDrawer();
+          // Radar: ping comments that arrived since the last tick.
+          const ids = (fresh.comments || []).map((c) => String(c.id));
+          if (state.seenCommentIds) {
+            const added = ids.filter((cid) => !state.seenCommentIds.has(cid));
+            if (added.length) {
+              const host = document.querySelector("[data-drawer]");
+              const els = added.map((cid) => host?.querySelector(`[data-comment-id="${cid}"]`)).filter(Boolean);
+              radarSweep(host, els);
+            }
+          }
+          state.seenCommentIds = new Set(ids);
         }
       }
     } catch {
