@@ -1,9 +1,12 @@
-"""dashboards.py - keep the ROADMAP and CURRENT SPRINT posts in sync.
+"""dashboards.py - keep the ROADMAP, CURRENT SPRINT, and SCHEDULE posts in sync.
 
 The seed creates permanent ``management`` posts (ROADMAP, SCHEDULE, CONTROL,
 CURRENT SPRINT) and their bodies say "the scheduler keeps this in sync". This
 module is that maintenance: it renders the live epic -> ticket -> issue tree from
-the work posts and rewrites the dashboard bodies to match.
+the work posts and rewrites ROADMAP + CURRENT SPRINT wholesale. SCHEDULE is
+skill-authored (composition, order, hours, ★), so it is NOT re-rendered - the
+runtime only refreshes its derived bits in place (per-ticket ``(done/total)`` and
+each sprint's ``(done|ongoing|planned)`` state); see ``refresh_schedule_body``.
 
 It is deliberately:
 
@@ -22,6 +25,7 @@ Only Python stdlib is used.
 from __future__ import annotations
 
 import hashlib
+import re
 from typing import Any, Optional
 
 from specseed_runtime.entities.entity_base import Entity
@@ -30,6 +34,7 @@ from specseed_runtime.executing import relationships
 
 ROADMAP_TITLE = "ROADMAP"
 CURRENT_SPRINT_TITLE = "CURRENT SPRINT"
+SCHEDULE_TITLE = "SCHEDULE"
 
 _TERMINAL = {"done", "wont_do", "deprecated"}
 _WORK_TIERS = ("epic", "ticket", "issue")
@@ -114,6 +119,21 @@ def refresh_dashboards(remote: Any) -> dict:
             summary["updated"].append(title)
         else:
             platform_log.log_event("dashboard_edit_failed", title=title, error=getattr(res, "error", None))
+
+    # SCHEDULE is skill-authored (composition, order, hours, ★); the runtime only
+    # refreshes its derived bits (per-ticket (done/total) + each sprint's state) in
+    # place, so completed work stops reading as stale.
+    schedule_post = by_title.get(SCHEDULE_TITLE)
+    if schedule_post is not None:
+        current = getattr(remote.get_entry(schedule_post.id).data, "body", None)
+        refreshed = refresh_schedule_body(current, nodes)
+        if refreshed is not None and refreshed != current:
+            res = remote.edit_entry(schedule_post.id, body=refreshed)
+            if getattr(res, "ok", False):
+                summary["updated"].append(SCHEDULE_TITLE)
+            else:
+                platform_log.log_event("dashboard_edit_failed", title=SCHEDULE_TITLE, error=getattr(res, "error", None))
+
     if summary["updated"]:
         platform_log.log_event("dashboards_refreshed", updated=summary["updated"])
     return summary
@@ -184,6 +204,86 @@ def _render_roadmap(nodes: dict) -> str:
             lines.append(_line(issue, 0))
 
     return "\n".join(lines) + "\n"
+
+
+# A sprint section header (``## SPRINT_... — name  (state)``) vs the top ``# SCHEDULE``.
+_SPRINT_HEADER_RE = re.compile(r"^##\s+\S")
+# A ticket line carries its post id (``[PROJ-0001](#7)``) and a ``(done/total)`` counter.
+_TICKET_ID_RE = re.compile(r"\(#(\d+)\)")
+_COUNTER_RE = re.compile(r"\(\s*\d+\s*/\s*\d+\s*\)")
+# The trailing sprint-state annotation, e.g. ``... Foundation sprint  (ongoing)``.
+_STATE_RE = re.compile(r"\((?:done|ongoing|planned)\)\s*$")
+
+
+def refresh_schedule_body(body: Optional[str], nodes: dict) -> Optional[str]:
+    """Return ``body`` with derived bits recomputed from live work, else unchanged.
+
+    Rewrites two things only, in place: each ticket line's ``(done/total)`` counter
+    (its issues that are ``done`` over its total) and each sprint header's trailing
+    ``(done|ongoing|planned)`` state. Everything else - which tickets sit in which
+    sprint, their order, hours, ★ - is the skill's and is left exactly as written.
+    """
+    if not body:
+        return body
+
+    progress = _ticket_progress(nodes)
+    ticket_status = {n["id"]: n["status"] for n in nodes.values() if n["tier"] == "ticket"}
+
+    out: list[str] = []
+    current_header: Optional[int] = None
+    header_tickets: dict[int, list[str]] = {}
+
+    for line in body.split("\n"):
+        if _SPRINT_HEADER_RE.match(line):
+            current_header = len(out)
+            header_tickets[current_header] = []
+            out.append(line)
+            continue
+        match = _TICKET_ID_RE.search(line)
+        if match and _COUNTER_RE.search(line):
+            tid = match.group(1)
+            if current_header is not None:
+                header_tickets[current_header].append(tid)
+            if tid in progress:
+                done, total = progress[tid]
+                line = _COUNTER_RE.sub("({0}/{1})".format(done, total), line, count=1)
+        out.append(line)
+
+    for index, tids in header_tickets.items():
+        header = out[index]
+        if not _STATE_RE.search(header):
+            continue  # no state annotation to maintain; leave the header alone
+        state = _sprint_state([ticket_status[t] for t in tids if t in ticket_status])
+        if state is not None:
+            out[index] = _STATE_RE.sub("({0})".format(state), header)
+
+    return "\n".join(out)
+
+
+def _ticket_progress(nodes: dict) -> dict:
+    """``{ticket_id: (done, total)}`` over issue nodes grouped by their ticket parent."""
+    progress: dict[str, tuple] = {}
+    for node in nodes.values():
+        if node["tier"] != "issue":
+            continue
+        tid = node.get("ticket")
+        if not tid:
+            continue
+        done, total = progress.get(tid, (0, 0))
+        progress[tid] = (done + (1 if node["status"] == "done" else 0), total + 1)
+    return progress
+
+
+def _sprint_state(statuses: list) -> Optional[str]:
+    """``done`` if every ticket is terminal, ``planned`` if none started, else ``ongoing``."""
+    statuses = [s for s in statuses if s]
+    if not statuses:
+        return None
+    if all(s in _TERMINAL for s in statuses):
+        return "done"
+    if all(s == "todo" for s in statuses):
+        return "planned"
+    return "ongoing"
 
 
 def _render_sprint(nodes: dict) -> str:

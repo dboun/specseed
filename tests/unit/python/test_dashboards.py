@@ -85,6 +85,83 @@ class DashboardTest(unittest.TestCase):
         self.assertTrue(out["ok"])
         self.assertIn("No work posts yet", self._body(1))
 
+    # --- SCHEDULE refresh (derived bits only) ---------------------------------
+
+    _SCHEDULE_SEED = (
+        "# SCHEDULE\n\nintro line\n\n"
+        "## SPRINT_2026_W24_A — Foundation sprint  (ongoing)\n"
+        "- [PROJ-0001](#{ticket}) Todo CLI — 2h (0/2) ★\n"
+    )
+
+    def _seed_schedule(self, ticket_id, done=0, total=2):
+        body = self._SCHEDULE_SEED.format(ticket=ticket_id).replace("(0/2)", "({0}/{1})".format(done, total))
+        self._mk("SCHEDULE", ["management"], body)
+
+    def test_schedule_counter_and_state_refresh_on_completion(self) -> None:
+        self._seed_dashboards()
+        t = self._mk("Ship", ["ticket", "ticket:status:done"], "Issues: #5, #6\n")
+        self._mk("A", ["issue", "issue:status:done"], "Ticket: #{0}\n".format(t))
+        self._mk("B", ["issue", "issue:status:done"], "Ticket: #{0}\n".format(t))
+        self._seed_schedule(t)
+
+        out = dashboards.refresh_dashboards(self.remote)
+        self.assertIn("SCHEDULE", out["updated"])
+        schedule = self._body(self._id_of("SCHEDULE"))
+        self.assertIn("(2/2)", schedule)
+        self.assertIn("(done)", schedule)
+        # skill-owned bits untouched
+        self.assertIn("Foundation sprint", schedule)
+        self.assertIn("★", schedule)
+
+    def test_schedule_partial_progress_stays_ongoing(self) -> None:
+        self._seed_dashboards()
+        t = self._mk("Ship", ["ticket", "ticket:status:in_progress"], "Issues: #5, #6\n")
+        self._mk("A", ["issue", "issue:status:done"], "Ticket: #{0}\n".format(t))
+        self._mk("B", ["issue", "issue:status:in_progress"], "Ticket: #{0}\n".format(t))
+        self._seed_schedule(t)
+
+        dashboards.refresh_dashboards(self.remote)
+        schedule = self._body(self._id_of("SCHEDULE"))
+        self.assertIn("(1/2)", schedule)
+        self.assertIn("(ongoing)", schedule)
+
+    def test_schedule_not_started_is_planned(self) -> None:
+        self._seed_dashboards()
+        t = self._mk("Ship", ["ticket", "ticket:status:todo"], "Issues: #5, #6\n")
+        self._mk("A", ["issue", "issue:status:todo"], "Ticket: #{0}\n".format(t))
+        self._mk("B", ["issue", "issue:status:todo"], "Ticket: #{0}\n".format(t))
+        self._seed_schedule(t)
+
+        dashboards.refresh_dashboards(self.remote)
+        schedule = self._body(self._id_of("SCHEDULE"))
+        self.assertIn("(0/2)", schedule)
+        self.assertIn("(planned)", schedule)
+
+    def test_schedule_seed_placeholder_untouched(self) -> None:
+        self._seed_dashboards()
+        placeholder = "# SCHEDULE\n\n_No sprints planned yet._\n"
+        self._mk("SCHEDULE", ["management"], placeholder)
+        self._mk("E", ["epic", "epic:status:done"], "# Epic\n")
+        out = dashboards.refresh_dashboards(self.remote)
+        self.assertNotIn("SCHEDULE", out["updated"])
+        self.assertEqual(self._body(self._id_of("SCHEDULE")), placeholder)
+
+    def test_schedule_refresh_is_idempotent(self) -> None:
+        self._seed_dashboards()
+        t = self._mk("Ship", ["ticket", "ticket:status:done"], "Issues: #5\n")
+        self._mk("A", ["issue", "issue:status:done"], "Ticket: #{0}\n".format(t))
+        self._seed_schedule(t, total=1)
+        first = dashboards.refresh_dashboards(self.remote)
+        self.assertIn("SCHEDULE", first["updated"])
+        second = dashboards.refresh_dashboards(self.remote)
+        self.assertNotIn("SCHEDULE", second["updated"])
+
+    def _id_of(self, title):
+        for summary in self.remote.list_entries(is_open=None).data:
+            if summary.title == title:
+                return summary.id
+        raise AssertionError("no post titled " + title)
+
 
 if __name__ == "__main__":
     unittest.main()

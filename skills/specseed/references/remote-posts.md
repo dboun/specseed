@@ -114,6 +114,9 @@ repeats the strategic map; ROADMAP never lists sprints.
 Sprints in execution order, each a `##` section; one line per ticket. `★` marks a
 ticket on the project critical path. Hours are the ticket estimate; `(done/total)`
 counts its issues. Link the ROADMAP post and each ticket post (`[PROJ-0001](#NN)`).
+You write the COMPOSITION (which tickets, order, hours, ★) and seed the counter +
+sprint state at any value; the runtime then keeps `(done/total)` and the trailing
+`(done|ongoing|planned)` live (see below), so don't fret stale numbers.
 
 ```
 # SCHEDULE
@@ -144,9 +147,15 @@ why there are three pinned; GitLab has no pinning and `pin_entry` no-ops there.)
   NOT hand-edit them. Create/update the work posts (epics/tickets/issues + labels)
   and the scheduler reflects the change on its next poll. There is no permission
   switch for this; it is unconditional.
-- **SCHEDULE** has no runtime renderer, so the sprint-planning routes maintain it by
-  hand: `edit_entry(schedule_id, body=<rendered markdown>)`. Refresh it only when a
-  route changes sprint composition.
+- **SCHEDULE** is split: the sprint-planning routes own its COMPOSITION (which
+  tickets sit in which sprint, order, hours, ★) and write it by hand:
+  `edit_entry(schedule_id, body=<rendered markdown>)` — only when a route changes
+  composition. The runtime scheduler then refreshes the DERIVED bits IN PLACE every
+  poll (`executing/dashboards.py` `refresh_schedule_body`): each ticket's
+  `(done/total)` from its issues + each sprint header's trailing
+  `(done|ongoing|planned)` from its tickets. So a finished sprint stops reading
+  stale even though you never re-plan it. The runtime touches NOTHING else in the
+  body, and a header with no `(state)` / a line with no `(d/t)` is left alone.
 
 (The old `config.permissions.remote.post_dashboards` gate is gone — dashboards are
 not opt-out.)
