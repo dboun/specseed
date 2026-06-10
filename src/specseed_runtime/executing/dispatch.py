@@ -716,7 +716,7 @@ def _finalize_git_branch(ctx: ExecutionContext, entity: Any, intent: str, branch
 
 def _merge_comment(ctx: ExecutionContext, post_id: Any, body: str) -> None:
     try:
-        ctx.remote.add_entry_comment(post_id, platform_comment(body))
+        ctx.remote.add_entry_comment(post_id, platform_comment(body, getattr(ctx, "config", None)))
     except Exception:
         pass  # a comment hiccup never aborts the merge bookkeeping
 
@@ -1408,8 +1408,8 @@ def propose_spec_change(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
         return HandlerOutcome(success=True, detail="proposal {0} already posted; parked".format(apr_id))
 
     if plan_summary:
-        ctx.remote.add_entry_comment(request_id, platform_comment(plan_summary))
-    ctx.remote.add_entry_comment(request_id, approval_request_comment(apr_id, summary))
+        ctx.remote.add_entry_comment(request_id, platform_comment(plan_summary, getattr(ctx, "config", None)))
+    ctx.remote.add_entry_comment(request_id, approval_request_comment(apr_id, summary, getattr(ctx, "config", None)))
     _park_request_awaiting_approval(ctx, request_id, labels)
     platform_log.log_event(
         "spec_change_proposed", task_id=task.get("task_id"), post_id=request_id, apr=apr_id,

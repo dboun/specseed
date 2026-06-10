@@ -181,9 +181,9 @@ def retry_cancelled(remote: Any, task: dict[str, Any]) -> bool:
     return post is not None and not _is_open(post)
 
 
-def _comment(remote: Any, post_id: Any, body: str) -> None:
+def _comment(remote: Any, post_id: Any, body: str, config: Optional[dict[str, Any]] = None) -> None:
     try:
-        remote.add_entry_comment(post_id, platform_comment(body))
+        remote.add_entry_comment(post_id, platform_comment(body, config))
     except Exception:
         pass  # the report is best-effort; the retry decision already stands
 
@@ -301,6 +301,7 @@ def on_failure(
                     post_id,
                     note + "An agent will take a deeper look and report here - "
                     "replies with instructions are read.",
+                    config,
                 )
             _enqueue_resolve(db, post_id, task, reason="exhausted" if retryable else "fatal")
             summary["agent"] = True
@@ -335,6 +336,7 @@ def on_failure(
                 post_id,
                 f"Retry #{attempts - 1} did not fix it. Next try in "
                 f"{_delay_text(delay_s)} ({_iso(next_at)}).{note}\n```\n{error}\n```",
+                config,
             )
         if engage:
             _enqueue_resolve(db, post_id, task, reason="new")
@@ -364,6 +366,7 @@ def on_recovered(
         remote,
         getattr(post, "id", None),
         f"Recovered: attempt #{attempts} succeeded. Closing this post.",
+        config,
     )
     try:
         remote.set_entry_closed(getattr(post, "id", None))

@@ -82,11 +82,12 @@ def requested_apr_ids(conversation: Iterable[Any] | None) -> list[str]:
     return ids
 
 
-def approval_request_comment(apr_id: str, summary: str) -> str:
+def approval_request_comment(apr_id: str, summary: str, config: dict[str, Any] | None = None) -> str:
     """The standard approval-request comment body the worker posts.
 
     Carries the marker (so the token is recoverable) and tells the human the two
-    ways to approve. Kept deterministic so it reads the same every run.
+    ways to approve. Kept deterministic so it reads the same every run. ``config``
+    drives the ``specseed: `` prefix (omitted for a distinct bot account).
     """
     apr_id = apr_id.strip().upper()
     return platform_comment(
@@ -97,5 +98,6 @@ def approval_request_comment(apr_id: str, summary: str) -> str:
         f"- react 👍 (thumbs up) to this post.\n\n"
         f"To reject, comment `reject {apr_id}` or react 👎. Until then this request "
         f"stays `spec-change:status:awaiting_approval`.\n\n"
-        f"<!-- {APPROVAL_REQUEST_MARKER} {apr_id} -->"
+        f"<!-- {APPROVAL_REQUEST_MARKER} {apr_id} -->",
+        config,
     )

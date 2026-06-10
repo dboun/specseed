@@ -149,8 +149,9 @@ def _set_status(ctx: Any, entity: Any, new_status: str) -> None:
 
 
 def _comment(ctx: Any, post_id: Any, body: str) -> None:
-    # Prefix marks it as ours so the next sync never turns it back into work.
-    ctx.remote.add_entry_comment(post_id, platform_comment(body))
+    # Prefix marks it as ours so the next sync never turns it back into work -
+    # only when author alone can't (config decides; distinct bot account -> no prefix).
+    ctx.remote.add_entry_comment(post_id, platform_comment(body, getattr(ctx, "config", None)))
 
 
 def _close(ctx: Any, post_id: Any) -> None:

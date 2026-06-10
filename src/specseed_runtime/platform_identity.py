@@ -10,9 +10,11 @@ Two independent signals, either one marks a comment as the platform's:
 
 1. ``config["platform_username"]`` - the account the platform posts as. Set it
    when the bot has its own account (GitHub/GitLab token user).
-2. The ``specseed: `` body prefix - every comment the platform writes starts
-   with it. This is the fallback when bot and human share one username (the
-   local stand-in, a personal token). It doubles as provenance for readers.
+2. The ``specseed: `` body prefix - the fallback for when bot and human share
+   one username (the local stand-in, a personal token), so author alone can't
+   tell them apart. Applied ONLY then (see :func:`needs_comment_prefix`): with a
+   distinct bot account the author signal suffices and the prefix is omitted, so
+   it never leaks into a comment body the UI renders verbatim.
 
 ``sync_to_db`` consults :func:`is_platform_comment` before turning a comment
 change into work. Writers funnel through :func:`platform_comment`.
@@ -59,9 +61,42 @@ def platform_username(config: Optional[dict[str, Any]]) -> Optional[str]:
     return name or None
 
 
-def platform_comment(body: str) -> str:
-    """Mark ``body`` as platform-authored (idempotent)."""
+def human_username(config: Optional[dict[str, Any]]) -> str:
+    """The human identity for UI/CLI writes: the first approver, else ``user``.
+
+    Mirrors the UI's ``_ui_user`` so the prefix decision below matches the author
+    the UI actually stamps on human writes.
+    """
+    approvers = ((config or {}).get("approvals") or {}).get("approver_usernames") or []
+    return str(approvers[0]).strip() if approvers else "user"
+
+
+def needs_comment_prefix(config: Optional[dict[str, Any]]) -> bool:
+    """Whether platform comments need the ``specseed: `` body prefix to be told apart.
+
+    A distinct bot account (``platform_username`` set AND different from the human
+    identity) is already distinguishable by author, so the prefix is noise - the UI
+    shows it verbatim in the body, which mangles a structured-envelope comment. The
+    prefix is only the dedup signal when there is NO distinct account: ``platform_username``
+    unset, or it collides with the human's username (the local-stand-in / personal-token
+    case the prefix was built for).
+    """
+    bot = platform_username(config)
+    if not bot:
+        return True
+    return bot == human_username(config)
+
+
+def platform_comment(body: str, config: Optional[dict[str, Any]] = None) -> str:
+    """Mark ``body`` as platform-authored (idempotent).
+
+    Prepends the ``specseed: `` prefix ONLY when the platform can't be told apart by
+    author (see :func:`needs_comment_prefix`). ``config`` omitted -> assume the prefix
+    is needed (safe default: an unconfigured caller keeps the old always-prefix behavior).
+    """
     body = body or ""
+    if not needs_comment_prefix(config):
+        return body
     if body.startswith(COMMENT_PREFIX):
         return body
     return COMMENT_PREFIX + body

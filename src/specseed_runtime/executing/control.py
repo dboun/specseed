@@ -231,5 +231,5 @@ class ControlChannel:
             self._control_id = control_id
         if control_id is None:
             return False
-        result = self.tracker.add_entry_comment(control_id, platform_comment(text))
+        result = self.tracker.add_entry_comment(control_id, platform_comment(text, self.config))
         return bool(getattr(result, "ok", False))

@@ -172,7 +172,7 @@ for _root in _HERE.parents:
 _STORAGE = _HERE.parents[2]
 
 from specseed_runtime.platform_identity import platform_comment
-from specseed_runtime.tracking.resolve_remote import resolve_remote
+from specseed_runtime.tracking.resolve_remote import load_config, resolve_remote
 
 
 def _ok(result, what):
@@ -184,6 +184,7 @@ def _ok(result, what):
 def main() -> int:
     plan = json.loads((_HERE.parent / "plan.json").read_text(encoding="utf-8"))
     remote = resolve_remote(_STORAGE)
+    config = load_config(_STORAGE)  # drives the platform_comment prefix
 
     # Idempotency ledger: title -> created post id, persisted NEXT TO this
     # script. A crashed run gets retried by the runtime; the ledger makes the
@@ -217,9 +218,11 @@ def main() -> int:
             _ok(remote.add_entry_label(change["post_id"], label),
                 f"+label {label} on {change['post_id']}")
     for comment in plan.get("comments", []):
-        # platform_comment prefixes "specseed: " - marks the comment as the
-        # platform's own so the next sync never re-triggers the route on it.
-        _ok(remote.add_entry_comment(comment["post_id"], platform_comment(comment["body"])),
+        # platform_comment marks the comment as the platform's own so the next sync
+        # never re-triggers the route on it. The "specseed: " prefix is added ONLY
+        # when author alone can't tell platform from human (config decides); a
+        # distinct bot account drops it, keeping a structured-envelope body clean.
+        _ok(remote.add_entry_comment(comment["post_id"], platform_comment(comment["body"], config)),
             f"comment {comment['post_id']}")
     for post_id in plan.get("closes", []):
         _ok(remote.set_entry_closed(post_id), f"close {post_id}")

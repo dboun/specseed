@@ -6,15 +6,18 @@ import unittest
 
 from specseed_runtime.platform_identity import (
     COMMENT_PREFIX,
+    human_username,
     infer_owner,
     is_platform_comment,
+    needs_comment_prefix,
     platform_comment,
     platform_username,
 )
 
 
 class PlatformCommentTest(unittest.TestCase):
-    def test_prefixes_body(self) -> None:
+    def test_prefixes_body_when_no_config(self) -> None:
+        # No config -> safe default: prefix (can't prove a distinct bot account).
         self.assertEqual(platform_comment("hello"), "specseed: hello")
 
     def test_idempotent(self) -> None:
@@ -23,6 +26,40 @@ class PlatformCommentTest(unittest.TestCase):
 
     def test_empty_body(self) -> None:
         self.assertEqual(platform_comment(""), COMMENT_PREFIX)
+
+    def test_distinct_bot_account_drops_prefix(self) -> None:
+        # platform_username set AND != the human (first approver) -> author tells
+        # them apart, so no prefix pollutes the body (the UI renders it verbatim).
+        cfg = {"platform_username": "specseed", "approvals": {"approver_usernames": ["user"]}}
+        self.assertEqual(platform_comment("hello", cfg), "hello")
+
+    def test_shared_username_keeps_prefix(self) -> None:
+        cfg = {"platform_username": "user", "approvals": {"approver_usernames": ["user"]}}
+        self.assertEqual(platform_comment("hello", cfg), "specseed: hello")
+
+    def test_unset_platform_username_keeps_prefix(self) -> None:
+        self.assertEqual(platform_comment("hi", {"approvals": {"approver_usernames": ["user"]}}),
+                         "specseed: hi")
+
+
+class NeedsCommentPrefixTest(unittest.TestCase):
+    def test_distinct_account_no_prefix(self) -> None:
+        cfg = {"platform_username": "bot", "approvals": {"approver_usernames": ["alice"]}}
+        self.assertFalse(needs_comment_prefix(cfg))
+
+    def test_collision_with_human_needs_prefix(self) -> None:
+        cfg = {"platform_username": "alice", "approvals": {"approver_usernames": ["alice"]}}
+        self.assertTrue(needs_comment_prefix(cfg))
+
+    def test_unset_needs_prefix(self) -> None:
+        self.assertTrue(needs_comment_prefix({}))
+        self.assertTrue(needs_comment_prefix(None))
+
+    def test_default_human_is_user(self) -> None:
+        # No approvers -> human defaults to "user"; a bot named "user" collides.
+        self.assertEqual(human_username({}), "user")
+        self.assertTrue(needs_comment_prefix({"platform_username": "user"}))
+        self.assertFalse(needs_comment_prefix({"platform_username": "specseed"}))
 
 
 class IsPlatformCommentTest(unittest.TestCase):

@@ -324,11 +324,12 @@ THREAD (oldest first)
 
 HOW TO WRITE BACK (run via Bash; PYTHONPATH and storage env are already wired):
 python3 - <<'PY'
-from specseed_runtime.tracking.resolve_remote import resolve_remote
+from specseed_runtime.tracking.resolve_remote import load_config, resolve_remote
 from specseed_runtime.platform_identity import platform_comment
 r = resolve_remote(r"{storage}")
+cfg = load_config(r"{storage}")                                  # drives the comment prefix
 r.edit_entry({post_id!r}, body=NEW_BODY)                          # update the report
-r.add_entry_comment({post_id!r}, platform_comment("..."))        # or reply on the thread
+r.add_entry_comment({post_id!r}, platform_comment("...", cfg))   # or reply on the thread
 PY
 Check .ok on every call; if a write fails, say so in your final output."""
 
