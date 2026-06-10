@@ -32,8 +32,14 @@ Three modes, two forms. Choose by the tracker provider the runtime handed you:
 | **Cannot tell** which | — | **Assume chat** |
 
 Rules:
+- **The runtime states your mode outright** (a `Reply render mode:` line in the execution
+  facts, plus the `Mode:` bundle header). TRUST that line above everything else — it is
+  the config-resolved truth. specseed-UI ⇒ structured envelope; external ⇒ natural prose.
+  Only fall back to the provider/no-runtime inference below when NO mode line is given.
 - Provider is FINAL per repo; the runtime context tells you which. Local ⇒ structured.
-  github/gitlab or no runtime ⇒ natural. Any doubt ⇒ chat.
+  github/gitlab or no runtime ⇒ natural. Any doubt ⇒ chat. (A local repo has no provider
+  in `remote.json` — do NOT read that as "cannot tell" and drop to chat; the stated mode
+  wins.)
 - NEVER emit the JSON envelope outside specseed-UI. NEVER emit bare prose in specseed-UI.
   The CONTENT (body, questions, themes, confidences, suggestions) is the same across all
   three; only the form differs.

@@ -121,6 +121,40 @@ def render_action_gates(ctx: Any) -> str:
     return "\n".join(lines)
 
 
+# How each resolved skill mode renders a user-facing reply. Stated explicitly in the
+# prompt so the agent never has to infer the form from the provider (a local repo has no
+# provider in remote.json, which historically made the agent fall to chat/natural prose
+# instead of the structured envelope - see reply-protocol-base.md Step 0).
+_REPLY_FORM = {
+    "specseed-ui": (
+        "specseed-UI (provider is local; the specseed web UI is the only renderer). Every "
+        "user-facing reply - clarification rounds included - MUST be the STRUCTURED JSON "
+        "envelope from reply-protocol-base.md, NEVER natural prose. The comment body you "
+        "stage IS that JSON envelope."
+    ),
+    "github": (
+        "external (provider is github; replies are read natively on GitHub). Use NATURAL "
+        "markdown prose per reply-protocol-base.md - never the JSON envelope."
+    ),
+    "gitlab": (
+        "external (provider is gitlab; replies are read natively on GitLab). Use NATURAL "
+        "markdown prose per reply-protocol-base.md - never the JSON envelope."
+    ),
+}
+
+
+def render_reply_mode(ctx: Any) -> str:
+    """The resolved render mode + reply form, stated outright in the prompt.
+
+    ``_skill_mode`` already maps the provider to a mode for the skill bundle header, but
+    that header is easy to miss and the skill's own Step 0 otherwise infers the form from
+    the provider - which a local repo lacks. This line makes the choice explicit so the
+    worker uses the right form (structured envelope vs natural prose) every run.
+    """
+    mode = _skill_mode(ctx)
+    return "Reply render mode: " + _REPLY_FORM.get(mode, _REPLY_FORM["specseed-ui"])
+
+
 def render_git_policy(ctx: Any) -> str:
     """Git rules: the RUNTIME owns git, the agent does not touch it.
 
@@ -183,6 +217,7 @@ def build_spec_change_prompt(subroute: str, request_id: Any, entity: Any, ctx: A
     return (
         _skill_bundle(ctx, "spec", subroute) + "\n\n"
         + render_identity_rule(ctx, agent_report.SPEC_CHANGE) + "\n\n"
+        + render_reply_mode(ctx) + "\n\n"
         + f"Run the spec '{subroute}' subroute for spec-change request {request_id} "
         f"(remote post titled {_title(entity)!r}). Read context from the LOCAL tracker only "
         "(resolve_local / tracking_local.db); never poll the remote to plan. Stage every "
@@ -190,6 +225,7 @@ def build_spec_change_prompt(subroute: str, request_id: Any, entity: Any, ctx: A
         f"and write plan.json + apply.py into {request_dir}/. Then STOP: do not enqueue, do not "
         "run apply.py, do not choose whether it needs approval, do not touch git or application "
         "code. The runtime reads your output and gates it. One request, one run.\n\n"
+        + render_action_gates(ctx) + "\n\n"
         + agent_report.result_instructions(agent_report.SPEC_CHANGE)
     )
 

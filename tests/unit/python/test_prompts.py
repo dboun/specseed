@@ -46,6 +46,26 @@ class SkillBundleWiringTest(unittest.TestCase):
         self.assertLess(out.index(_BUNDLE_END), out.index("spec-change request 42"))
         # contract unchanged: still plan-first / staged / stop
         self.assertIn("plan.json + apply.py", out)
+        # the resolved render mode is stated outright (local -> structured envelope), so
+        # the worker never infers the form from an absent provider and drops to chat.
+        self.assertIn("Reply render mode:", out)
+        self.assertIn("STRUCTURED JSON envelope", out)
+        # permission/action-gate policy is passed too
+        self.assertIn("Action gates", out)
+
+    def test_spec_change_prompt_states_external_form_for_remote_provider(self):
+        import json, tempfile
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        storage = Path(tmp.name)
+        (storage / "remote.json").write_text(
+            json.dumps({"enabled": True, "provider": "github", "repo": "o/r"}),
+            encoding="utf-8",
+        )
+        out = prompts.build_spec_change_prompt("adapt", "42", _Entity(), _Ctx(storage=str(storage)))
+        self.assertIn("Reply render mode:", out)
+        self.assertIn("NATURAL markdown prose", out)
+        self.assertNotIn("STRUCTURED JSON envelope", out)
 
     def test_implement_prompt_prepends_impl_bundle_and_keeps_runtime_facts(self):
         out = prompts.build_implement_prompt(_Entity(), _Ctx())
