@@ -66,12 +66,12 @@ DEFAULT_POST_TITLES = {
 # (filter menu, add-label dropdown, new-post form). Ordered alphabetically; the
 # rest fall under an "Others:" group. Kept here so the UI never re-derives it.
 IMPORTANT_LABELS = [
+    "ask",
     "current_sprint",
     "draft",
     "epic",
     "issue",
     "platform_error",
-    "question",
     "spec-change:adapt",
     "spec-change:adopt",
     "spec-change:inject",
@@ -117,7 +117,7 @@ def env_payload() -> dict:
 
 def _human_labels() -> list[str]:
     base = [f"spec-change:{r}" for r in ("adopt", "adapt", "tweak", "inject", "plan-next-sprint")]
-    base += sorted(WORK_TYPE_LABELS) + sorted(DIFFICULTY_LABELS) + ["question"]
+    base += sorted(WORK_TYPE_LABELS) + sorted(DIFFICULTY_LABELS) + ["ask"]
     return base
 
 

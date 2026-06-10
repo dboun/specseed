@@ -192,6 +192,25 @@ class DecideIntentTest(DispatchTestBase):
         _, intent = self._intent_for(["tier:epic", "status:todo"])
         self.assertEqual(intent, AgentIntent.NONE)
 
+    def test_ask_label_on_label_add_to_ask(self) -> None:
+        _, intent = self._intent_for(["ask"], action="handle_label_added")
+        self.assertEqual(intent, AgentIntent.ASK)
+
+    def test_ask_label_on_comment_to_ask(self) -> None:
+        # a human follow-up comment re-triggers the answer
+        _, intent = self._intent_for(["ask"], action="handle_comment_added")
+        self.assertEqual(intent, AgentIntent.ASK)
+
+    def test_ask_label_other_action_to_none(self) -> None:
+        # label churn / reactions must not re-run the ask
+        for action in ("handle_entry_updated", "handle_label_removed"):
+            _, intent = self._intent_for(["ask"], action=action)
+            self.assertEqual(intent, AgentIntent.NONE, action)
+
+    def test_draft_ask_is_ignored(self) -> None:
+        _, intent = self._intent_for(["draft", "ask"])
+        self.assertEqual(intent, AgentIntent.NONE)
+
 
 class DispatchRoutingTest(DispatchTestBase):
     def test_unknown_action_fails(self) -> None:
@@ -231,7 +250,8 @@ class DispatchRoutingTest(DispatchTestBase):
         )
         self.assertTrue(out.success)
         self.assertEqual(len(self.runner.calls), 1)
-        self.assertIn("implementing a specseed work issue", self.runner.calls[0]["prompt"])
+        self.assertIn("Route: impl.", self.runner.calls[0]["prompt"])  # impl skill bundle
+        self.assertIn("Implement specseed work issue", self.runner.calls[0]["prompt"])
         self.assertEqual(self.runner.calls[0]["cwd"], str(self.root))
 
     def test_review_runs_review_prompt(self) -> None:
@@ -247,7 +267,24 @@ class DispatchRoutingTest(DispatchTestBase):
         )
         self.assertTrue(out.success)
         self.assertEqual(len(self.runner.calls), 1)
-        self.assertIn("reviewing completed work", self.runner.calls[0]["prompt"])
+        self.assertIn("Route: review.", self.runner.calls[0]["prompt"])  # review skill bundle
+        self.assertIn("Review completed work", self.runner.calls[0]["prompt"])
+
+    def test_ask_label_runs_ask_prompt(self) -> None:
+        self.ctx.runner = FakeAgentRunner(AgentResult(
+            ok=True, returncode=0,
+            report={"status": "answered", "answer": "the spec says X"},
+        ))
+        self.runner = self.ctx.runner
+        eid = self._seed_local_entry("How does X work?", ["ask"])
+        out = self._dispatch_then_work(
+            self.ctx,
+            {"action": "handle_comment_added", "post_id": str(eid), "payload": {}},
+        )
+        self.assertTrue(out.success)
+        self.assertEqual(len(self.runner.calls), 1)
+        self.assertIn("Route: ask.", self.runner.calls[0]["prompt"])  # ask skill bundle
+        self.assertIn("READ-ONLY", self.runner.calls[0]["prompt"])
 
     def test_spec_change_label_runs_spec_change_prompt(self) -> None:
         eid = self._seed_local_entry("Adopt request", ["spec-change:adopt"])
@@ -257,14 +294,15 @@ class DispatchRoutingTest(DispatchTestBase):
         )
         self.assertTrue(out.success)
         self.assertEqual(len(self.runner.calls), 1)
-        self.assertIn("adopt", self.runner.calls[0]["prompt"])
-        self.assertIn("spec-change worker", self.runner.calls[0]["prompt"])
+        # `spec-change:adopt` label -> spec route + adopt subroute bundle
+        self.assertIn("Route: spec. Subroute: adopt.", self.runner.calls[0]["prompt"])
+        self.assertIn("===== SKILL.md =====", self.runner.calls[0]["prompt"])
         # Skill docs come from the engine (absolute path), not the target's specseed dir.
         from specseed_runtime.storage_paths import default_specseed_dir
         skill_dir = str(default_specseed_dir() / "skills" / "specseed")
-        self.assertIn(f"{skill_dir}/SKILL.md", self.runner.calls[0]["prompt"])
-        # spec/ and apply.py still live under the target's specseed dir
-        self.assertIn("seedmeta/spec/", self.runner.calls[0]["prompt"])
+        self.assertIn(f"Skill root dir: {skill_dir}", self.runner.calls[0]["prompt"])
+        # staging + apply.py live under the target's specseed dir
+        self.assertIn("seedmeta/storage/spec-change/", self.runner.calls[0]["prompt"])
 
     def test_inject_label_runs_inject_route_prompt(self) -> None:
         eid = self._seed_local_entry("Manual hotfix", ["spec-change:inject"])
@@ -274,8 +312,8 @@ class DispatchRoutingTest(DispatchTestBase):
         )
         self.assertTrue(out.success)
         self.assertEqual(len(self.runner.calls), 1)
-        self.assertIn("routes/inject.md", self.runner.calls[0]["prompt"])
-        self.assertIn("run the 'inject' route", self.runner.calls[0]["prompt"])
+        self.assertIn("spec_subroutes/inject.md", self.runner.calls[0]["prompt"])
+        self.assertIn("spec 'inject' subroute", self.runner.calls[0]["prompt"])
 
     def test_draft_removed_runs_spec_change_prompt(self) -> None:
         eid = self._seed_local_entry("Adapt request", ["spec-change:adapt"])
@@ -303,7 +341,7 @@ class DispatchRoutingTest(DispatchTestBase):
         )
         self.assertTrue(out.success)
         self.assertEqual(len(self.runner.calls), 1)
-        self.assertIn("run the 'adapt' route", self.runner.calls[0]["prompt"])
+        self.assertIn("spec 'adapt' subroute", self.runner.calls[0]["prompt"])
 
     def test_parked_request_label_churn_does_not_rerun_worker(self) -> None:
         eid = self._seed_local_entry(

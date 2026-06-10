@@ -78,7 +78,7 @@ class Harness:
 
 def _scripted(implement_report, review_report=None):
     def side_effect(call):
-        if "reviewing completed work" in call["prompt"]:
+        if "Route: review." in call["prompt"]:  # the review skill bundle
             return AgentResult(ok=True, returncode=0,
                                stdout="banner noise first\nactual findings last",
                                report=review_report)

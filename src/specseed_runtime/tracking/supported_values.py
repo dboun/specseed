@@ -39,7 +39,7 @@ SPEC_CHANGE_LABELS = frozenset(
 )
 
 MANAGEMENT_LABELS = frozenset(
-    {"draft", "current_sprint", "management", "question", "platform_error"}
+    {"draft", "current_sprint", "management", "ask", "platform_error"}
 )
 WORK_TIER_LABELS = frozenset({"epic", "ticket", "issue"})
 # Work-item kind. Issues always carry one; tickets may (never ``qa``). ``qa`` marks a

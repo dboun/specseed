@@ -128,9 +128,9 @@ LABEL_SPECS = [
         "Permanent management dashboard entry.",
     ),
     LabelSpec(
-        "question",
+        "ask",
         "d4c5f9",
-        "Question or clarification thread.",
+        "Question thread: the ask route answers it read-only.",
     ),
     LabelSpec(
         "platform_error",

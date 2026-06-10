@@ -114,6 +114,7 @@ class AgentIntent:
     SPEC_CHANGE = "spec_change"
     IMPLEMENT = "implement"
     REVIEW = "review"
+    ASK = "ask"
     MERGE_CONFLICTS = "merge_conflicts"
     PLATFORM_ERROR = "platform_error"
     NONE = "none"
@@ -124,6 +125,7 @@ _INTENT_FUNCTION = {
     AgentIntent.SPEC_CHANGE: "spec",
     AgentIntent.IMPLEMENT: "implementation",
     AgentIntent.REVIEW: "review",
+    AgentIntent.ASK: "ask",
     AgentIntent.MERGE_CONFLICTS: "merge_conflicts",
     AgentIntent.PLATFORM_ERROR: "resolve_platform_errors",
 }
@@ -335,6 +337,15 @@ def decide_intent(entity: Any, state_result: Any, task: Any) -> str:
         action = task.get("action") if isinstance(task, dict) else getattr(task, "action", None)
         if _spec_change_actionable(_spec_change_status(entity), action):
             return AgentIntent.SPEC_CHANGE
+        return AgentIntent.NONE
+
+    # An `ask` post is a read-only Q&A thread: answer on the label add, and re-answer
+    # each time a human adds a comment (the platform's own answer is dropped by
+    # sync_to_db, so it never re-triggers itself). It stays open; the human closes it.
+    if "ask" in labels:
+        action = task.get("action") if isinstance(task, dict) else getattr(task, "action", None)
+        if action in ("handle_label_added", "handle_comment_added"):
+            return AgentIntent.ASK
         return AgentIntent.NONE
 
     tier = getattr(entity, "tier", None)

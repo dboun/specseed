@@ -230,6 +230,22 @@ class EnrichListTest(unittest.TestCase):
         self.assertIn("draft", server.IMPORTANT_LABELS)
         self.assertTrue(all(not n.startswith(("type:", "difficulty:")) for n in server.IMPORTANT_LABELS))
 
+    def test_important_labels_offer_ask_not_question(self) -> None:
+        # question was renamed to ask (Phase 3); the picker must follow.
+        self.assertIn("ask", server.IMPORTANT_LABELS)
+        self.assertNotIn("question", server.IMPORTANT_LABELS)
+
+    def test_important_labels_are_real_supported_labels(self) -> None:
+        # Curated subset must not drift from the runtime taxonomy.
+        from specseed_runtime.tracking.supported_values import SUPPORTED_LABELS
+
+        self.assertTrue(set(server.IMPORTANT_LABELS) <= set(SUPPORTED_LABELS))
+
+    def test_human_labels_offer_ask_not_question(self) -> None:
+        labels = server._human_labels()
+        self.assertIn("ask", labels)
+        self.assertNotIn("question", labels)
+
 
 def _make_queue_rows(storage: Path, rows) -> None:
     """rows: (post_id, status, lane). Full (lane+priority) schema."""

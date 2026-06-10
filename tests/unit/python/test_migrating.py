@@ -19,6 +19,7 @@ from specseed_runtime.migrating import m_0_3_0__0_3_1
 from specseed_runtime.migrating import m_0_3_1__0_4_0
 from specseed_runtime.migrating import m_0_4_0__0_5_0
 from specseed_runtime.migrating import m_0_5_0__0_7_0
+from specseed_runtime.migrating import m_0_19_0__0_20_0
 from specseed_runtime.migrating import migrate
 from specseed_runtime import storage_paths
 
@@ -78,7 +79,8 @@ class RunMigrationsTest(unittest.TestCase):
                 ["m_0_3_0__0_3_1", "m_0_3_1__0_4_0", "m_0_4_0__0_5_0",
                  "m_0_5_0__0_7_0", "m_0_7_0__0_9_0", "m_0_9_0__0_11_0",
                  "m_0_11_0__0_12_0", "m_0_12_0__0_13_0", "m_0_13_0__0_14_0",
-                 "m_0_14_0__0_16_0", "m_0_16_0__0_18_0", "m_0_18_0__0_19_0"],
+                 "m_0_14_0__0_16_0", "m_0_16_0__0_18_0", "m_0_18_0__0_19_0",
+                 "m_0_19_0__0_20_0"],
             )
             self.assertEqual(migrate.storage_version(storage), migrate.code_version())
 
@@ -694,6 +696,80 @@ class Hop0180To0190Test(unittest.TestCase):
                 cwd=root, capture_output=True, text=True,
             ).stdout.strip()
             self.assertEqual(before, after)
+
+
+class Hop_0_19_0__0_20_0_Test(unittest.TestCase):
+    """Strips the repo-root CLAUDE.md/AGENTS.md router block, reshapes guardrails."""
+
+    _ROUTER = (
+        "<!-- specseed:router:start -->\n"
+        "**IMPORTANT (specseed):** read the guardrail file in `.specseed/` ...\n"
+        "<!-- specseed:router:end -->"
+    )
+
+    def _old_shape(self, root: Path):
+        specseed_dir, storage = _fixture_tree(root)
+        storage.mkdir(parents=True, exist_ok=True)
+        repo_root = specseed_dir.parent
+        # repo-root router files: one with user content around the block, one block-only
+        (repo_root / "CLAUDE.md").write_text(
+            "# My project\n\nuser notes\n\n" + self._ROUTER + "\n", encoding="utf-8")
+        (repo_root / "AGENTS.md").write_text(self._ROUTER + "\n", encoding="utf-8")
+        # an old engine-default guardrail (retire) + a user-edited one (keep)
+        (specseed_dir / "AGENTS_INSTRUCTIONS_IMPL.md").write_text(
+            "# specseed agent rules (implementing a work issue)\n\nold body\n", encoding="utf-8")
+        (specseed_dir / "AGENTS_INSTRUCTIONS_SPEC.md").write_text(
+            "my own repo notes\n", encoding="utf-8")
+        # a seed marker, so the hop drops it (question -> ask re-seeds on next startup)
+        (storage / "seed_state.json").write_text('{"kind": "remote_local"}\n', encoding="utf-8")
+        return specseed_dir, storage, repo_root
+
+    def test_strips_router_keeps_user_content_and_reshapes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            specseed_dir, storage, repo_root = self._old_shape(Path(tmp))
+            m_0_19_0__0_20_0.run(storage, specseed_dir)
+
+            claude = (repo_root / "CLAUDE.md").read_text(encoding="utf-8")
+            self.assertNotIn("specseed:router", claude)
+            self.assertIn("# My project", claude)   # user content preserved
+            self.assertIn("user notes", claude)
+            # files kept (not deleted), only our block removed
+            self.assertTrue((repo_root / "AGENTS.md").exists())
+            self.assertNotIn("specseed:router", (repo_root / "AGENTS.md").read_text(encoding="utf-8"))
+
+            # old-default guardrail retired -> empty stub; user-edited one untouched
+            impl = (specseed_dir / "AGENTS_INSTRUCTIONS_IMPL.md").read_text(encoding="utf-8")
+            self.assertNotIn("old body", impl)
+            self.assertIn("<!-- specseed:", impl)
+            self.assertEqual(
+                (specseed_dir / "AGENTS_INSTRUCTIONS_SPEC.md").read_text(encoding="utf-8"),
+                "my own repo notes\n",
+            )
+            # new ASK-route stubs seeded
+            self.assertTrue((specseed_dir / "AGENTS_INSTRUCTIONS_ASK.md").exists())
+            self.assertTrue((specseed_dir / "CUSTOM_INSTRUCTIONS_ASK.md").exists())
+            # seed marker dropped so the `ask` label re-seeds on next startup
+            self.assertFalse((storage / "seed_state.json").exists())
+
+    def test_idempotent_second_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            specseed_dir, storage, repo_root = self._old_shape(Path(tmp))
+            m_0_19_0__0_20_0.run(storage, specseed_dir)
+            claude1 = (repo_root / "CLAUDE.md").read_text(encoding="utf-8")
+            snap = {p.name: p.read_text(encoding="utf-8") for p in specseed_dir.glob("*.md")}
+
+            m_0_19_0__0_20_0.run(storage, specseed_dir)
+            self.assertEqual((repo_root / "CLAUDE.md").read_text(encoding="utf-8"), claude1)
+            self.assertEqual(
+                {p.name: p.read_text(encoding="utf-8") for p in specseed_dir.glob("*.md")}, snap)
+
+    def test_no_root_files_is_safe_and_seeds_stubs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            specseed_dir, storage = _fixture_tree(Path(tmp))
+            storage.mkdir(parents=True, exist_ok=True)
+            m_0_19_0__0_20_0.run(storage, specseed_dir)  # no CLAUDE/AGENTS present
+            self.assertFalse((specseed_dir.parent / "CLAUDE.md").exists())  # never created
+            self.assertTrue((specseed_dir / "AGENTS_INSTRUCTIONS_ASK.md").exists())
 
 
 if __name__ == "__main__":

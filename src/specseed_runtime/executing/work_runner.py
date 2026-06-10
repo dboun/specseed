@@ -145,12 +145,15 @@ def run_agent_job(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
         )
 
     if intent == AgentIntent.SPEC_CHANGE:
-        route = dispatch._spec_change_route(entity)
-        prompt = prompts.build_spec_change_prompt(route, getattr(entity, "post_id", None), entity, ctx)
+        # the `spec-change:<sub>` label suffix is the spec SUBROUTE (route is always `spec`)
+        subroute = dispatch._spec_change_route(entity)
+        prompt = prompts.build_spec_change_prompt(subroute, getattr(entity, "post_id", None), entity, ctx)
     elif intent == AgentIntent.IMPLEMENT:
         prompt = prompts.build_implement_prompt(entity, ctx)
     elif intent == AgentIntent.REVIEW:
         prompt = prompts.build_review_prompt(entity, ctx)
+    elif intent == AgentIntent.ASK:
+        prompt = prompts.build_ask_prompt(entity, ctx)
     else:
         return HandlerOutcome(success=False, error="work_run: unknown intent {0!r}".format(intent))
 
@@ -210,7 +213,7 @@ def run_agent_job(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
 
     # rc==0 is not enough: implement/review MUST have written a valid result file.
     # A missing one means the run did not really finish - retry a fresh run.
-    if intent in (AgentIntent.IMPLEMENT, AgentIntent.REVIEW) and getattr(result, "report", None) is None:
+    if intent in (AgentIntent.IMPLEMENT, AgentIntent.REVIEW, AgentIntent.ASK) and getattr(result, "report", None) is None:
         return HandlerOutcome(
             success=False,
             error="agent finished but did not report a valid result file: {0}".format(
@@ -306,6 +309,16 @@ def process_work_result(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
                 detail="spec-change follow-up failed",
                 retryable=True,
             )
+        platform_log.log_event(
+            "work_result_processed", task_id=task.get("task_id"), post_id=post_id, intent=intent, detail=detail
+        )
+        return HandlerOutcome(success=True, detail=detail)
+
+    if intent == AgentIntent.ASK:
+        try:
+            detail = advance.apply_ask_answer(ctx, entity, result)
+        except Exception as exc:  # never lose the run over a write hiccup
+            return HandlerOutcome(success=True, detail="ask answer post failed: {0!r}".format(exc))
         platform_log.log_event(
             "work_result_processed", task_id=task.get("task_id"), post_id=post_id, intent=intent, detail=detail
         )

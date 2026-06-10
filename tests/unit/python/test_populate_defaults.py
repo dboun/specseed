@@ -91,6 +91,14 @@ class PopulateDefaultsTest(unittest.TestCase):
         for level in ("easy", "hard"):
             self.assertIn(f"difficulty:{level}", names)
 
+    def test_ask_label_seeded_not_question(self) -> None:
+        populate_defaults("remote_local", tracker=self.remote)
+        names = self.label_names()
+        self.assertIn("ask", names)            # the read-only Q&A route's label
+        self.assertNotIn("question", names)    # renamed
+        self.assertIn("ask", DESIRED_LABELS)
+        self.assertNotIn("question", DESIRED_LABELS)
+
     def test_seeded_labels_align_with_supported_vocab(self) -> None:
         # populate_defaults and supported_values must not drift apart.
         from specseed_runtime.tracking.supported_values import (

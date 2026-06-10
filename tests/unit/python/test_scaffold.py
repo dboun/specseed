@@ -52,49 +52,34 @@ class InstructionFilesTest(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
 
-    def test_writes_three_route_files(self) -> None:
+    def test_seeds_four_route_stubs_empty(self) -> None:
         written = scaffold.write_instruction_files(self.root, ".specseed")
         names = {Path(p).name for p in written}
         self.assertEqual(
             names,
-            {"AGENTS_INSTRUCTIONS_IMPL.md", "AGENTS_INSTRUCTIONS_SPEC.md", "AGENTS_INSTRUCTIONS_REVIEW.md"},
+            {"AGENTS_INSTRUCTIONS_IMPL.md", "AGENTS_INSTRUCTIONS_SPEC.md",
+             "AGENTS_INSTRUCTIONS_REVIEW.md", "AGENTS_INSTRUCTIONS_ASK.md"},
         )
+        # empty user-owned stub: just an HTML comment, no injected guidance
         body = (self.root / ".specseed" / "AGENTS_INSTRUCTIONS_IMPL.md").read_text(encoding="utf-8")
-        self.assertIn("OFF-LIMITS", body)
-        # repo orientation: read the spec first, vision before sad
-        self.assertIn(".specseed/spec/vision.md", body)
-        self.assertIn(".specseed/spec/sad.md", body)
-        self.assertLess(body.index("vision.md"), body.index("sad.md"))
+        self.assertIn("<!-- specseed:", body)
+        self.assertNotIn("OFF-LIMITS", body)
+        self.assertNotIn("vision.md", body)
 
+    def test_never_overwrites_user_content(self) -> None:
+        d = self.root / ".specseed"
+        d.mkdir(parents=True)
+        mine = d / "AGENTS_INSTRUCTIONS_IMPL.md"
+        mine.write_text("my repo notes\n", encoding="utf-8")
+        written = scaffold.write_instruction_files(self.root, ".specseed")
+        self.assertEqual(mine.read_text(encoding="utf-8"), "my repo notes\n")
+        self.assertNotIn(str(mine), [str(p) for p in written])
 
-class RouterBlockTest(unittest.TestCase):
-    def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name)
-
-    def test_prepends_block_preserving_user_content(self) -> None:
-        claude = self.root / "CLAUDE.md"
-        claude.write_text("# My project\n\nuser notes\n", encoding="utf-8")
-        scaffold.ensure_router_block(self.root, ".specseed")
-        text = claude.read_text(encoding="utf-8")
-        self.assertIn(scaffold._ROUTER_START, text)
-        self.assertIn("# My project", text)  # user content kept
-        self.assertIn("user notes", text)
-
-    def test_refresh_replaces_only_block(self) -> None:
-        claude = self.root / "CLAUDE.md"
-        claude.write_text("keep me\n", encoding="utf-8")
-        scaffold.ensure_router_block(self.root, ".specseed")
-        scaffold.ensure_router_block(self.root, ".specseed")  # twice
-        text = claude.read_text(encoding="utf-8")
-        self.assertEqual(text.count(scaffold._ROUTER_START), 1)
-        self.assertIn("keep me", text)
-
-    def test_creates_agents_md_when_absent(self) -> None:
-        scaffold.ensure_router_block(self.root, ".specseed")
-        self.assertTrue((self.root / "AGENTS.md").exists())
-        self.assertTrue((self.root / "CLAUDE.md").exists())
+    def test_no_router_files_written_to_repo_root(self) -> None:
+        scaffold.write_instruction_files(self.root, ".specseed")
+        # the only thing specseed adds to a target is <specseed_dir>/
+        self.assertFalse((self.root / "CLAUDE.md").exists())
+        self.assertFalse((self.root / "AGENTS.md").exists())
 
 
 class CustomInstructionStubsTest(unittest.TestCase):
@@ -103,12 +88,13 @@ class CustomInstructionStubsTest(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
 
-    def test_seeds_four_files(self) -> None:
+    def test_seeds_five_files(self) -> None:
         written = scaffold.write_custom_instruction_stubs(self.root, ".specseed")
         names = {Path(p).name for p in written}
         self.assertEqual(names, {
             "CUSTOM_INSTRUCTIONS.md", "CUSTOM_INSTRUCTIONS_IMPL.md",
             "CUSTOM_INSTRUCTIONS_SPEC.md", "CUSTOM_INSTRUCTIONS_REVIEW.md",
+            "CUSTOM_INSTRUCTIONS_ASK.md",
         })
 
     def test_never_overwrites_user_content(self) -> None:

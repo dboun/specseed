@@ -64,7 +64,7 @@ class LifecycleTest(unittest.TestCase):
         state = {"i": 0}
 
         def side_effect(call):
-            if "reviewing completed work" in call["prompt"]:
+            if "Route: review." in call["prompt"]:  # the review skill bundle
                 entry = review_script[min(state["i"], len(review_script) - 1)]
                 v, c = entry[0], entry[1]
                 recommend = entry[2] if len(entry) > 2 else False

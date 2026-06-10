@@ -28,13 +28,15 @@ RESULT_FILE_ENV = "SPECSEED_RESULT_FILE"
 IMPLEMENT = "implement"
 REVIEW = "review"
 SPEC_CHANGE = "spec_change"
+ASK = "ask"
 PLATFORM_ERROR = "platform_error"
 
 IMPLEMENT_STATUSES = ("done", "blocked", "needs_input")
 REVIEW_VERDICTS = ("approve", "changes")
+ASK_STATUSES = ("answered", "needs_input")
 
 # Intents the runtime hard-gates on a valid report (a missing one is a failure).
-STRICT_INTENTS = (IMPLEMENT, REVIEW)
+STRICT_INTENTS = (IMPLEMENT, REVIEW, ASK)
 
 
 def parse_result_file(path: str | Path, intent: str) -> Tuple[Optional[dict], Optional[str]]:
@@ -110,6 +112,14 @@ def _validate(data: dict, intent: str) -> Tuple[Optional[dict], Optional[str]]:
             # When set, the runtime blocks + drafts an adapt instead of reviewing.
             "recommend_spec_change": _as_bool(data.get("recommend_spec_change")),
         }, None
+    if intent == ASK:
+        status = str(data.get("status") or "").strip().lower()
+        if status not in ASK_STATUSES:
+            return None, "ask result needs status in {0}".format(ASK_STATUSES)
+        answer = str(data.get("answer") or "").strip()
+        if not answer:
+            return None, "ask result needs a non-empty answer"
+        return {"status": status, "answer": answer}, None
     # Loose schema for spec_change / platform_error and anything else: a summary
     # is handy but nothing is hard-gated on it.
     return {
@@ -141,6 +151,16 @@ _SCHEMA_BLOCK = {
     ),
     SPEC_CHANGE: (
         '  {"status": "<short status>", "summary": "<what the run decided>"}'
+    ),
+    ASK: (
+        '  {"status": "answered"|"needs_input", "answer": "<the reply to post as a comment '
+        'on the request post>"}\n'
+        "  Put the FULL reply you composed (the answer, or a clarification round if the "
+        "question is ambiguous) in `answer`, rendered in the form your reply protocol "
+        "specifies for this mode - the runtime posts it verbatim as a comment. Use "
+        "status=answered when you answered the question; status=needs_input when `answer` is a "
+        "clarification round you need the human to reply to. You are READ-ONLY: do not post "
+        "anything yourself, and do not edit code, spec, labels, or run git."
     ),
 }
 

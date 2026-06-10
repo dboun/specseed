@@ -518,6 +518,25 @@ def apply_post_work_transition(
     return WorkTransition("no transition for intent {0!r}".format(intent))
 
 
+def apply_ask_answer(ctx: Any, entity: Any, result: Any) -> str:
+    """Post the read-only ask run's answer as a comment on the request post.
+
+    The agent is read-only; the runtime owns the write. The answer is posted as a
+    platform comment (so the next sync never re-triggers the ask on our own words).
+    The post is left OPEN: a human follow-up comment re-triggers another answer, and
+    the human closes the thread when satisfied. No state/label change. Returns a detail.
+    """
+    if not _can_write(ctx):
+        return "remote writes not permitted; ask answer not posted"
+    report = getattr(result, "report", None) or {}
+    answer = str(report.get("answer") or "").strip()
+    status = str(report.get("status") or "").strip().lower()
+    if not answer:
+        return "ask run produced no answer; nothing posted"
+    _comment(ctx, entity.post_id, answer)
+    return "ask answer posted ({0})".format(status or "answered")
+
+
 def _advance_after_implement(
     ctx: Any, entity: Any, state_result: Any, result: Any = None
 ) -> WorkTransition:

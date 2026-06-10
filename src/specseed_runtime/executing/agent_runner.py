@@ -48,6 +48,7 @@ RUNNER_FUNCTIONS = (
     "spec",
     "implementation",
     "review",
+    "ask",
     "merge_conflicts",
     "resolve_platform_errors",
 )

@@ -464,6 +464,53 @@ class GeneratePromptTest(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertIn(needle, buf.getvalue())
 
+    _INSTR_HEADER = "===== TARGET INSTRUCTION FILES (MANDATORY READ BEFORE THE WORK) ====="
+
+    def test_specseed_dir_emits_instruction_block_with_route_caps(self):
+        out = _gen("github", "impl", specseed_dir=".specseed")
+        self.assertIn(self._INSTR_HEADER, out)
+        self.assertIn(".specseed/AGENTS_INSTRUCTIONS_IMPL.md", out)
+        self.assertIn(".specseed/CUSTOM_INSTRUCTIONS_IMPL.md", out)
+        self.assertIn(".specseed/CUSTOM_INSTRUCTIONS.md", out)
+        # block sits between the end-of-skill marker and the prompt-follows marker
+        self.assertLess(out.index("END OF SPECSEED SKILL FILES"), out.index(self._INSTR_HEADER))
+        self.assertLess(out.index(self._INSTR_HEADER), out.index("PROMPT FOLLOWS"))
+
+    def test_subroute_inherits_parent_route_caps(self):
+        out = _gen("specseed-ui", "spec", "adapt", specseed_dir=".specseed")
+        self.assertIn(".specseed/AGENTS_INSTRUCTIONS_SPEC.md", out)
+        self.assertNotIn("AGENTS_INSTRUCTIONS_ADAPT.md", out)
+
+    def test_chat_mode_skips_instruction_block(self):
+        out = _gen("chat", "impl", specseed_dir=".specseed")
+        self.assertNotIn(self._INSTR_HEADER, out)
+
+    def test_no_specseed_dir_skips_instruction_block(self):
+        self.assertNotIn(self._INSTR_HEADER, _gen("github", "impl"))
+
+    def test_whole_skill_skips_instruction_block(self):
+        # no single route -> cannot pick which instruction files to read
+        self.assertNotIn(self._INSTR_HEADER, _gen("github", specseed_dir=".specseed"))
+
+    def test_route_without_instruction_files_skips_block(self):
+        # operate owns no per-route instruction files
+        self.assertNotIn(self._INSTR_HEADER, _gen("github", "operate", specseed_dir=".specseed"))
+
+    def test_runtime_internal_routes_resolve_and_skip_instruction_block(self):
+        # merge-conflicts / platform-error are real routes but own no instruction files.
+        for route in ("merge-conflicts", "platform-error"):
+            out = _gen("github", route, specseed_dir=".specseed")
+            self.assertIn(f"===== routes/{route}.md =====", out)
+            self.assertIn(f"Route: {route}.", out)
+            self.assertNotIn(self._INSTR_HEADER, out)
+
+    def test_cli_specseed_dir_flag(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = _gp_main(["github", "impl", "--specseed-dir=.specseed"])
+        self.assertEqual(rc, 0)
+        self.assertIn(".specseed/AGENTS_INSTRUCTIONS_IMPL.md", buf.getvalue())
+
     def test_whole_skill_reaches_every_file(self):
         # Sanity: the whole-skill prompt (no route) inlines every skill file except
         # version.txt and the generator itself.

@@ -24,11 +24,15 @@ request id (the post id; it names the work dir
 | review | `routes/review.md` | review a finished issue; emit a verdict | early |
 | ask | `routes/ask.md` | answer a question (read-only) by routing to spec / code / tracker | early |
 | operate | `routes/operate.md` | run gated operations (env setup, deps, data, experiments, monkey/use-case runs) | TODO |
+| merge-conflicts | `routes/merge-conflicts.md` | resolve conflicts in a runtime-started merge (edit files only) | full |
+| platform-error | `routes/platform-error.md` | diagnose + report a failed platform task on its error post (read-only) | full |
 
 `spec` is the fully written route. A `spec-change:<subroute>` label
 (`adopt` / `adapt` / `tweak` / `inject` / `plan-next-sprint`) selects the spec subroute;
 `routes/spec.md` dispatches it. impl/review/ask are early short versions; `operate` is
-a named placeholder.
+a named placeholder. `merge-conflicts` and `platform-error` are runtime-internal: the
+scheduler and recovery chain invoke them directly (no human label), so they own no
+per-route instruction files.
 
 ## Mode (runner vs chat)
 

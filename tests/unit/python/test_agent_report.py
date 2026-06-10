@@ -115,6 +115,36 @@ class ReviewParseTest(_Base):
         self.assertIn("confidence", err)
 
 
+class AskParseTest(_Base):
+    def test_valid_answered(self) -> None:
+        self._write({"status": "answered", "answer": "the spec says X"})
+        report, err = ar.parse_result_file(self.path, ar.ASK)
+        self.assertIsNone(err)
+        self.assertEqual(report["status"], "answered")
+        self.assertEqual(report["answer"], "the spec says X")
+
+    def test_needs_input_is_valid(self) -> None:
+        self._write({"status": "needs_input", "answer": "Round 1: which X?"})
+        report, err = ar.parse_result_file(self.path, ar.ASK)
+        self.assertIsNone(err)
+        self.assertEqual(report["status"], "needs_input")
+
+    def test_bad_status_rejected(self) -> None:
+        self._write({"status": "done", "answer": "x"})
+        report, err = ar.parse_result_file(self.path, ar.ASK)
+        self.assertIsNone(report)
+        self.assertIn("status", err)
+
+    def test_empty_answer_rejected(self) -> None:
+        self._write({"status": "answered", "answer": "  "})
+        report, err = ar.parse_result_file(self.path, ar.ASK)
+        self.assertIsNone(report)
+        self.assertIn("answer", err)
+
+    def test_ask_is_strict(self) -> None:
+        self.assertIn(ar.ASK, ar.STRICT_INTENTS)
+
+
 class LooseParseTest(_Base):
     def test_spec_change_is_loose(self) -> None:
         self._write({"status": "anything", "summary": "ok"})
@@ -125,11 +155,12 @@ class LooseParseTest(_Base):
 
 class InstructionsTest(unittest.TestCase):
     def test_mentions_env_var_and_schema(self) -> None:
-        for intent in (ar.IMPLEMENT, ar.REVIEW, ar.SPEC_CHANGE):
+        for intent in (ar.IMPLEMENT, ar.REVIEW, ar.SPEC_CHANGE, ar.ASK):
             text = ar.result_instructions(intent)
             self.assertIn(ar.RESULT_FILE_ENV, text)
         self.assertIn("verdict", ar.result_instructions(ar.REVIEW))
         self.assertIn("status", ar.result_instructions(ar.IMPLEMENT))
+        self.assertIn("answer", ar.result_instructions(ar.ASK))
 
 
 if __name__ == "__main__":

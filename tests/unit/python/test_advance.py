@@ -354,6 +354,39 @@ class ReviewTransitionTest(_Base):
         return out
 
 
+class AskTransitionTest(_Base):
+    """The read-only ask run posts its answer as a platform comment, post left open."""
+
+    def test_answered_posts_platform_comment_and_leaves_open(self) -> None:
+        ctx = self._ctx(self._config(), FakeAgentRunner())
+        eid = self._seed("How does X work?", ["ask"])
+        entity = Entity.for_labels(post_id=str(eid), labels=["ask"], title="How does X work?")
+        result = AgentResult(ok=True, returncode=0,
+                             report={"status": "answered", "answer": "The spec says X."})
+
+        detail = advance.apply_ask_answer(ctx, entity, result)
+
+        self.assertIn("answered", detail)
+        details = self._remote_details(eid)
+        bodies = [c.body or "" for c in details.comments]
+        self.assertTrue(any("The spec says X." in b for b in bodies))
+        # platform-authored (specseed: prefix) so the next sync never re-triggers the ask
+        self.assertTrue(any(b.startswith("specseed: ") for b in bodies))
+        self.assertTrue(details.is_open)  # human closes the thread, not the runtime
+
+    def test_needs_input_round_also_posts(self) -> None:
+        ctx = self._ctx(self._config(), FakeAgentRunner())
+        eid = self._seed("Ambiguous?", ["ask"])
+        entity = Entity.for_labels(post_id=str(eid), labels=["ask"], title="Ambiguous?")
+        result = AgentResult(ok=True, returncode=0,
+                             report={"status": "needs_input", "answer": "Round 1 - which X?"})
+
+        advance.apply_ask_answer(ctx, entity, result)
+
+        bodies = [c.body or "" for c in self._remote_details(eid).comments]
+        self.assertTrue(any("Round 1 - which X?" in b for b in bodies))
+
+
 class ImplementApprovalGateTest(_Base):
     """platform.auto_implement_issue=False parks a ready issue for sign-off."""
 

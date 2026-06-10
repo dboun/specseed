@@ -134,14 +134,16 @@ class RenderActionGatesTest(unittest.TestCase):
             self.assertIn(category, prompt)
 
     def test_implement_prompt_points_at_vision_and_sad(self) -> None:
+        # the spec-read order now lives in the bundled `routes/impl.md` (placeholder
+        # `<specseed_dir>/spec/...`), not re-stated in the runtime facts.
         prompt = build_implement_prompt(_Entity(), _Ctx({"specseed_dir": ".specseed"}))
-        self.assertIn(".specseed/spec/vision.md", prompt)
-        self.assertIn(".specseed/spec/sad.md", prompt)
+        self.assertIn("spec/vision.md", prompt)
+        self.assertIn("spec/sad.md", prompt)
 
     def test_review_prompt_points_at_vision_and_sad(self) -> None:
         prompt = build_review_prompt(_Entity(), _Ctx({"specseed_dir": ".specseed"}))
-        self.assertIn(".specseed/spec/vision.md", prompt)
-        self.assertIn(".specseed/spec/sad.md", prompt)
+        self.assertIn("spec/vision.md", prompt)
+        self.assertIn("spec/sad.md", prompt)
 
 
 class _GitCtx:
