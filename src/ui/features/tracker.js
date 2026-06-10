@@ -2,6 +2,15 @@ import { api } from "./api.js";
 import { openAgentOutput } from "./agent_output.js";
 import { closeModal, escapeHtml, formatTime, modal, reactionIcon, toast } from "../ui/components.js";
 import { renderMarkdown } from "../ui/markdown.js";
+import {
+  allAnswered,
+  buildReplyJson,
+  feedbackEntry,
+  initAnswers,
+  renderFeedbackCard,
+  renderReplyCard,
+  replyPayload,
+} from "./feedback.js";
 
 const PAGE_SIZE = 8;
 
@@ -21,6 +30,7 @@ export function createTracker({ repo, ctx }) {
     addLabelOpen: false, // add-label dropdown stays open across repaints
     seenPostIds: null, // baseline of known post ids; new ids trigger a radar sweep
     seenCommentIds: null, // baseline of comment ids on the open post (radar sweep on new ones)
+    fb: {}, // per-feedback-comment answer drafts, keyed by comment id (survives repaints)
   };
 
   async function load() {
@@ -249,18 +259,39 @@ export function createTracker({ repo, ctx }) {
       </button>`;
   }
 
+  // A feedback round is ACTIVE (interactive, owns the composer) when it carries
+  // questions AND no human comment follows it. The agent's own later comments don't
+  // count - only a human reply consumes the round.
+  function activeFeedbackId(comments) {
+    let active = null;
+    comments.forEach((c, i) => {
+      const e = feedbackEntry(c);
+      if (!e || !e.sections.some((s) => s.section_type === "questions" && (s.content?.questions || []).length)) return;
+      const answered = comments.slice(i + 1).some((later) => !isPlatformAuthored(later));
+      if (!answered) active = c.id;
+    });
+    return active;
+  }
+
   function commentsBlock(post, composer) {
     const comments = post.comments || [];
-    const locked = composer && inReview(post);
+    const reviewLocked = composer && inReview(post);
+    const activeFb = composer ? activeFeedbackId(comments) : null;
+    const body =
+      comments.map((c) => commentHtml(c, post, activeFb)).join("") || `<div class="muted">No comments.</div>`;
+    let footer = "";
+    if (reviewLocked) {
+      footer = `<div class="muted comment-locked">Comments are locked while this issue is in code review. They reopen once it finishes.</div>`;
+    } else if (activeFb != null) {
+      // The active feedback card owns input: no free composer until the round is answered.
+    } else if (composer) {
+      footer = `<form data-comment-form><textarea name="body" placeholder="add a comment…" required></textarea><button class="btn btn-primary">Comment</button></form>`;
+    }
     return `
       <div class="section-title">comments</div>
-      ${comments.map((c) => commentHtml(c, post)).join("") || `<div class="muted">No comments.</div>`}
+      ${body}
       ${agentWorkingBox(post)}
-      ${locked
-        ? `<div class="muted comment-locked">Comments are locked while this issue is in code review. They reopen once it finishes.</div>`
-        : composer
-        ? `<form data-comment-form><textarea name="body" placeholder="add a comment…" required></textarea><button class="btn btn-primary">Comment</button></form>`
-        : ""}`;
+      ${footer}`;
   }
 
   function managedDrawer(post) {
@@ -420,8 +451,23 @@ export function createTracker({ repo, ctx }) {
       </article>`;
   }
 
-  function commentHtml(comment, post) {
+  // Lazily build (and cache) the editable answer draft for an active feedback card.
+  // Seeded with the agent's suggestions so Send is ready on first paint.
+  function ensureFb(cid, entry) {
+    const key = String(cid);
+    if (!state.fb[key]) state.fb[key] = { mode: "feedback", commentDraft: "", answers: initAnswers(entry) };
+    return state.fb[key];
+  }
+
+  function commentHtml(comment, post, activeFb) {
     if (isApprovalComment(comment)) return approvalBox(comment, post);
+    const entry = feedbackEntry(comment);
+    if (entry) {
+      const active = String(comment.id) === String(activeFb);
+      return renderFeedbackCard({ comment, entry, active, fb: active ? ensureFb(comment.id, entry) : null });
+    }
+    const reply = replyPayload(comment);
+    if (reply) return renderReplyCard({ comment, reply });
     return `
       <article class="comment" data-comment-id="${escapeHtml(String(comment.id))}">
         <div class="comment-meta">${escapeHtml(comment.author || "unknown")} · ${escapeHtml(formatTime(comment.updated_at || comment.created_at))}</div>
@@ -550,6 +596,86 @@ export function createTracker({ repo, ctx }) {
     }
   }
 
+  // -- feedback (interactive reply-protocol card) ----------------------- #
+  // Look up the live envelope for an active feedback comment by id.
+  function feedbackEntryById(cid) {
+    const c = (state.selected?.comments || []).find((x) => String(x.id) === String(cid));
+    return c ? feedbackEntry(c) : null;
+  }
+
+  function handleFeedbackClick(el) {
+    const cid = el.dataset.fbCid;
+    const act = el.dataset.fbAct;
+    const entry = feedbackEntryById(cid);
+    if (!entry) return;
+    const fb = ensureFb(cid, entry);
+    const q = el.dataset.fbQ;
+    if (act === "choice") {
+      fb.answers[q].choice = el.dataset.fbChoice;
+      repaintDrawer();
+      if (el.dataset.fbChoice === "__other") {
+        document.querySelector(`[data-fb-act="other"][data-fb-cid="${cid}"][data-fb-q="${q}"]`)?.focus();
+      }
+      return;
+    }
+    if (act === "skip") {
+      fb.answers[q].skip = !fb.answers[q].skip;
+      return repaintDrawer();
+    }
+    if (act === "assume") {
+      const k = Number(el.dataset.fbA);
+      const set = fb.answers[q].rejected;
+      const at = set.indexOf(k);
+      at === -1 ? set.push(k) : set.splice(at, 1);
+      return repaintDrawer();
+    }
+    if (act === "comment-mode") {
+      fb.mode = "comment";
+      repaintDrawer();
+      return document.querySelector(`[data-fb-act="comment-text"][data-fb-cid="${cid}"]`)?.focus();
+    }
+    if (act === "undo") {
+      fb.mode = "feedback";
+      fb.commentDraft = "";
+      return repaintDrawer();
+    }
+    if (act === "send") {
+      if (!allAnswered(entry, fb.answers)) return;
+      const json = buildReplyJson(entry, fb.answers);
+      delete state.fb[String(cid)]; // round consumed; drop the draft
+      return mutate(() => api.addComment(repo.id, state.selectedId, json));
+    }
+  }
+
+  // Mirror feedback text inputs into state on every keystroke so a 5s repaint never
+  // wipes them (radios/checkboxes go through handleFeedbackClick instead).
+  function handleFeedbackInput(el) {
+    const fb = state.fb[String(el.dataset.fbCid)];
+    if (!fb) return;
+    const q = el.dataset.fbQ;
+    const act = el.dataset.fbAct;
+    if (act === "other") {
+      fb.answers[q].other = el.value;
+      fb.answers[q].choice = "__other";
+      // toggling validity (Send enable/disable) needs a repaint, but that would
+      // steal focus mid-type; flip the button directly instead.
+      syncSendState(el.dataset.fbCid);
+    } else if (act === "note") fb.answers[q].note = el.value;
+    else if (act === "text") {
+      fb.answers[q].text = el.value;
+      syncSendState(el.dataset.fbCid);
+    } else if (act === "comment-text") fb.commentDraft = el.value;
+  }
+
+  // Enable/disable the Send button in place (no repaint) as text answers change.
+  function syncSendState(cid) {
+    const entry = feedbackEntryById(cid);
+    const fb = state.fb[String(cid)];
+    if (!entry || !fb) return;
+    const btn = document.querySelector(`[data-fb-act="send"][data-fb-cid="${cid}"]`);
+    if (btn) btn.disabled = !allAnswered(entry, fb.answers);
+  }
+
   // -- events ----------------------------------------------------------- #
   async function handleClick(event) {
     const t = event.target;
@@ -585,6 +711,8 @@ export function createTracker({ repo, ctx }) {
     const add = t.closest("[data-add-label]");
     if (add) return mutate(() => api.updateLabel(repo.id, state.selectedId, "add", add.dataset.addLabel));
     if (t.closest("[data-remove-draft]")) return mutate(() => api.updateLabel(repo.id, state.selectedId, "remove", "draft"));
+    const fb = t.closest("[data-fb-act]");
+    if (fb) return handleFeedbackClick(fb);
     const gr = t.closest("[data-gate-react]");
     if (gr) return mutate(() => api.reactComment(repo.id, state.selectedId, gr.dataset.gateComment, gr.dataset.gateReact));
     const stateSeg = t.closest("[data-state]");
@@ -646,6 +774,8 @@ export function createTracker({ repo, ctx }) {
   // types — Enter/iOS Done key stop mattering. Small debounce avoids repaint churn.
   let searchTimer = null;
   function handleInput(event) {
+    const fb = event.target.closest("[data-fb-act]");
+    if (fb) return handleFeedbackInput(fb);
     const input = event.target.closest("[data-search-form] input");
     if (!input) return;
     clearTimeout(searchTimer);
@@ -669,6 +799,16 @@ export function createTracker({ repo, ctx }) {
     }
     if (form.dataset.commentForm !== undefined) {
       return mutate(() => api.addComment(repo.id, state.selectedId, data.body));
+    }
+    // "Comment instead" of answering an active feedback round. The draft lives in
+    // state (mirrored on input); posting it leaves the round for the agent to read.
+    if (form.dataset.fbCommentForm !== undefined) {
+      const cid = String(form.dataset.fbCommentForm);
+      const fb = state.fb[cid];
+      const text = (fb?.commentDraft || "").trim();
+      if (!text) return;
+      delete state.fb[cid];
+      return mutate(() => api.addComment(repo.id, state.selectedId, text));
     }
     if (form.dataset.savePost !== undefined) {
       state.editing = false;
@@ -742,7 +882,10 @@ export function createTracker({ repo, ctx }) {
   // rebuilding it mid-edit would discard the in-progress edit. Everything else
   // (incoming comments, reactions, labels, the agent-working box) repaints freely.
   function drawerBusy() {
-    return state.editing;
+    // Also hold off while the user has focus inside a feedback card - a repaint
+    // rebuilds its DOM and would yank focus mid-answer. Resumes once they click away.
+    const a = document.activeElement;
+    return state.editing || !!a?.closest?.("[data-feedback-card]");
   }
   // Queue dot in the tab head: glows only while the repo has queued/running work.
   async function refreshQueueDot() {
