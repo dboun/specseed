@@ -371,3 +371,11 @@ in `references/reply-protocol-base.md`) delivered as comment(s) on the spec-chan
 creates no work, and stages no spec, so the runtime runs `apply.py` straight away (a
 direct apply) instead of gating it. Write the files and stop; the next poll re-triggers
 this route with the human's answers in the comments.
+
+**A clarification plan carries ONLY the clarification.** Leave `creates`, `settle_docs`,
+`closes`, `deletes` empty, stage NO spec files, and aim every `edits`/`labels`/`comments`
+entry at the request post itself. Do NOT copy a prior run's proposal forward "to keep it
+around" - a re-trigger REWRITES the dir, so emit a FRESH plan for what THIS run decided
+(a clarification). Leftover `creates` (or any staged spec) make the runtime read the run
+as a proposal, not a clarification: it gates on the already-posted APR, no-ops, and your
+questions never reach the human. When you ask, ask and nothing else.

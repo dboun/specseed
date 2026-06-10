@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import threading
 import unittest
+import unittest.mock
 from pathlib import Path
 
 from specseed_runtime.db.database import Database
@@ -595,6 +596,89 @@ class SpecChangeGateDecisionTest(DispatchTestBase):
         actions = self._actions(rid)
         self.assertIn("run_spec_change_script", actions)
         self.assertNotIn("propose_spec_change", actions)
+
+    def test_classify_clarification_status_request_scoped_is_direct(self) -> None:
+        # A clarification round that declares its intent AND stays request-scoped is
+        # direct - the questions reach the human without a gate.
+        rid = self._seed_local_entry("Adapt", ["spec-change:adapt"])
+        self._write_plan(rid, {
+            "status": "clarification_round",
+            "comments": [{"post": str(rid), "body": "Q1?"}],
+            "labels": [{"post": str(rid), "add": ["spec-change:status:awaiting_input"]}],
+        })
+        with unittest.mock.patch.object(dispatch_mod.platform_log, "log_event") as log:
+            self.assertEqual(dispatch_mod._classify_spec_change(self.ctx, str(rid)), "direct")
+        events = [c.args[0] for c in log.call_args_list]
+        self.assertNotIn("spec_change_clarification_carries_work", events)
+
+    def test_classify_clarification_with_leftover_creates_gates_and_logs(self) -> None:
+        # The regression: a re-run that asks a question but copies the prior
+        # proposal's creates forward. The leftover work masks the clarification, so
+        # the runtime gates (never creates unapproved work) AND logs loud so the
+        # dropped questions are not silent.
+        rid = self._seed_local_entry("Adapt", ["spec-change:adapt"])
+        self._write_plan(rid, {
+            "status": "clarification_round",
+            "comments": [{"post": str(rid), "body": "Q1?"}],
+            "creates": [{"title": "FEAT-0001"}],
+        })
+        with unittest.mock.patch.object(dispatch_mod.platform_log, "log_event") as log:
+            self.assertEqual(dispatch_mod._classify_spec_change(self.ctx, str(rid)), "propose")
+        events = [c.args[0] for c in log.call_args_list]
+        self.assertIn("spec_change_clarification_carries_work", events)
+
+
+class ProposeSpecChangeIdempotencyTest(DispatchTestBase):
+    """propose_spec_change posts plan_summary + APR once, then no-ops on re-trigger.
+
+    The no-op must NOT be silent when the re-run plan also carries comments: the
+    propose path never posts plan.comments, so a misrouted clarification would
+    vanish. That case logs a distinct dropped-comments event.
+    """
+
+    def _seed_remote_request(self):
+        for label in ("spec-change:adapt", "spec-change:status:awaiting_approval"):
+            self.remote.create_label(label)
+        return self.remote.add_entry("Adapt", labels=["spec-change:adapt"]).data.id
+
+    def _write_plan(self, rid, plan):
+        from specseed_runtime.scheduling.spec_change import spec_change_dir
+        d = spec_change_dir(str(rid), self.ctx.storage)
+        d.mkdir(parents=True, exist_ok=True)
+        plan.setdefault("request_id", str(rid))
+        plan.setdefault("apr", {"id": "APR-0001", "summary": "do the thing"})
+        plan.setdefault("plan_summary", "## Plan\n- thing")
+        (d / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
+
+    def test_first_propose_posts_then_bare_retrigger_is_quiet_noop(self) -> None:
+        rid = self._seed_remote_request()
+        self._write_plan(rid, {"creates": [{"title": "FEAT-0001"}]})
+        first = dispatch_mod.propose_spec_change(self.ctx, {"post_id": str(rid), "task_id": 1})
+        self.assertTrue(first.success)
+        # Re-trigger with the SAME (no-comments) plan: benign retry -> plain no-op.
+        with unittest.mock.patch.object(dispatch_mod.platform_log, "log_event") as log:
+            again = dispatch_mod.propose_spec_change(self.ctx, {"post_id": str(rid), "task_id": 2})
+        self.assertTrue(again.success)
+        events = [c.args[0] for c in log.call_args_list]
+        self.assertIn("spec_change_propose_noop", events)
+        self.assertNotIn("spec_change_propose_noop_dropped_comments", events)
+
+    def test_retrigger_with_comments_logs_dropped(self) -> None:
+        rid = self._seed_remote_request()
+        self._write_plan(rid, {"creates": [{"title": "FEAT-0001"}]})
+        dispatch_mod.propose_spec_change(self.ctx, {"post_id": str(rid), "task_id": 1})
+        # Now a re-run leaves a question in the plan but still carries creates, so it
+        # lands on propose again. The APR is already posted -> idempotent no-op, but
+        # the question would be eaten: that must be logged loud.
+        self._write_plan(rid, {
+            "creates": [{"title": "FEAT-0001"}],
+            "comments": [{"post": str(rid), "body": "Q1?"}],
+        })
+        with unittest.mock.patch.object(dispatch_mod.platform_log, "log_event") as log:
+            out = dispatch_mod.propose_spec_change(self.ctx, {"post_id": str(rid), "task_id": 2})
+        self.assertTrue(out.success)
+        events = [c.args[0] for c in log.call_args_list]
+        self.assertIn("spec_change_propose_noop_dropped_comments", events)
 
 
 class RunAgentRoutingTest(DispatchTestBase):

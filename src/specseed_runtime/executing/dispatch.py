@@ -1315,15 +1315,33 @@ def _classify_spec_change(ctx: ExecutionContext, request_id: Any) -> str:
       flips the request's own status label, creating no work and staging no spec. Run
       apply.py straight away so the question reaches the human.
     * ``"none"`` - the run produced no actionable plan.
+
+    Self-declared intent is a SIGNAL, not the verdict: a plan that says
+    ``status: clarification_round`` is honored as ``"direct"`` only when it is
+    genuinely request-scoped (no staged spec, no propose keys, no other-post
+    mutation). A clarification that ALSO carries work (e.g. a re-run that copied
+    the prior proposal's ``creates`` forward) is malformed - gate it so unapproved
+    work is never created, and log it loud so the dropped questions are not silent.
     """
     plan = _read_plan(ctx, request_id)
     if plan is None:
         return "none"
     _validate_depends_on_links(plan)
-    needs_approval = bool(staged_spec_files(request_id, ctx.storage)) or any(
-        plan.get(key) for key in _PROPOSE_PLAN_KEYS
-    ) or _touches_other_posts(plan, request_id)
-    if needs_approval:
+    request_scoped = not (
+        bool(staged_spec_files(request_id, ctx.storage))
+        or any(plan.get(key) for key in _PROPOSE_PLAN_KEYS)
+        or _touches_other_posts(plan, request_id)
+    )
+    if str(plan.get("status") or "").strip() == "clarification_round" and not request_scoped:
+        # The agent meant to ask a question but left real work in the plan. Gating
+        # is the safe call, but the propose path would then silently no-op on an
+        # already-posted APR and the question would vanish - surface it instead.
+        platform_log.log_event(
+            "spec_change_clarification_carries_work", post_id=request_id,
+            creates=len(plan.get("creates") or []),
+            staged=bool(staged_spec_files(request_id, ctx.storage)),
+        )
+    if not request_scoped:
         return "propose"
     if plan.get("comments") or plan.get("labels"):
         return "direct"
@@ -1404,7 +1422,19 @@ def propose_spec_change(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
     # Idempotency: the approval-request comment carries the APR marker. If it is
     # already on the post, a previous propose run finished - do nothing.
     if apr_id.upper() in {i.upper() for i in requested_apr_ids(conversation)}:
-        platform_log.log_event("spec_change_propose_noop", task_id=task.get("task_id"), post_id=request_id, apr=apr_id)
+        # A bare re-trigger of an already-proposed plan is a benign no-op. But if
+        # THIS plan also carries comments (a clarification round that got misrouted
+        # to propose because it left work in the plan), the no-op would silently
+        # eat the question - the propose path never posts plan.comments. Log loud so
+        # the loss is visible instead of a green no-op.
+        dropped = len(plan.get("comments") or [])
+        if dropped:
+            platform_log.log_event(
+                "spec_change_propose_noop_dropped_comments", task_id=task.get("task_id"),
+                post_id=request_id, apr=apr_id, dropped=dropped,
+            )
+        else:
+            platform_log.log_event("spec_change_propose_noop", task_id=task.get("task_id"), post_id=request_id, apr=apr_id)
         return HandlerOutcome(success=True, detail="proposal {0} already posted; parked".format(apr_id))
 
     if plan_summary:
