@@ -4,7 +4,7 @@
 filler. Style ref: `skills/specseed/references_ext/caveman.md`. Spec PROSE
 the skill *emits* (vision/SAD/SDD/entity bodies/ADR) ALSO gets the humanizer pass + em-dash ban:
 `references_ext/humanizer.md`. Tell spawned agents the same. This rule saves tokens on every edit.
-Memory: when asking for feedback/clarifications, use `skills/specseed/references/question-protocol.md`.
+Memory: when asking for feedback/clarifications, use `skills/specseed/references/reply-protocol-base.md`.
 
 ## What this repo is
 
@@ -83,7 +83,7 @@ src/
 skills/specseed/                     # the spec-change worker skill (markdown + helper scripts), at repo root
   SKILL.md                           #   START HERE. router: routes, contract, hard rules
   routes/                            #   adopt/adapt/tweak/inject/plan-next-sprint
-  references/                        #   spec-change-protocol, work-breakdown, remote-posts, component-questions, question-protocol, chat-mode
+  references/                        #   spec-change-protocol, work-breakdown, remote-posts, component-questions, reply-protocol, chat-mode
   references_ext/                    #   caveman.md (density) + humanizer.md (naturalness)
   scripts/                           #   stdlib helpers over local spec/ + plan.json ONLY: requirements_generate_json, requirements_analyze, critical_path, sprint_pack
   templates/entity_templates/        #   epic/ticket/issue/bug/feature emitted into target

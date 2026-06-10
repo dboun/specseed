@@ -6,7 +6,15 @@ the route resolves it with one of the standard moves (split node / extract inter
 reorder) from ``references/work-breakdown.md`` and re-runs until clean.
 
 CLI: ``python3 requirements_analyze.py <reqs.json> [tickets.json]`` or pipe reqs on
-stdin. Prints the result JSON; exit 0 if ok, 1 if errors.
+stdin. Passing ``tickets.json`` (a map ``{ticket_id: {"satisfies_reqs": [...]}}``)
+additionally checks coverage. Prints a result JSON:
+
+    {"ok": bool, "errors": [str], "warnings": [str], "topo_order": [req_id, ...],
+     "stats": {"n_reqs": int, "n_roots": int, "n_leaves": int}}
+
+``errors`` = cycles + deps on an unknown req (+ tickets satisfying an unknown req when
+``tickets.json`` is given); ``warnings`` = reqs no ticket satisfies; ``topo_order`` = a
+valid dependency order (empty when a cycle blocks it). Exit 0 if ``ok``, 1 if errors.
 """
 
 from __future__ import annotations

@@ -5,6 +5,20 @@ tracker, no remote. A human is present and types. Everything in
 `spec-change-protocol.md` and the routes still holds for *what* you produce; only the
 input source and the handoff differ.
 
+## Mandatory skill reads
+
+| Read | Why |
+|------|-----|
+| `references/spec-change-protocol.md` | what you produce (staged spec + `plan.json` + `apply.py`) is identical to runner mode |
+| `references/reply-protocol-base.md` | clarify live (chat is the no-park delivery mode) |
+
+## Mandatory skill script preamble reads
+
+| Script | Use |
+|--------|-----|
+
+## Notes
+
 **Detect it:** no scheduler handed you a `spec-change:<route>` label + request id, AND
 the runtime is absent (`specseed_runtime` not importable, no `tracking_local.db` /
 `<specseed_dir>/storage/`). Otherwise you are in runner mode (the default). When
@@ -16,9 +30,9 @@ spec; else adapt/tweak/inject/plan-next-sprint per the ask). Attached files / a
 pointed-at repo are the existing spec + code. No tracker means "current work posts" may
 be empty (greenfield) — fine. Mint a local slug for the request id.
 
-**Clarify live**, not async: ask through the questions protocol
-(`question-protocol.md`), wait for the reply in the conversation, continue. The
-async-comment path does not apply.
+**Clarify live**: chat is the live (no-park) delivery mode in `reply-protocol-base.md` —
+ask in the conversation, wait for the reply, continue; no async comment. That doc owns
+the reply form (chat = natural prose, no reaction prompts) and the question discipline.
 
 **Outputs** are the same three artifacts laid out like an installed tree, so the human
 can drop them into a repo or resume in Claude Code. Spec edits are STAGED (never written

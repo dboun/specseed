@@ -4,6 +4,20 @@ This is the spine. Each route (`adopt`, `adapt`, `tweak`, `inject`,
 `plan-next-sprint`) decides *what* changes; this file owns *how* the change is
 produced and handed off. Read it once; the routes only describe their own logic.
 
+## Mandatory skill reads
+
+| Read | Why |
+|------|-----|
+| `references/remote-posts.md` | the post/label model `apply.py` mutates |
+| `references/work-breakdown.md` | how the breakdown that fills `plan.json` is formed + validated |
+| `references/reply-protocol-base.md` | the async clarification-round format |
+
+## Mandatory skill script preamble reads
+
+| Script | Use |
+|--------|-----|
+| `dependencies_validate.py` | validate `plan.json.creates` links before emitting `apply.py` |
+
 ## The request
 
 You are invoked with:
@@ -47,6 +61,7 @@ three outputs land under the request dir:
    promotes these into live `spec/` ONLY after a human approves, so an unapproved or
    buggy run cannot corrupt the real spec. Use
    `scheduling/spec_change.py:spec_change_spec_dir(request_id)` for the staging path.
+   Spec docs follow `templates/spec_doc_templates/` (vision/srs/sad/sdd/adr).
 2. **plan.json** + **apply.py** in the request dir. Use
    `scheduling/spec_change.py:spec_change_dir(request_id)` to resolve the dir; create
    it if missing.
@@ -86,7 +101,7 @@ is yours to fit the route, but keep it explicit. Suggested:
 `settle_docs` lists the spec docs this run created or reopened; on approval the runtime
 stamps `settled: true` + `settled_at` on each (the producer for `settled` — see the
 approval gate). `questions` records any clarification round already asked (so a
-re-trigger never re-asks; format in `references/question-protocol.md`). `risk` holds the
+re-trigger never re-asks; format in `references/reply-protocol-base.md`). `risk` holds the
 risk-detection & gating pass output (`references/work-breakdown.md`).
 
 **`plan_summary` + `apr` are required for a proposing run** (one that creates work or
@@ -344,13 +359,12 @@ re-derives the gate from the new output.
 
 ## Async clarification
 
-Cannot proceed safely? Do not guess. Post a **clarification round** — possibly several
-questions in the confidence/suggestion format of `references/question-protocol.md`,
-delivered as comment(s) on the spec-change post into `plan.json.comments` — add label
-`spec-change:status:awaiting_input` (never `awaiting_approval`; that is the runtime's
-APR plan gate), record the round in `plan.json.questions`. This is the ONE ungated run:
-it touches ONLY the request post, creates no work, and stages no spec, so the runtime
-runs `apply.py` straight away (a direct apply) instead of gating it. Write the files and
-stop. The human replies on the remote (a one-word `OK` accepts all your suggestions); the
-next poll re-triggers this route with their answers in the comments.
-A round may carry multiple questions; the rule is one round then park, not one question.
+Cannot proceed safely? Do not guess. Post a **clarification round** (round format,
+sizing, the confidence/suggestion discipline, and the one-round-then-park rule all live
+in `references/reply-protocol-base.md`) delivered as comment(s) on the spec-change post into
+`plan.json.comments`, add label `spec-change:status:awaiting_input` (never
+`awaiting_approval`; that is the runtime's APR plan gate), and record the round in
+`plan.json.questions`. This is the ONE ungated run: it touches ONLY the request post,
+creates no work, and stages no spec, so the runtime runs `apply.py` straight away (a
+direct apply) instead of gating it. Write the files and stop; the next poll re-triggers
+this route with the human's answers in the comments.

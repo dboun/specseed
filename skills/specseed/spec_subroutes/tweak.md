@@ -1,18 +1,35 @@
 # tweak
 
+## Short description
+
 The smallest change. One req added, one priority changed, a typo, one status
 flip. A single-doc edit and at most one matching work post. Anything bigger is
 `adapt`.
 
-Read `references/spec-change-protocol.md` and `references/remote-posts.md`. You
-will rarely need `work-breakdown.md`.
+## Mandatory skill reads
+
+| Read | Why |
+|------|-----|
+| `references/spec-change-protocol.md` | the spec spine: outputs, gate, async clarification, tracking contract |
+| `references/remote-posts.md` | the post/label model |
+| `references/reply-protocol-spec.md` | clarification-round format |
+| `references/chat-mode.md` | when run in chat (no runtime) |
+| `references/work-breakdown.md` | the one-ticket carve-out + when to escalate to a real breakdown (adapt) |
+| `templates/spec_doc_templates/` | the doc format for the one edited spec file (SRS row, vision, etc.) |
+
+## Mandatory skill script preamble reads
+
+| Script | Use |
+|--------|-----|
+| `requirements_generate_json.py` | regenerate `reqs.json` when the tweak adds/changes an SRS row |
+| `dependencies_validate.py` | validate `plan.json.creates` when the tweak plans one issue |
 
 ## Fires when
 
 `spec-change:tweak` on a request post AND the change is genuinely small. If, once
 you localize it, the change fans out across multiple spec files or multiple work
 posts, or it forces reopening settled design, **treat it as adapt** instead:
-follow `routes/adapt.md` for this request. Note the bump in `plan.json`.
+follow `spec_subroutes/adapt.md` for this request. Note the bump in `plan.json`.
 
 ## Flow
 
@@ -46,5 +63,5 @@ follow `routes/adapt.md` for this request. Note the bump in `plan.json`.
   one-req + one-ticket carve-out), or
 - the request post asks a broader "what about..." that needs real reconciliation.
 
-Escalating means: stop following this file, follow `routes/adapt.md` for the same
-request id. Carry over what you already located.
+Escalating means: stop following this file, follow `spec_subroutes/adapt.md` for the
+same request id. Carry over what you already located.

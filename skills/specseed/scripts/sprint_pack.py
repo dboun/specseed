@@ -15,8 +15,10 @@ bounded refinement pass.
 Input shapes match ``critical_path.load_tickets``. Each node may carry ``depends_on``,
 ``effort``, ``epic``, ``priority`` (high/medium/low), and ``on_critical_path``.
 
-CLI: ``python3 sprint_pack.py <file> [budget]`` (or pipe JSON on stdin). Prints
-``{"sprints": [[id, ...], ...]}``.
+CLI: ``python3 sprint_pack.py <file> [budget]`` (or pipe JSON on stdin; ``budget`` is
+the per-sprint hour ceiling, default 168). Prints ``{"sprints": [[id, ...], ...]}`` -
+sprints in execution order, each an ordered list of ticket ids; a ticket's deps are
+always in the same or an earlier sprint. Exit 0 ok, 2 on usage / no input.
 """
 
 from __future__ import annotations

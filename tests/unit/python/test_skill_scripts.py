@@ -7,7 +7,9 @@ pure in-memory / tmp_path. Loaded by file path since the scripts are not a packa
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import json
 import tempfile
 import unittest
@@ -29,6 +31,14 @@ reqan = _load("requirements_analyze")
 cp = _load("critical_path")
 sp = _load("sprint_pack")
 dv = _load("dependencies_validate")
+gp = _load("generate_prompt_from_skill")
+# Helpers are private (`__`-prefixed); bind at module scope (no name mangling here) so
+# the tests inside the class can still reach them.
+_gen = gp.generate_prompt_from_skill
+_first_cells = getattr(gp, "__first_cells")
+_cell_path = getattr(gp, "__cell_path")
+_preamble = getattr(gp, "__preamble")
+_gp_main = getattr(gp, "__main")
 
 
 _SRS = """# API SRS
@@ -354,6 +364,122 @@ class DependenciesValidateTest(unittest.TestCase):
         bad = Path(tmp.name) / "bad.json"
         bad.write_text(json.dumps({"creates": [self._issue("B", "Depends on: #{id:missing}\n")]}), encoding="utf-8")
         self.assertEqual(dv.main(["prog", str(bad)]), 1)
+
+
+_SKILL_ROOT = _SCRIPTS.parent
+_RH = "## Mandatory skill reads"
+_SH = "## Mandatory skill script preamble reads"
+
+
+class GeneratePromptTest(unittest.TestCase):
+    _TABLE = (
+        f"{_RH}\n\n"
+        "| Read | Why |\n|------|-----|\n"
+        "| `references/a.md` | x |\n"
+        "| `templates/d/` | y |\n\n"
+        f"{_SH}\n\n"
+        "| Script | Use |\n|--------|-----|\n"
+        "| `foo.py` | z |\n\n"
+        "## Other\n\n| Col | Col2 |\n|--|--|\n| nope | nope |\n"
+    )
+
+    def test_first_cells_drops_header_separator_and_other_sections(self):
+        self.assertEqual(
+            _first_cells(self._TABLE, _RH),
+            ["`references/a.md`", "`templates/d/`"],
+        )
+        self.assertEqual(_first_cells(self._TABLE, _SH), ["`foo.py`"])
+        self.assertEqual(_first_cells(self._TABLE, "## Missing"), [])
+
+    def test_cell_path_extracts_backticked_path_or_none(self):
+        self.assertEqual(_cell_path("`references/a.md`"), "references/a.md")
+        self.assertEqual(_cell_path("`templates/d/`"), "templates/d/")
+        self.assertIsNone(_cell_path("no backticks here"))
+
+    def test_preamble_is_first_triple_quote_block(self):
+        self.assertEqual(_preamble('"""hi\nthere"""\ncode = 1\n'), "hi\nthere")
+        self.assertEqual(_preamble("x = 1\n"), "(no module docstring)")
+
+    @staticmethod
+    def _emitted_paths(out: str) -> set[str]:
+        paths = set()
+        for line in out.splitlines():
+            if line.startswith("===== ") and line.endswith(" ====="):
+                label = line[len("===== "):-len(" =====")]
+                if label.endswith(" (preamble)"):
+                    label = label[:-len(" (preamble)")]
+                paths.add(label)
+        return paths
+
+    def test_public_fn_header_has_version_and_dedupes(self):
+        out = _gen("specseed-ui", "spec", "adapt")
+        self.assertIsInstance(out, str)
+        self.assertIn("Specseed skill (v", out)
+        self.assertIn("Mode: specseed-ui. Route: spec. Subroute: adapt.", out)
+        self.assertIn("===== SKILL.md =====", out)
+        self.assertIn("===== routes/spec.md =====", out)
+        self.assertIn("===== spec_subroutes/adapt.md =====", out)
+        self.assertEqual(out.count("===== references/spec-change-protocol.md ====="), 1)
+        self.assertEqual(out.count("===== scripts/dependencies_validate.py (preamble) ====="), 1)
+        # preamble only: script code (never in a docstring) is excluded
+        self.assertNotIn("from __future__ import annotations", out)
+        # trailing end-of-skill marker
+        self.assertIn("END OF SPECSEED SKILL FILES", out)
+        self.assertIn("PROMPT FOLLOWS (IF EMPTY STOP AND WAIT)", out)
+
+    def test_spec_without_subroute_includes_all_subroutes(self):
+        out = _gen("chat", "spec")
+        for sub in _SKILL_ROOT.glob("spec_subroutes/*.md"):
+            self.assertIn(f"===== spec_subroutes/{sub.name} =====", out)
+
+    def test_adr_csv_is_included(self):
+        out = _gen("specseed-ui", "spec")
+        self.assertIn("===== templates/spec_doc_templates/adr.csv =====", out)
+
+    def test_no_route_emits_whole_skill(self):
+        out = _gen("specseed-ui")
+        self.assertIn("Mode: specseed-ui. Route: (all).", out)
+        self.assertIn("===== SKILL.md =====", out)
+        for r in _SKILL_ROOT.glob("routes/*.md"):
+            self.assertIn(f"===== routes/{r.name} =====", out)
+
+    def test_public_fn_raises_on_bad_mode_or_missing_route(self):
+        self.assertRaises(ValueError, _gen, "bogus", "spec")
+        self.assertRaises(ValueError, _gen, "chat", "nosuchroute")
+        self.assertRaises(ValueError, _gen, "chat", "spec", "nosuchsubroute")
+        # a subroute with no route is invalid
+        self.assertRaises(ValueError, _gen, "chat", None, "adopt")
+
+    def test_cli_main_exit_codes(self):
+        self.assertEqual(_gp_main(["bogus", "spec"]), 2)
+        self.assertEqual(_gp_main(["chat", "nosuchroute"]), 2)
+        self.assertEqual(_gp_main([]), 2)  # usage: no mode
+        for argv, needle in (
+            (["specseed-ui", "impl"], "===== routes/impl.md ====="),
+            (["specseed-ui"], "Route: (all)."),  # mode-only -> whole skill
+        ):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = _gp_main(argv)
+            self.assertEqual(rc, 0)
+            self.assertIn(needle, buf.getvalue())
+
+    def test_whole_skill_reaches_every_file(self):
+        # Sanity: the whole-skill prompt (no route) inlines every skill file except
+        # version.txt and the generator itself.
+        exclude = {"version.txt", "scripts/generate_prompt_from_skill.py"}
+        all_files = set()
+        for p in _SKILL_ROOT.rglob("*"):
+            if not p.is_file():
+                continue
+            rel = p.relative_to(_SKILL_ROOT).as_posix()
+            if "__pycache__" in rel or rel.endswith(".pyc") or rel in exclude:
+                continue
+            all_files.add(rel)
+
+        seen = self._emitted_paths(_gen("specseed-ui"))
+        missing = all_files - seen
+        self.assertEqual(missing, set(), f"unreachable skill files: {sorted(missing)}")
 
 
 if __name__ == "__main__":

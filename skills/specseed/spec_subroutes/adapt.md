@@ -1,14 +1,34 @@
 # adapt
 
+## Short description
+
 The request wants to create or change the spec. If no spec exists yet, this route
 creates the first spec from the request (cold start). If a spec exists, it applies a
 non-trivial change: add/extend/revise requirements or design, deprecate or retire a
 feature. Patch `<specseed_dir>/spec/` and reconcile the affected work posts. adapt is
 the **only route that may reopen a settled doc**.
 
-Read `references/spec-change-protocol.md`, `references/remote-posts.md`,
-`references/work-breakdown.md`, `references/component-questions.md`, and
-`references/question-protocol.md` first.
+## Mandatory skill reads
+
+| Read | Why |
+|------|-----|
+| `references/spec-change-protocol.md` | the spec spine: outputs, gate, async clarification, tracking contract |
+| `references/remote-posts.md` | the post/label model |
+| `references/reply-protocol-spec.md` | clarification-round format |
+| `references/chat-mode.md` | when run in chat (no runtime) |
+| `references/work-breakdown.md` | break new/changed scope into epics/tickets/issues; risk pass; critical path; sprints |
+| `references/component-questions.md` | which concerns to probe per component (cold start, and changed components) |
+| `templates/spec_doc_templates/` | the vision/SRS/SAD/SDD/ADR doc formats |
+
+## Mandatory skill script preamble reads
+
+| Script | Use |
+|--------|-----|
+| `requirements_generate_json.py` | regenerate `reqs.json` after SRS edits |
+| `requirements_analyze.py` | re-run after regen; resolve any cycles |
+| `critical_path.py` | recompute ticket-tier critical path when this run creates tickets |
+| `sprint_pack.py` | assign new tickets to a sprint |
+| `dependencies_validate.py` | validate `plan.json.creates` before emitting (when it creates issues) |
 
 ## Fires when
 
@@ -24,7 +44,7 @@ finish unblock that issue (swap it back to `:status:todo`).
 
 When `<specseed_dir>/spec/` is empty, treat the request post as the first project
 brief: what it is, who uses it, hard constraints, scope. If the brief is too thin to
-spec a coherent v1, raise a clarification round (`question-protocol.md`) rather than
+spec a coherent v1, raise a clarification round (`reply-protocol-spec.md`) rather than
 inventing a product.
 
 ### Depth dial (how much to bite off up front)
@@ -46,27 +66,25 @@ Record the tier + rationale in `plan.json`.
 
 ### Produce the first spec (scaled to the brief + tier)
 
-1. `vision.md` — problem, users, scope IN / OUT, success signals. Prose; humanize.
+All docs follow `templates/spec_doc_templates/` (one per doc). The notes below add only
+the route-specific decisions on top of the template.
+
+1. `vision.md`. Prose; humanize.
 2. Component split — functional components from the brief (see
    `component-questions.md`). One SRS+SDD per component, or a single pair for a small
    project. Propose a virtual `cross-cutting` component only if security/observability/
    i18n/a11y materially cut across components (`SRS-CC-NNN`).
-3. `*-srs.md` (or `srs.md`) — requirement tables. IDs `SRS-<COMP>-NNN`. Columns stay
-   machine-formatted. Run `component-questions.md` per component (evidence-first;
+3. `*-srs.md` (or `srs.md`). Run `component-questions.md` per component (evidence-first;
    `incremental` deep-questions only the first increment's components).
-4. `sad.md` — architecture: components, interfaces, data flow. Prose humanized; real,
-   not aspirational. `incremental`: skeleton whole + deep only where increment 1 touches.
-   **MUST include an authoritative `## Project layout` section**: the canonical
-   top-level directory tree (package/module roots, where tests live, src- vs flat-
-   layout, entry points, config/manifest files). This is the ONE place the layout is
-   decided — every impl agent reads it and matches it (`prompts.build_implement_prompt`
-   points here), so issues never each invent their own structure. Pick a layout
-   idiomatic for the language/framework; state it concretely, not as options.
-5. `*-sdd.md` (or `sdd.md`) — the how, per component in scope.
-6. `adr.csv` — columns `Decision,Justification`. One row per real decision.
+4. `sad.md`. Real, not aspirational. `incremental`: skeleton whole + deep only where
+   increment 1 touches. Its `## Project layout` is the ONE place the layout is decided —
+   every impl agent reads it and matches it (`prompts.build_implement_prompt` points
+   here), so issues never each invent their own.
+5. `*-sdd.md` (or `sdd.md`) — per component in scope.
+6. `adr.csv`. One row per real decision.
 7. `reqs.json` — via `scripts/requirements_generate_json.py`, then
    `scripts/requirements_analyze.py`; resolve any cycles (`work-breakdown.md`).
-8. `deployment.md` — only if operations/deployment is clearly in scope.
+8. `deployment.md` — only if operations/deployment is clearly in scope (no template).
 
 ### Cross-doc consistency pass
 
@@ -189,10 +207,8 @@ When the request retires an entire feature, not one req:
 ## Finish
 
 **Before stopping, validate the dependency graph:** when this run creates issues, run
-`scripts/dependencies_validate.py <plan.json>`. Fix every error (dangling / malformed /
-cycle / orphaned post: an issue with no ticket, a ticket with no epic, or a parent ref to
-nothing or the wrong tier) and resolve every warning (a tests/QA issue with no `Depends on:` — add the dep or
-confirm it stands alone). See **Issue dependencies** in `work-breakdown.md`.
+`dependencies_validate.py` and clear every error + warning per **Issue dependencies** in
+`work-breakdown.md`.
 
 Per the protocol: stage the spec, write `plan.json` (with `plan_summary` + `apr`) +
 `apply.py`, then stop. The runtime gates it: any run that plans issues OR touches the

@@ -1,12 +1,33 @@
 # adopt
 
+## Short description
+
 Existing code, no spec. Recover the spec **from the codebase** into
 `<specseed_dir>/spec/`, then map what already exists (and the gaps) into the work
 breakdown as remote posts. One-time onboarding; later changes route to adapt /
 plan-next-sprint / tweak.
 
-Read `references/spec-change-protocol.md`, `references/remote-posts.md`,
-`references/work-breakdown.md`, and `references/component-questions.md` first.
+## Mandatory skill reads
+
+| Read | Why |
+|------|-----|
+| `references/spec-change-protocol.md` | the spec spine: outputs, gate, async clarification, tracking contract |
+| `references/remote-posts.md` | the post/label model |
+| `references/reply-protocol-spec.md` | clarification-round format |
+| `references/chat-mode.md` | when run in chat (no runtime) |
+| `references/work-breakdown.md` | break the forward gaps into epics/tickets/issues; risk pass; critical path; sprints |
+| `references/component-questions.md` | which concerns to probe per recovered component (cold-start fallback for a thin repo) |
+| `templates/spec_doc_templates/` | the vision/SRS/SAD/SDD/ADR doc formats |
+
+## Mandatory skill script preamble reads
+
+| Script | Use |
+|--------|-----|
+| `requirements_generate_json.py` | recovered SRS tables → `reqs.json` |
+| `requirements_analyze.py` | validate `reqs.json` (cycles / orphans) |
+| `critical_path.py` | critical path over the forward (gap) ticket delta |
+| `sprint_pack.py` | pack the first sprint over the remaining work |
+| `dependencies_validate.py` | validate `plan.json.creates` before emitting |
 
 ## Fires when
 
@@ -152,11 +173,8 @@ is the source of truth from now on. Never set up ongoing sync.
 
 ## Finish
 
-**Before stopping, validate the dependency graph:** run
-`scripts/dependencies_validate.py <plan.json>`. Fix every error (dangling / malformed /
-cycle / orphaned post: an issue with no ticket, a ticket with no epic, or a parent ref to
-nothing or the wrong tier) and resolve every warning (a tests/QA issue with no `Depends on:` — add the dep or
-confirm it stands alone). See **Issue dependencies** in `work-breakdown.md`.
+**Before stopping, validate the dependency graph:** run `dependencies_validate.py` and
+clear every error + warning per **Issue dependencies** in `work-breakdown.md`.
 
 Per the protocol: stage the spec, write `plan.json` (with `plan_summary` + `apr`) +
 `apply.py`, then stop. The runtime gates it. Write a `plan_summary` summarizing the

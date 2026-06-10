@@ -31,8 +31,16 @@ consumes a sibling - a ``type:qa`` issue, or one whose title/body reads as tests
 declares no dep at all. This is the exact hole that lets a "tests for X" issue run before
 X is on primary. The route confirms the dep or justifies its absence.
 
-CLI: ``python3 dependencies_validate.py <plan.json>`` or pipe the plan on stdin.
-Prints the result JSON; exit 0 if no errors, 1 if errors.
+Input is a ``plan.json`` with a ``creates`` list of work items, each
+``{"tier": "epic"|"ticket"|"issue", "title": str, "body": str, ...}`` (the links are
+parsed out of ``body``). CLI: ``python3 dependencies_validate.py <plan.json>`` or pipe
+the plan on stdin. Prints a result JSON:
+
+    {"ok": bool, "errors": [str], "warnings": [str], "topo_order": [title, ...],
+     "stats": {"n_created": int, "n_issues": int, "n_dep_edges": int}}
+
+Exit 0 if no errors, 1 if errors. ``ok`` requires an empty ``errors``; ``warnings`` are
+surfaced for the route to resolve (confirm the dep or justify its absence), not fatal.
 """
 
 from __future__ import annotations

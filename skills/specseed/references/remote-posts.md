@@ -6,6 +6,17 @@ read cache of them. Labels are the canonical vocabulary in
 `specseed_runtime/tracking/supported_values.py` (seeded by
 `tracking/populate_defaults.py`).
 
+## Mandatory skill reads
+
+| Read | Why |
+|------|-----|
+| `references/spec-change-protocol.md` | the approval gate + how status moves; this doc is the post/label model it acts on |
+
+## Mandatory skill script preamble reads
+
+| Script | Use |
+|--------|-----|
+
 ## One post per work item
 
 Every **epic, ticket, and issue is one flat post** (a GitHub/GitLab issue). No
@@ -20,7 +31,7 @@ body** (identical on both providers and in the local stand-in).
 
 Each post carries exactly one tier label and one status label. (adopt may create a
 single `EPIC-0000 Phase 0 — Already built` epic at `:status:done` whose body lists
-shipped capabilities as plain titles, with no child posts — see `routes/adopt.md`.)
+shipped capabilities as plain titles, with no child posts — see `spec_subroutes/adopt.md`.)
 
 ## Status labels
 
@@ -43,9 +54,10 @@ this skill.
 
 Beyond tier + status, a work post may carry:
 
-- **`type:<kind>`** — `feature` / `bug` / `chore` / `spike` / `qa`. Issues always get
-  one; tickets may (never `qa`). Drives body shape (`templates/entity_templates/`) and
-  lets the runtime filter (e.g. a `type:qa` issue is a ticket's terminal QA pass).
+- **`type:<kind>`** — `feature` / `bug` / `chore` / `spike`. Issues always get one;
+  tickets may. Drives body shape (`templates/entity_templates/`) and lets the runtime
+  filter. (`type:qa` still exists in the runtime vocabulary but the skill no longer creates
+  it — verification is `impl` test issues + `operate` runs; see `work-breakdown.md`.)
 - **`difficulty:<level>`** — `easy` / `hard` (issues, optional). Modifies the code-review
   gate: `hard` issues never auto-approve, always landing in `awaiting_approval` for a
   human even at high review confidence. Set at formation (`work-breakdown.md`).

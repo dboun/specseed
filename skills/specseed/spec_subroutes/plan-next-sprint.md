@@ -1,11 +1,31 @@
 # plan-next-sprint
 
+## Short description
+
 Extend the spec **forward** into the next un-specced slice and break it down as
 the next sprint. Append-only: it never reopens settled design. If the slice would
 force a change to something already settled, that is `adapt`, not this route.
 
-Read `references/spec-change-protocol.md`, `references/remote-posts.md`, and
-`references/work-breakdown.md` first.
+## Mandatory skill reads
+
+| Read | Why |
+|------|-----|
+| `references/spec-change-protocol.md` | the spec spine: outputs, gate, async clarification, tracking contract |
+| `references/remote-posts.md` | the post/label model |
+| `references/reply-protocol-spec.md` | clarification-round format |
+| `references/chat-mode.md` | when run in chat (no runtime) |
+| `references/work-breakdown.md` | break the slice into tickets/issues; risk pass; critical path across all tickets; sprint packing |
+| `templates/spec_doc_templates/` | the SRS/SAD/SDD/ADR doc formats for the appended slice |
+
+## Mandatory skill script preamble reads
+
+| Script | Use |
+|--------|-----|
+| `requirements_generate_json.py` | regenerate `reqs.json` after appending the slice's SRS rows |
+| `requirements_analyze.py` | re-run after regen; resolve any cycles |
+| `critical_path.py` | recompute the ticket-tier critical path across all tickets (prior + new) |
+| `sprint_pack.py` | pack the new tickets into the next sprint |
+| `dependencies_validate.py` | validate `plan.json.creates` before emitting |
 
 ## Fires when
 
@@ -81,11 +101,8 @@ to adapt** for that change (note it in `plan.json`), then resume.
 
 ## Finish
 
-**Before stopping, validate the dependency graph:** run
-`scripts/dependencies_validate.py <plan.json>`. Fix every error (dangling / malformed /
-cycle / orphaned post: an issue with no ticket, a ticket with no epic, or a parent ref to
-nothing or the wrong tier) and resolve every warning (a tests/QA issue with no `Depends on:` — add the dep or
-confirm it stands alone). See **Issue dependencies** in `work-breakdown.md`.
+**Before stopping, validate the dependency graph:** run `dependencies_validate.py` and
+clear every error + warning per **Issue dependencies** in `work-breakdown.md`.
 
 Per the protocol: stage the spec, write `plan.json` (with `plan_summary` + `apr`) +
 `apply.py`, then stop. The runtime gates it as a proposal (staged spec + `creates`): it

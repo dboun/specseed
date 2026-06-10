@@ -1,12 +1,28 @@
 # inject
 
+## Short description
+
 Add manual work to the remote work breakdown without changing settled spec
 content. This route is for urgent or out-of-band work that a human wants in the
 queue now: a manual epic, ticket, or issue. If the tier is not explicit, infer
-the smallest tier that fits the request.
+the smallest tier that fits the request. Bodies come from
+`templates/entity_templates/`.
 
-Read `references/spec-change-protocol.md`, `references/remote-posts.md`, and
-`references/work-breakdown.md` first.
+## Mandatory skill reads
+
+| Read | Why |
+|------|-----|
+| `references/spec-change-protocol.md` | the spec spine: outputs, gate, async clarification, tracking contract |
+| `references/remote-posts.md` | the post/label model |
+| `references/reply-protocol-spec.md` | clarification-round format |
+| `references/chat-mode.md` | when run in chat (no runtime) |
+| `references/work-breakdown.md` | tier shapes, body links, `type:`/`difficulty:` labels, the dep DAG for manual posts |
+
+## Mandatory skill script preamble reads
+
+| Script | Use |
+|--------|-----|
+| `dependencies_validate.py` | validate the manual `plan.json.creates` (parent tree + deps) before emitting |
 
 ## Fires when
 
@@ -101,11 +117,8 @@ approval).
 
 ## Finish
 
-**Before stopping, validate the dependency graph:** run
-`scripts/dependencies_validate.py <plan.json>`. Fix every error (dangling / malformed /
-cycle / orphaned post: an issue with no ticket, a ticket with no epic, or a parent ref to
-nothing or the wrong tier) and resolve every warning (a tests/QA issue with no `Depends on:` — add the dep or
-confirm it stands alone). See **Issue dependencies** in `work-breakdown.md`.
+**Before stopping, validate the dependency graph:** run `dependencies_validate.py` and
+clear every error + warning per **Issue dependencies** in `work-breakdown.md`.
 
 Per the protocol: write `plan.json` (with `plan_summary` + `apr`) + `apply.py`, then
 stop. The runtime gates it: a run that plans any work is a proposal, so it posts the

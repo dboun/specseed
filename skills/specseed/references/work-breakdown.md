@@ -6,6 +6,23 @@ by `apply.py`. There is no local folder tree. Deterministic structure (reqs from
 dependency cycles, critical path, sprint packing) is computed by the **skill scripts**
 under `skills/specseed/scripts/` (run them; do not hand-compute what a script owns).
 
+## Mandatory skill reads
+
+| Read | Why |
+|------|-----|
+| `references/remote-posts.md` | the post/label model the epics/tickets/issues live in |
+| `templates/entity_templates/` | the body templates for epic/ticket/issue/bug/feature posts |
+
+## Mandatory skill script preamble reads
+
+| Script | Use |
+|--------|-----|
+| `requirements_generate_json.py` | SRS requirement tables → `reqs.json` |
+| `requirements_analyze.py` | requirement cycle / coverage check over `reqs.json` |
+| `critical_path.py` | ticket-tier critical path over the `plan.json` delta |
+| `sprint_pack.py` | propose sprints over the ticket delta |
+| `dependencies_validate.py` | validate `plan.json.creates` links before emitting |
+
 ## Three tiers
 
 | Tier | Nature | Holds |
@@ -32,12 +49,13 @@ human id so dashboards and links read well:
 
 ## Type + difficulty (labels)
 
-Each issue carries a **`type:<kind>`** label (`feature` / `bug` / `chore` / `spike` /
-`qa`) and an optional **`difficulty:<level>`** label (`easy` / `hard`). Tickets may
-carry a `type:` label too (`feature` / `bug` / `chore` / `spike`), never `qa`. These
-are real labels in the tracker vocabulary (`supported_values.py`), so the runtime can
-filter on them. Use the body templates in `templates/entity_templates/` for the
-matching body shape.
+Each issue carries a **`type:<kind>`** label (`feature` / `bug` / `chore` / `spike`) and
+an optional **`difficulty:<level>`** label (`easy` / `hard`). Tickets may carry a `type:`
+label too (`feature` / `bug` / `chore` / `spike`). These are real labels in the tracker
+vocabulary (`supported_values.py`), so the runtime can filter on them. Use the body
+templates in `templates/entity_templates/` for the matching body shape. (`type:qa` still
+exists in the runtime vocabulary but the skill no longer creates it — verification is now
+`impl` test issues + `operate` runs; see Verification work.)
 
 ## INVEST (issues)
 
@@ -191,32 +209,39 @@ risk picture in hand:
    work; bias `easy` for localized, reversible, well-understood, narrow-blast-radius
    work with obvious validation. Mixed signals -> `hard` or split. Record a one-word
    rationale per issue (`foundation`, `safety/data`, `broad refactor`, `localized`).
-3. **Decide per-ticket QA** (below) and propose any isolate-gated-execution splits.
+3. **Decide per-ticket verification** (below: an `impl` integration/e2e test issue and/or
+   an `operate` exploratory run) and propose any isolate-gated-execution splits.
 
 Surface the count of gated + `hard` issues in the APR summary — it tells the human how
 often the runner will park during execution.
 
 ### Isolate gated execution (the split heuristic)
 
-When an issue mixes **pure-code authoring** (scripts, wiring, mocked tests — agent
-territory, no gate) with a **gated resource-consuming execution** (real training, a
-docker build, a deploy, a paid-API run, a destructive migration against real data —
-human/gated territory), split it so each issue finishes in a clean, gate-free state:
+When an issue mixes **pure-code authoring** (scripts, wiring, mocked tests — `impl`
+territory, no gate) with a **gated resource-consuming execution** (real training, a docker
+build, a deploy, a paid-API run, a destructive migration against real data, a dependency
+change/install, environment/playground setup — gated, often irreversible), split it so
+each issue finishes in a clean, gate-free state:
 
-- **prep** issue — the code. Finishes clean.
-- **run** issue — the gated execution. The impl agent writes self-run instructions and
-  **parks** on the action gate; the human runs it; results are transcribed back. **No
-  source edits during a run issue.** When the human action is fat (multi-step setup,
-  "download this model", provision creds), the instructions go in a handoff pointer in
-  the issue body, not crammed into the gate. This is the one issue *designed* to park.
-- **consume** issue (optional) — non-trivial analysis of the run's outputs. Agent
-  territory again; unit-testable with mocks.
+- **prep** issue (`impl`) — the code. Finishes clean.
+- **run** issue (**`operate`**) — the gated execution. This is an operate work item: the
+  operate route posts an approval ask and **parks** before acting; the action runs; results
+  are transcribed back. **No source edits during a run issue.** When the setup is fat
+  (multi-step, "download this model", provision creds), the instructions go in a handoff
+  pointer in the issue body. This is the one issue *designed* to park.
+- **consume** issue (`impl`, optional) — non-trivial analysis of the run's outputs.
+  Code territory again; unit-testable with mocks.
 
 Rewire deps: dependents needing **code/interface** point at *prep*; dependents needing
-**real outputs** (built images, trained weights, measured numbers) point at *run*.
-Naming is a **soft convention** (clear titles, optional `-prep`/`-run` suffix), not
-enforced. **Suggest, don't force** — skip the split when the gated action is incidental
-or inseparable (a measurement-only spike, a deploy with no separable code).
+**real outputs** (built images, trained weights, measured numbers) point at *run*. Naming
+is a **soft convention** (clear titles, optional `-prep`/`-run` suffix), not enforced.
+**Suggest, don't force** — skip the split when the gated action is incidental or
+inseparable (a measurement-only spike, a deploy with no separable code).
+
+**Routing rule:** dependency changes, data mutation, system installs, environment/
+playground setup, and running experiments are **operate** work items, never `impl`.
+Deterministic automated tests — including integration and e2e — are `impl`. Exploratory
+checking (monkey testing, structured use-case execution) is `operate`.
 
 ## Code review + difficulty
 
@@ -228,25 +253,24 @@ only input is the per-issue **`difficulty:` label**:
   a human even at high review confidence. `easy` issues may auto-close above the
   confidence bar. The implementing agent never reviews its own work.
 
-## QA issues
+## Verification work (no separate QA route)
 
-For a larger or riskier ticket, append a **terminal `type:qa` issue** that depends on
-ALL the ticket's other issues (so it runs last). It is NOT a separate ticket — a QA
-ticket would need its own `satisfies_reqs` and pollute the roadmap. It reuses all issue
-machinery (label gating, the approval gate).
+Verification splits by KIND, not into one terminal QA issue:
 
-- **When:** decided in the risk pass. Default *suggest*: propose QA for tickets that
-  clear the bar (meaningful effort, breadth across 2+ components, or a cluster of
-  `hard` issues). The human accepts per ticket. (No QA on small, single-component
-  tickets.)
-- **Bounded scope** (QA complements dev, must not double it): the QA issue's technical
-  acceptance criteria ARE the checklist — smoke + regression over the sibling issues'
-  touched paths + the obvious integration paths. Cap effort at roughly ≤25% of the
-  ticket's summed issue effort.
-- **Findings → `type:bug` issues on the SAME ticket**, `high` priority if they block
-  the ticket's value. This holds the ticket open (it can't roll up to `done` until the
-  QA issue and any spawned bugs resolve) — the intended "reopen with feedback"
-  behavior. QA never silently fixes and never expands scope.
+- **Automated tests, incl. integration + e2e → `impl` issues.** Deterministic, in-repo,
+  re-runnable. A "tests for X" issue is a normal impl issue that `Depends on:` X. For a
+  larger/riskier ticket, add an integration/e2e test issue depending on the ticket's other
+  issues (so it runs last).
+- **Exploratory checking → an `operate` issue.** Monkey testing and structured use-case
+  execution (driving real flows) are non-deterministic runs, so they are operate work, not
+  impl. Decide in the risk pass; suggest one for tickets that clear the bar (meaningful
+  effort, breadth across 2+ components, or a cluster of `hard` issues); skip small,
+  single-component tickets. Bounded: complement dev, do not double it (cap ≈ ≤25% of the
+  ticket's summed issue effort).
+
+Either kind: **findings → `type:bug` issues on the SAME ticket** (`high` if they block the
+ticket's value). This holds the ticket open until they resolve. Verification never silently
+fixes and never expands scope.
 
 ## Spike issues
 
@@ -275,7 +299,7 @@ config schema) needs migration handling, stated in the issue body:
 2. **Acceptance criterion:** include one phrased "migration script committed at
    `<path>` and runs cleanly against the current schema".
 
-For retired features (see `routes/adapt.md`), cleanup migrations get their own
+For retired features (see `spec_subroutes/adapt.md`), cleanup migrations get their own
 `type:chore` issues with the same treatment.
 
 ## Requirement cycles

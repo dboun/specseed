@@ -3,13 +3,24 @@
 Used when drafting a component's SRS/SDD (adapt cold-start per component; adapt for
 changed components only; adopt for behavior the code can't explain). It owns *which
 concerns to probe per component* and *how to phrase a question*. Load
-`references/question-protocol.md` first — that owns the round format and mechanics.
+`references/reply-protocol-base.md` first — that owns the round format and mechanics.
 
 This worker is **non-interactive**: you resolve each theme from evidence first and
 only raise a question **round** (async comment in runner mode, live in chat) for the
 themes that stay material and unresolved. The discipline below is the same one the
 old interactive skill used; the difference is you answer most of it yourself before
 asking anything.
+
+## Mandatory skill reads
+
+| Read | Why |
+|------|-----|
+| `references/reply-protocol-base.md` | the round format, sizing, ranking gate, and confidence/suggestion discipline |
+
+## Mandatory skill script preamble reads
+
+| Script | Use |
+|--------|-----|
 
 ## Theme palette
 
@@ -73,11 +84,11 @@ Default: **2 rounds × 4 Qs per component**, but only after the evidence pass �
 components resolve to **0–1 rounds**.
 - Min: 1 round × 3–4 Qs (any component that still has open material themes).
 - Max: 3 rounds × 6 Qs (a genuine megacomponent — rare; hard ceiling).
-- Apply the **ranking gate** (`question-protocol.md`) before each round ≥2.
+- Apply the **ranking gate** (`reply-protocol-base.md`) before each round ≥2.
 - Apply the **auto-skip rule** HARD: never ask what the post, the spec, the code, or
   an obvious default already answers.
 
-**Depth tier override** (adapt cold-start, see `routes/adapt.md` "Depth dial"):
+**Depth tier override** (adapt cold-start, see `spec_subroutes/adapt.md` "Depth dial"):
 - `lite` — at most 1 round × ≤4 Qs, 2 themes.
 - `incremental` — deep-question only the components the **first increment touches**;
   out-of-scope components get a 1-line SRS placeholder, deferred to `plan-next-sprint`.

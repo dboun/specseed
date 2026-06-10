@@ -1,228 +1,84 @@
 ---
 name: specseed
-description: Non-interactive spec-change worker (form-free; clarifies via the questions protocol). In runner mode the specseed scheduler invokes it when a remote post is labeled spec-change:<route> (adopt, adapt, tweak, inject, plan-next-sprint); it edits the local spec under <specseed_dir>/spec/ and emits a Python script projecting the work-breakdown onto the remote tracker. Also runs in plain Claude chat (web/app) with no runner: use it to draft or evolve a project spec + work breakdown from the conversation and download the artifacts as a zip to add to a repo or resume in Claude Code.
+description: "Non-interactive, headless work worker the specseed runtime invokes per labeled request. Runs ONE route against ONE request, then stops. Routes are spec (create/evolve the project spec under <specseed_dir>/spec/ and project its work-breakdown onto the remote tracker; subroutes adopt/adapt/tweak/inject/plan-next-sprint), impl (implement an issue, incl. integration/e2e tests), review (review finished work), ask (answer a question read-only), and operate (gated operations: env setup, deps, data, experiments, monkey/use-case runs; TODO). The spec route also runs in plain Claude chat (web/app) with no runner; draft or evolve a project spec + work breakdown from the conversation and download the artifacts as a zip."
 ---
 
-# specseed (spec-change worker)
+# specseed (work worker)
 
-Skill not meant to run in interactive shell, but rather be interactive through 
-asking questions and stopping when needed. 
-User answers through reprompting and it continues.
-It runs one spec-change route against one request and stops. 
-It does two things, every time, though some routes may have no spec-file edits:
+Headless. Not an interactive shell — it runs ONE route against ONE request and
+stops. When it must clarify, it asks (async comment in runner mode, live in chat) and
+parks; the human answers and the next invocation continues. It never blocks waiting.
 
-1. **Edits the spec if the route calls for it** under `<specseed_dir>/spec/`
-   (vision, SRS, SAD, SDD, `adr.csv`, `reqs.json`).
-2. **Writes a Python script** under `<specseed_dir>/storage/spec-change/<id>/apply.py`
-   that mutates the **remote** tracker posts (epics / tickets / issues, their
-   labels and comments) to match the new spec, then **enqueues** that script for
-   the executor.
+This file is the router: pick the route, read that route's file, follow it.
 
-It never runs the script itself, never touches git or branches, and never edits
-application code (adopt *reads* code; it never writes it).
+## Routing
+
+The runtime invokes you with a route (the request post's label namespace) and a
+request id (the post id; it names the work dir
+`<specseed_dir>/storage/spec-change/<id>/` and is the task's `post_id`).
+
+| Route | File | Purpose | Status |
+|---|---|---|---|
+| **spec** | `routes/spec.md` | create/evolve the spec + project its work-breakdown onto the tracker | full |
+| impl | `routes/impl.md` | implement one ready issue in the codebase (incl. integration/e2e tests) | early |
+| review | `routes/review.md` | review a finished issue; emit a verdict | early |
+| ask | `routes/ask.md` | answer a question (read-only) by routing to spec / code / tracker | early |
+| operate | `routes/operate.md` | run gated operations (env setup, deps, data, experiments, monkey/use-case runs) | TODO |
+
+`spec` is the fully written route. A `spec-change:<subroute>` label
+(`adopt` / `adapt` / `tweak` / `inject` / `plan-next-sprint`) selects the spec subroute;
+`routes/spec.md` dispatches it. impl/review/ask are early short versions; `operate` is
+a named placeholder.
 
 ## Mode (runner vs chat)
 
-Two ways in. **Runner mode is the default and the rest of this doc assumes it.**
+Two ways in; **runner is the default**.
 
-- **Runner mode** (the scheduler invokes you): a `spec-change:<route>` label + a
-  request id are handed in, the runtime is present. Read the local cache, edit
-  `spec/`, emit `plan.json` + `apply.py`, enqueue, stop. Everything below applies.
-- **Chat mode** (a human invokes you in plain Claude web/app, no scheduler, no
-  runtime): inputs come from the conversation, outputs are bundled into one
-  **downloadable zip** offered early and refreshed — never dumped in output — so
-  the human can drop them into a repo or resume in Claude Code. No enqueue, no
-  `apply.py` run. See `references/chat-mode.md`. **Do not let chat-mode steps leak
-  into runner mode.**
+- **Runner** — the scheduler invokes you: a label + request id are handed in, the
+  runtime is present, the local tracker exists. Read the local cache, produce the
+  route's outputs, stop.
+- **Chat** — a human invokes you in plain Claude web/app: no scheduler, no runtime, no
+  tracker. Inputs come from the conversation; outputs ship as one downloadable zip. See
+  `references/chat-mode.md`. **Chat-mode steps never leak into runner mode.**
 
-Both modes stay non-interactive form-wise: no popup forms. When you must clarify,
-use the questions protocol (runner: async comment; chat: live questions).
+Detect chat mode by the absence of the runtime (`specseed_runtime` not importable, no
+`<specseed_dir>/storage/`). When unsure, assume runner.
 
 > **Path mapping.** The engine is never copied into the target. A target holds only
 > `<specseed_dir>/spec/`, `<specseed_dir>/storage/`, and a version marker (default
-> `<specseed_dir>` = `<target>/.specseed`). The engine code (`specseed_runtime/`,
-> `skills/`) lives in the engine repo at `<engine>/src/specseed_runtime` and
-> `<engine>/skills`. In this development repo the target IS this repo, so
-> `<specseed_dir>/{spec,storage}` map to repo-root `{spec,storage}/`. Paths below use
-> the `<specseed_dir>/...` form for target data and `specseed_runtime/...` for engine code.
+> `<specseed_dir>` = `<target>/.specseed`). Engine code lives in the engine repo at
+> `<engine>/src/specseed_runtime` and `<engine>/skills`. In this dev repo the target IS
+> this repo, so `<specseed_dir>/{spec,storage}` map to repo-root `{spec,storage}/`.
+> Docs use the `<specseed_dir>/...` form for target data, `specseed_runtime/...` for
+> engine code.
 
-## What this skill is NOT
+## Mandatory skill reads
 
-The old interactive specseed did far more. This worker deliberately drops it:
+| Read | Why |
+|------|-----|
+| `references_ext/caveman.md` | density rules for every emitted doc/comment/reply |
+| `references_ext/humanizer.md` | naturalness + em/en-dash ban on emitted prose |
 
-- **No interactive Q&A.** No live question rounds with a human. Input is the
-  spec-change post (title + body + comments), read from the **local** tracker.
-  When you genuinely cannot proceed, you ask **asynchronously** (see "Async
-  clarification") and stop, you do not block.
-- **No configure / migrate / change-request / approve / bootstrap routes.** Those are
-  gone (bootstrap is folded into `adapt` cold-start). Configure/migrate/approval are
-  runtime concerns now, not skill routes.
-- **No local `project_management/` tree, no assemble/validate/claim scripts.** The work
-  breakdown lives as **remote posts**, not local folders or JSON. (The skill DOES carry
-  deterministic helper scripts — `skills/specseed/scripts/` — but they only compute over
-  the local `spec/` files + `plan.json`: reqs generation, cycle detection, critical
-  path, sprint packing. See "Skill scripts".)
-- **No branch, merge, PR, or git work.** Not this skill's job.
+## Mandatory skill script preamble reads
 
-## Skill scripts
+| Script | Use |
+|--------|-----|
 
-`skills/specseed/scripts/` holds stdlib-only python the route runs while planning. They
-operate ONLY on local `spec/` files and the request's `plan.json` — never on the remote
-or the local tracker DB. Use them instead of hand-computing what they own:
+## Hard rules (every route)
 
-- `requirements_generate_json.py` — SRS requirement tables -> `reqs.json`.
-- `requirements_analyze.py` — cycle / orphan / dangling-ref detection over `reqs.json`.
-- `critical_path.py` — longest dependency chain over the ticket delta in `plan.json`.
-- `sprint_pack.py` — cohesion-aware, dependency-respecting sprint packing of that delta.
-- `dependencies_validate.py` — work-breakdown link check over `plan.json.creates`:
-  dangling / malformed / cyclic `Depends on:` links fail, AND a broken parent tree fails
-  (a decomposed issue with no ticket, a ticket with no epic, a parent ref to nothing or to
-  the wrong tier); a tests/QA issue with no dep warns. The runtime acts only on links it
-  can parse, so run this before emitting (work-breakdown.md).
-
-They are helpers, not the contract: the two outputs are still the spec edits +
-`apply.py`. Work-item type and difficulty are carried as `type:<kind>` and
-`difficulty:<level>` **labels** on the posts (`references/remote-posts.md`).
-
-## Invocation
-
-The scheduler invokes this skill when a remote spec-change post carries a
-`spec-change:<route>` label. The route is the suffix:
-
-| Label | Route | File |
-|-------|-------|------|
-| `spec-change:adopt` | adopt | `routes/adopt.md` |
-| `spec-change:adapt` | adapt | `routes/adapt.md` |
-| `spec-change:tweak` | tweak | `routes/tweak.md` |
-| `spec-change:inject` | inject | `routes/inject.md` |
-| `spec-change:plan-next-sprint` | plan-next-sprint | `routes/plan-next-sprint.md` |
-
-You are told which route and which spec-change post id. The post id is the
-**request id**: it names the work dir (`<specseed_dir>/storage/spec-change/<id>/`) and
-is the `post_id` on the queued task.
-
-## The contract (every route)
-
-Read `references/spec-change-protocol.md` first. The shape is always:
-
-1. **Read context — local only.** Read the spec-change post + its comments and
-   the current work posts from the **local** tracker
-   (`resolve_local(storage=<specseed_dir>/storage)` / `tracking_local.db`).
-   Always pass `storage=` — the bare default points at the engine repo, not the
-   target. Never poll the remote to plan; that is what the local cache is for.
-   Read the current spec under `<specseed_dir>/spec/`.
-2. **Decide + STAGE the spec if needed.** Apply the route's logic. You read live
-   `<specseed_dir>/spec/` for context only; never write there. Write each created or
-   edited doc into the STAGING tree
-   `<specseed_dir>/storage/spec-change/<id>/spec/<same relative path>`
-   (`scheduling/spec_change.spec_change_spec_dir(id)`). The runtime promotes staged
-   docs into live `spec/` only on approval. Persist the planned work-breakdown delta
-   as JSON in the request dir so the script and a human can inspect it.
-3. **Emit the reconcile script.** Write `apply.py` into the request dir. It
-   imports `resolve_remote()` and applies the post mutations through the tracking
-   contract: `add_entry`, `edit_entry` (title/body), `add_entry_label`,
-   `remove_entry_label`, `add_entry_comment`, `set_entry_open`/`set_entry_closed`,
-   `delete_entry`, `ensure_label`. `edit_entry` rewrites post bodies — including the
-   SCHEDULE dashboard, but NOT ROADMAP or CURRENT SPRINT, which the runtime scheduler
-   renders from the work posts. A status swap is `remove_entry_label` then
-   `add_entry_label`. See the protocol for the canonical header and the
-   per-provider notes (GitHub cannot hard-delete issues, so close instead).
-4. **Hand off + stop.** Write the staged spec + `plan.json` + `apply.py`, then STOP.
-   You never enqueue and never pick the gate. The runtime reads `plan.json` + the
-   staging dir and derives the gate in code: a run that stages any spec or whose
-   `plan.json` creates work / settles docs / touches any post but the request is a
-   **proposal** (posts the plan summary + `APR-NNNN`, parks, promotes the spec and runs
-   `apply.py` only on approval); the ONE ungated run is a **clarification round** (touches
-   only the request post), which runs `apply.py` straight away. The scheduler drains the
-   queue under permission gating; never run the script yourself. **Chat mode:** no runner,
-   nothing to enqueue — bundle the artifacts into a zip and offer it for download
-   (`references/chat-mode.md`).
-
-## Doc style (spec prose only)
-
-Spec prose must read as human-written reference text, not AI filler.
-
-- **Density** (`references_ext/caveman.md`): lean, signal-dense, no padding.
-- **Naturalness** (`references_ext/humanizer.md`): no promotional language, no
-  rule-of-three, no `-ing` padding, no hedging. **Remove every em/en dash**
-  (`—` / `–`); use a period, comma, colon, or parentheses.
-
-Applies to human-readable prose: `vision.md`, SAD/SDD prose, epic/ticket/issue
-bodies, ADR justifications. Does NOT apply to machine artifacts (`reqs.json`,
-SRS requirement-table rows, frontmatter) or post labels. Specs are neutral
-reference text: no injected voice, opinions, or first person.
-
-## Approval before work (mandatory, every route)
-
-**Plan-first, code-enforced: nothing is created on the tracker until the human approves
-the plan.** The worker writes its outputs (staged spec + `plan.json` + `apply.py`) and
-STOPS. It never enqueues and never picks the gate. The runtime reads `plan.json` + the
-staging dir and decides in code: a run that stages any spec, or whose `plan.json` creates
-work / settles docs / touches any post but the request, is a **proposal** that needs
-approval. The runtime posts a human-readable `plan_summary` + one `APR-NNNN` request on
-the spec-change post and parks it `spec-change:status:awaiting_approval`. A human approves
-(`approve APR-NNNN` or 👍 on the request, or the UI button) or rejects (`reject` / 👎).
-Only on approval does the runtime promote the staged spec into live `spec/`, stamp
-`settled`, and run your `apply.py`, which creates the epics/tickets/issues — issues born
-`issue:status:todo` (the plan approval was the gate; no per-issue gate). The one ungated
-run is a clarification round (asking the human a question). Full contract + helpers in
-`references/spec-change-protocol.md` ("Approval gate (APR-NNNN)").
-
-## Async clarification (the question path in runner mode)
-
-In runner mode this worker cannot interview a human live, but it is not limited to
-one question. When a request is too ambiguous to proceed safely, post a **clarification
-round** (the confidence/suggestion format in `references/question-protocol.md` — a
-round may carry several questions), then park and wait. The headless rule is "one
-round, then stop," not "one question."
-
-1. Stage no spec and plan no work: a clarification round is the ONE ungated run, so it
-   must touch ONLY the request post.
-2. In `apply.py`, the remote action is the question round posted as a **comment (or
-   comments)** on the spec-change post, plus adding the label
-   `spec-change:status:awaiting_input` (NOT `awaiting_approval` — that one is the
-   runtime's APR plan gate). Record the round in `plan.json` (the `questions` key)
-   so a re-trigger does not re-ask.
-3. Write the files and stop. The runtime sees a request-post-only run and runs
-   `apply.py` straight away (no approval). The human answers on the remote (a one-word
-   `OK` takes all your suggestions); the next poll re-triggers this route with their
-   reply in the post comments.
-
-Do not guess past a material ambiguity. A focused, well-suggested round beats a wrong
-spec. Chat mode asks the same round live (`references/chat-mode.md`).
-
-## Hard rules
-
-- **Local truth for reading, remote truth for the system.** You read the local
-  cache to plan; the remote is the system's source of truth, so every change you
-  intend must go into `apply.py`, never applied to the local DB directly.
-- **Spec edits are STAGED, never written to live spec/.** Read live `spec/` for
-  context; write every created/edited doc into
-  `<specseed_dir>/storage/spec-change/<id>/spec/` at its live relative path. The
-  runtime promotes them on approval. Work-breakdown changes are remote posts in
-  `apply.py`. Keep the outputs separate and consistent.
-- **Stay within the tracking contract.** Mutate the remote only through the
-  `resolve_remote()` tracker's methods; never reach around it. Every method
-  returns a `TrackingResult(ok, error, data)`; the script must check `ok` and
-  fail loudly. The one provider gap: GitHub issues cannot be hard-deleted, so
-  use `set_entry_closed` there (`delete_entry` is fine on local and GitLab).
-- **One request, one run.** Do the route, stage the spec, write `plan.json` + the
-  script, stop. Never enqueue, never pick the gate.
-- **No posts before approval.** A run that creates work or touches the spec creates
-  NOTHING on the tracker. You write the files and stop; the runtime derives the gate
-  in code and runs your `apply.py` only after a human approves the `APR-NNNN` plan
-  (and promotes the staged spec into live `spec/` first). Issues are then born
-  `:status:todo`. The one ungated run is a clarification round. You never create work
-  posts, promote spec, or release claimable work yourself. (See "Approval before work".)
-
-## Action gates (awareness only)
-
-The implementation agent honors config-driven **action-class gates**
-(`permissions.agents` in `configuration.json`: container, heavy_compute, network,
-deps, data_destructive, external_publish, outside_repo, secrets — each `block` /
-`surface` / `auto` / `require_human_approval`). They fire mid-implementation, not
-here. You do NOT evaluate or enforce them. But when an issue you spec obviously
-demands a gated action (a deploy, a destructive migration, a new dependency), say so
-in the issue body so the human reading the plan is not surprised when the impl agent
-parks for approval. The runtime renders the live policy into the impl prompt; the
-authoritative list lives in `specseed_runtime/executing/permissions.py`.
+1. **One request, one run, then stop.** Do the route's work, write its outputs, stop.
+   You never loop live.
+2. **Local truth for reading; remote is the system's source of truth.** Read the local
+   tracker cache to plan (`resolve_local(storage=<specseed_dir>/storage)` — always pass
+   `storage=`; the bare default points at the engine repo, not the target). Never write
+   the local cache directly; never poll the remote to plan.
+3. **Non-interactive.** When you genuinely cannot proceed, raise a clarification round
+   per `references/reply-protocol-base.md` and park (runner: async comment; chat: live), then
+   stop. Never block on a live prompt. Never guess past a material ambiguity.
+4. **Doc style on every emitted prose.** Caveman density
+   (`references_ext/caveman.md`) + the humanizer pass with the em/en-dash ban
+   (`references_ext/humanizer.md`). Applies to human-readable prose (vision, SAD/SDD,
+   epic/ticket/issue bodies, ADR justifications, comments). NOT to machine artifacts
+   (`reqs.json`, SRS table rows, frontmatter) or labels.
+5. **Stay within the route's contract.** Each route's file owns what it may touch and
+   how it hands off; do not reach around it.
