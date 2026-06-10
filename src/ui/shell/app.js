@@ -2,12 +2,14 @@ import { api } from "../features/api.js";
 import { escapeHtml, toast } from "../ui/components.js";
 import { createMonitor } from "../features/monitor.js";
 import { createTracker } from "../features/tracker.js";
+import { createSpec } from "../features/spec.js";
 import { createConfiguration } from "../features/configuration.js";
 import { openAddRepo, openSetup } from "../features/repos.js";
 
 const TABS = [
   { id: "monitor", label: "Monitor" },
   { id: "tracker", label: "Tracker" },
+  { id: "spec", label: "Spec" },
   { id: "configuration", label: "Configuration" },
 ];
 
@@ -15,6 +17,7 @@ const state = {
   repos: [],
   currentId: null,
   tab: localStorage.getItem("ss.tab") || "monitor",
+  sub: "", // subroute after the tab (e.g. the open spec file) — deep-linkable
   feature: null,
   dev: false,
   env: {},
@@ -46,9 +49,17 @@ const ctx = {
       state.tab = tab;
       localStorage.setItem("ss.tab", tab);
     }
+    state.sub = "";
     await refreshRepos();
     writeHash();
     render();
+  },
+  // A feature owns the subroute after its tab (e.g. the spec file in view). It
+  // sets it as the user navigates so the URL stays copy-pasteable; replaceState
+  // keeps it out of history so back-button stays sane.
+  setSub(sub) {
+    state.sub = sub || "";
+    writeHash();
   },
 };
 
@@ -59,18 +70,33 @@ async function refreshRepos() {
   }
 }
 
+const decode = (s) => {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
+};
+
 function applyHash() {
-  // #<repoId>/<tab> — deep-linkable, shareable, back-button friendly.
-  const raw = decodeURIComponent(location.hash.replace(/^#\/?/, ""));
+  // #<repoId>/<tab>[/<sub...>] — deep-linkable, shareable, back-button friendly.
+  // Anything after the tab is the feature's subroute (e.g. a spec file path,
+  // which may itself contain "/"), so split first, decode each segment.
+  const raw = location.hash.replace(/^#\/?/, "");
   if (!raw) return;
-  const [repoId, tab] = raw.split("/");
+  const parts = raw.split("/").map(decode);
+  const [repoId, tab, ...rest] = parts;
   if (repoId && state.repos.some((r) => r.id === repoId)) state.currentId = repoId;
-  if (TABS.some((t) => t.id === tab)) state.tab = tab;
+  if (TABS.some((t) => t.id === tab)) {
+    state.tab = tab;
+    state.sub = rest.join("/");
+  }
 }
 
 function writeHash() {
   if (!state.currentId) return;
-  const next = `#${state.currentId}/${state.tab}`;
+  let next = `#${encodeURIComponent(state.currentId)}/${state.tab}`;
+  if (state.sub) next += "/" + state.sub.split("/").map(encodeURIComponent).join("/");
   if (location.hash !== next) history.replaceState(null, "", next);
 }
 
@@ -193,8 +219,14 @@ function mountFeature() {
   const repo = currentRepo();
   if (!repo) return;
   const factory =
-    state.tab === "tracker" ? createTracker : state.tab === "configuration" ? createConfiguration : createMonitor;
-  state.feature = factory({ repo, ctx, refreshTopbar });
+    state.tab === "tracker"
+      ? createTracker
+      : state.tab === "spec"
+        ? createSpec
+        : state.tab === "configuration"
+          ? createConfiguration
+          : createMonitor;
+  state.feature = factory({ repo, ctx, refreshTopbar, sub: state.sub });
   container.innerHTML = `<div class="loading">loading…</div>`;
   state.feature
     .load()
@@ -210,6 +242,7 @@ function mountFeature() {
 
 function switchTab(tabId) {
   state.tab = tabId;
+  state.sub = ""; // a fresh tab has no subroute until its feature sets one
   localStorage.setItem("ss.tab", tabId);
   writeHash();
   // re-render tab bar active states without a full reload
@@ -219,6 +252,7 @@ function switchTab(tabId) {
 
 async function pickRepo(id) {
   state.currentId = id;
+  state.sub = "";
   localStorage.setItem("ss.repo", id);
   await refreshRepos();
   const repo = currentRepo();
@@ -276,9 +310,9 @@ document.addEventListener("input", (event) => {
 // fire hashchange, so this never loops with our own updates.
 window.addEventListener("hashchange", () => {
   if (!state.repos.length) return;
-  const before = `${state.currentId}/${state.tab}`;
+  const before = `${state.currentId}/${state.tab}/${state.sub}`;
   applyHash();
-  if (`${state.currentId}/${state.tab}` !== before) render();
+  if (`${state.currentId}/${state.tab}/${state.sub}` !== before) render();
 });
 
 // Keep the runner chip live across ALL repos' background processes, even when the

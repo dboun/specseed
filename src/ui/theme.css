@@ -568,6 +568,109 @@ span.fb-check { cursor: default; }
 .external-icon { font-size: 34px; color: var(--accent); }
 .external-title { font-size: 16px; font-weight: 700; }
 
+/* ---------- spec (the reading room) ----------
+   A documentation reader over the target's generated spec. Signature: the canon
+   spine — known docs (vision -> requirements -> architecture -> design ->
+   decisions) sit on a connecting rail in the real order the spec is built, so
+   the index reads as the spec's spine, not a flat file list. Extra/unknown files
+   fall under "Other files". The reading pane is the quiet half. */
+.spec-live { display: inline-flex; align-items: center; gap: 7px; font-family: var(--mono); font-size: 11px; letter-spacing: 0.4px; color: var(--ink-dim); }
+
+.spec-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+.spec-dir {
+  display: inline-flex; align-items: center; gap: 2px; max-width: 100%;
+  font-family: var(--mono); font-size: 12px; color: var(--ink-dim); cursor: pointer;
+  background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 11px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.spec-dir:hover { border-color: var(--accent); color: var(--ink); }
+.spec-dir-icon { color: var(--accent); margin-right: 5px; }
+.spec-count { font-family: var(--mono); font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
+
+.spec-grid { display: grid; grid-template-columns: minmax(220px, 290px) minmax(0, 1fr); gap: 18px; align-items: start; }
+
+/* index */
+.spec-index { position: sticky; top: 110px; display: flex; flex-direction: column; gap: 4px; }
+.spec-spine { position: relative; display: flex; flex-direction: column; gap: 2px; }
+.spec-spine::before { content: ""; position: absolute; left: 13px; top: 20px; bottom: 20px; width: 1px; background: var(--line-2); }
+.spec-group-label {
+  font-family: var(--mono); font-size: 10px; letter-spacing: 1px; text-transform: uppercase;
+  color: var(--muted); margin: 16px 0 6px; padding-top: 8px; border-top: 1px solid var(--line);
+}
+.spec-others { display: flex; flex-direction: column; gap: 2px; }
+.spec-item {
+  position: relative; display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  font: inherit; cursor: pointer; color: var(--ink); background: transparent;
+  border: 1px solid transparent; border-radius: 10px; padding: 9px 11px;
+}
+.spec-item:hover { background: var(--panel); border-color: var(--line); }
+.spec-item.active { background: var(--panel); border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.spec-node {
+  flex: none; width: 9px; height: 9px; margin-left: 9px; border-radius: 50%; z-index: 1;
+  background: var(--panel); border: 1px solid var(--line-2);
+}
+.spec-item:hover .spec-node { border-color: var(--accent-2); }
+.spec-item.active .spec-node { background: var(--accent); border-color: var(--accent); box-shadow: 0 0 9px var(--accent); }
+.spec-others .spec-node { display: none; }
+.spec-others .spec-item { padding-left: 11px; }
+.spec-item-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.spec-item-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.spec-item-sub { font-family: var(--mono); font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.spec-item-time { flex: none; font-family: var(--mono); font-size: 10px; color: var(--muted); }
+.spec-draft-tag {
+  font-family: var(--mono); font-size: 9px; text-transform: uppercase; letter-spacing: 0.6px;
+  color: var(--accent-2); border: 1px solid var(--line-2); border-radius: 20px; padding: 0 5px; margin-left: 4px;
+}
+
+/* reading pane */
+.spec-pane { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 22px 24px; min-width: 0; }
+.spec-pane-empty { color: var(--muted); padding: 40px 10px; text-align: center; font-family: var(--mono); font-size: 13px; }
+.spec-doc-head { margin-bottom: 18px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.spec-doc-role { font-family: var(--mono); font-size: 11px; letter-spacing: 1.6px; text-transform: uppercase; color: var(--accent); margin-bottom: 6px; }
+.spec-doc-title { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.spec-doc-name { font-family: var(--mono); font-size: 18px; font-weight: 700; color: var(--ink); word-break: break-all; }
+.spec-link {
+  font-family: var(--mono); font-size: 11px; color: var(--ink-dim); cursor: pointer;
+  background: transparent; border: 1px solid var(--line); border-radius: 7px; padding: 2px 9px;
+}
+.spec-link:hover { border-color: var(--accent); color: var(--ink); }
+.spec-doc-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.spec-flag { border: 1px solid var(--line-2); border-radius: 20px; padding: 1px 9px; letter-spacing: 0.4px; }
+.spec-flag.settled { color: var(--ok); border-color: #1f5040; }
+.spec-flag.draft { color: var(--accent-2); border-color: var(--line-2); }
+.spec-trunc { color: var(--warn); }
+
+.spec-doc-body { min-width: 0; }
+.spec-doc-body .md { font-size: 13.5px; line-height: 1.6; }
+.spec-doc-body .md h1 { font-size: 19px; }
+.spec-doc-body .md h2 { font-size: 16px; }
+.spec-doc-body .md h3 { font-size: 14px; }
+.spec-code {
+  margin: 0; padding: 14px 16px; overflow: auto; max-height: 70vh;
+  background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px;
+  font-family: var(--mono); font-size: 12.5px; line-height: 1.55; color: var(--ink-dim); white-space: pre;
+}
+.spec-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.spec-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.spec-table th { text-align: left; font-family: var(--mono); font-size: 11px; letter-spacing: 0.6px; text-transform: uppercase; color: var(--accent); padding: 8px 12px; border-bottom: 1px solid var(--line-2); white-space: nowrap; }
+.spec-table td { padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; color: var(--ink); }
+.spec-table tr:hover td { background: var(--panel-2); }
+
+/* a doc that changed under live polling glows once, then settles */
+.spec-flash { animation: spec-flash 1100ms ease-out; }
+@keyframes spec-flash {
+  0% { box-shadow: 0 0 0 0 rgba(56,225,192,0); }
+  18% { box-shadow: 0 0 0 1px var(--accent) inset, 0 0 18px -4px var(--accent); border-radius: 10px; }
+  100% { box-shadow: 0 0 0 0 rgba(56,225,192,0); }
+}
+@media (prefers-reduced-motion: reduce) { .spec-flash { animation: none; } }
+
+/* empty states */
+.spec-empty { text-align: center; padding: 60px 24px; border: 1px dashed var(--line); border-radius: 14px; }
+.spec-empty-mark { font-family: var(--mono); font-size: 34px; color: var(--accent); line-height: 1; }
+.spec-empty-title { font-size: 16px; font-weight: 700; margin: 12px 0 6px; }
+.spec-empty code { font-family: var(--mono); font-size: 12px; color: var(--ink-dim); background: var(--bg-2); border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; }
+
 /* ---------- configuration ---------- */
 .config.locked { opacity: 0.7; }
 .cfg-row { display: flex; justify-content: space-between; padding: 9px 0; border-bottom: 1px solid var(--line); }
@@ -654,8 +757,8 @@ textarea { resize: vertical; min-height: 70px; }
 
 /* ---------- responsive ---------- */
 @media (max-width: 860px) {
-  .tracker-grid, .two-col { grid-template-columns: 1fr; }
-  .drawer-host { position: static; }
+  .tracker-grid, .two-col, .spec-grid { grid-template-columns: 1fr; }
+  .drawer-host, .spec-index { position: static; }
   .content { padding: 16px; }
   .topbar { padding: 10px 14px; }
   .switcher-menu { min-width: 220px; }
@@ -666,6 +769,9 @@ textarea { resize: vertical; min-height: 70px; }
   .tracker-root.detail .filters,
   .tracker-root.detail .post-list { display: none; }
   .tracker-root.detail .drawer { min-height: calc(100vh - 140px); }
+  /* Spec keeps the index visible (it's compact) and just stacks the pane below;
+     the spine still reads top-to-bottom. */
+  .spec-pane { padding: 18px 16px; }
 }
 @media (max-width: 520px) {
   .stat-grid { grid-template-columns: 1fr 1fr; }

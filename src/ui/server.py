@@ -643,6 +643,79 @@ def _toggle_comment_reaction(record: dict, entry_id, comment_id, reaction: str) 
 
 
 # --------------------------------------------------------------------------- #
+# spec docs (read-only over the target's generated <specseed_dir>/spec/)
+# --------------------------------------------------------------------------- #
+# Dumb on purpose: we never model what the spec "should" contain - we list
+# whatever files actually exist under the target's spec dir and serve their
+# bytes. Works for every provider (the spec is generated locally regardless of
+# tracker backend). storage is ``<specseed_dir>/storage``; spec is its sibling.
+_SPEC_MAX_BYTES = 4 * 1024 * 1024  # cap a single served file (specs are prose, not blobs)
+
+
+def _spec_dir(record: dict) -> Path:
+    """The target's live spec dir: ``<specseed_dir>/spec`` (sibling of storage)."""
+    return Path(record["storage"]).resolve().parent / "spec"
+
+
+def _mtime_iso(stat: os.stat_result) -> str:
+    return datetime.fromtimestamp(stat.st_mtime, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def _spec_list(record: dict) -> dict:
+    """Every file under the spec dir (recursive), newest-mtime carried per file.
+
+    Relative POSIX paths so nested files (rare) still address cleanly. No
+    interpretation - the UI labels known canon (vision/srs/sad/...) itself."""
+    spec_dir = _spec_dir(record)
+    out = {"dir": str(spec_dir), "exists": spec_dir.is_dir(), "files": []}
+    if not out["exists"]:
+        return out
+    files = []
+    for path in spec_dir.rglob("*"):
+        if not path.is_file():
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        files.append(
+            {
+                "path": path.relative_to(spec_dir).as_posix(),
+                "size": stat.st_size,
+                "mtime": _mtime_iso(stat),
+                "ext": path.suffix.lstrip(".").lower(),
+            }
+        )
+    files.sort(key=lambda f: f["path"])
+    out["files"] = files
+    return out
+
+
+def _spec_file(record: dict, rel: str) -> dict:
+    """One spec file's text + metadata. Guards against path traversal."""
+    rel = (rel or "").strip()
+    if not rel:
+        raise RuntimeError("a spec file path is required")
+    spec_dir = _spec_dir(record)
+    target = (spec_dir / rel).resolve()
+    if target != spec_dir and spec_dir not in target.parents:
+        raise RuntimeError("path is outside the spec dir")
+    if not target.is_file():
+        raise RuntimeError(f"no such spec file: {rel}")
+    stat = target.stat()
+    with open(target, "r", encoding="utf-8", errors="replace") as fh:
+        text = fh.read(_SPEC_MAX_BYTES)
+    return {
+        "path": target.relative_to(spec_dir).as_posix(),
+        "size": stat.st_size,
+        "mtime": _mtime_iso(stat),
+        "ext": target.suffix.lstrip(".").lower(),
+        "text": text,
+        "truncated": stat.st_size > _SPEC_MAX_BYTES,
+    }
+
+
+# --------------------------------------------------------------------------- #
 # HTTP handler
 # --------------------------------------------------------------------------- #
 class Handler(BaseHTTPRequestHandler):
@@ -756,6 +829,12 @@ class Handler(BaseHTTPRequestHandler):
             if self.command == "PUT":
                 self._put_config(record)
                 return
+        if tail == ["spec"] and self.command == "GET":
+            self._json({"ok": True, "data": _spec_list(record)})
+            return
+        if tail == ["spec", "file"] and self.command == "GET":
+            self._json({"ok": True, "data": _spec_file(record, query.get("path", [""])[0])})
+            return
         if tail and tail[0] == "posts":
             self._posts(record, tail[1:], query)
             return

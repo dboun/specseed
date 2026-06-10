@@ -564,5 +564,90 @@ class PrepareTargetTest(unittest.TestCase):
             server._prepare_target("")
 
 
+class SpecDocsTest(unittest.TestCase):
+    """The Spec tab reads <specseed_dir>/spec — sibling of storage. Dumb listing:
+    whatever files exist, served by relative path, with a traversal guard."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        # mirror the real layout: <specseed_dir>/storage and <specseed_dir>/spec.
+        # resolve() to match _spec_dir (macOS /var -> /private/var symlink).
+        self.root = Path(self.tmp.name).resolve()
+        self.storage = self.root / "storage"
+        self.storage.mkdir()
+        self.spec = self.root / "spec"
+        self.record = {"storage": str(self.storage)}
+
+    def _write(self, rel: str, text: str) -> Path:
+        path = self.spec / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_spec_dir_is_storage_sibling(self) -> None:
+        self.assertEqual(server._spec_dir(self.record), self.spec)
+
+    def test_list_missing_dir(self) -> None:
+        out = server._spec_list(self.record)
+        self.assertFalse(out["exists"])
+        self.assertEqual(out["files"], [])
+        self.assertEqual(out["dir"], str(self.spec))
+
+    def test_list_files_sorted_with_metadata(self) -> None:
+        self._write("vision.md", "# vision")
+        self._write("adr.csv", "Decision,Why\n")
+        self._write("nested/extra.txt", "hi")
+        out = server._spec_list(self.record)
+        self.assertTrue(out["exists"])
+        paths = [f["path"] for f in out["files"]]
+        self.assertEqual(paths, ["adr.csv", "nested/extra.txt", "vision.md"])
+        adr = next(f for f in out["files"] if f["path"] == "adr.csv")
+        self.assertEqual(adr["ext"], "csv")
+        self.assertGreater(adr["size"], 0)
+        self.assertTrue(adr["mtime"].endswith("Z"))
+
+    def test_list_ignores_directories(self) -> None:
+        (self.spec / "empty_dir").mkdir(parents=True)
+        self._write("vision.md", "x")
+        out = server._spec_list(self.record)
+        self.assertEqual([f["path"] for f in out["files"]], ["vision.md"])
+
+    def test_file_returns_text_and_meta(self) -> None:
+        self._write("srs.md", "# SRS\n\nbody")
+        out = server._spec_file(self.record, "srs.md")
+        self.assertEqual(out["path"], "srs.md")
+        self.assertEqual(out["ext"], "md")
+        self.assertEqual(out["text"], "# SRS\n\nbody")
+        self.assertFalse(out["truncated"])
+
+    def test_file_nested_path(self) -> None:
+        self._write("a/b/c.md", "deep")
+        out = server._spec_file(self.record, "a/b/c.md")
+        self.assertEqual(out["path"], "a/b/c.md")
+        self.assertEqual(out["text"], "deep")
+
+    def test_file_requires_path(self) -> None:
+        with self.assertRaises(RuntimeError):
+            server._spec_file(self.record, "")
+
+    def test_file_missing_raises(self) -> None:
+        self.spec.mkdir()
+        with self.assertRaises(RuntimeError):
+            server._spec_file(self.record, "nope.md")
+
+    def test_file_traversal_blocked(self) -> None:
+        # a secret next to the spec dir must not be reachable via ../
+        (self.root / "secret.txt").write_text("nope", encoding="utf-8")
+        self._write("vision.md", "x")
+        with self.assertRaises(RuntimeError):
+            server._spec_file(self.record, "../secret.txt")
+
+    def test_file_absolute_path_blocked(self) -> None:
+        self._write("vision.md", "x")
+        with self.assertRaises(RuntimeError):
+            server._spec_file(self.record, "/etc/hosts")
+
+
 if __name__ == "__main__":
     unittest.main()

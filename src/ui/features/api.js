@@ -47,6 +47,10 @@ export const api = {
   getConfig: (id) => request(`${base(id)}/config`),
   putConfig: (id, config) => request(`${base(id)}/config`, { method: "PUT", body: JSON.stringify({ config }) }),
 
+  // spec docs (every provider; read-only over <specseed_dir>/spec)
+  spec: (id) => request(`${base(id)}/spec`),
+  specFile: (id, path) => request(`${base(id)}/spec/file?path=${enc(path)}`),
+
   // tracker (local provider only)
   listPosts: (id, state) => request(`${base(id)}/posts?state=${enc(state)}`),
   getPost: (id, postId) => request(`${base(id)}/posts/${enc(postId)}`),
