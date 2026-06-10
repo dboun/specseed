@@ -304,7 +304,7 @@ Consequences for what you write:
   `plan_summary` + `apr` are required for any run that is not a pure clarification (the
   runtime's propose step fails loud without `apr.id`).
 - **`apr` (required):** allocate one token at **plan time** and write `{id, summary}`
-  into `plan.json` (stable across re-runs — do NOT re-allocate in apply.py):
+  into `plan.json`:
 
    ```python
    from specseed_runtime.executing.approvals import next_apr_id
@@ -314,6 +314,20 @@ Consequences for what you write:
   You do NOT hand-write or post the approval comment — the runtime builds it from
   `apr` (verbatim `approval_request_comment`, hidden marker + how-to-approve text)
   and posts it. `STORAGE_DIR` = `<specseed_dir>/storage`.
+- **Carry forward vs mint fresh — the gate the human sees must match the plan.** The
+  runtime no-ops a propose run whose `apr.id` is ALREADY posted on the thread (idempotency
+  — see the approval gate). So:
+  - **Bare re-trigger of an UNCHANGED proposal** (poll repeat, crash retry, nothing new
+    from the human): carry the SAME `apr.id` forward and never re-allocate in apply.py. The
+    runtime no-ops the duplicate gate — correct, the standing gate still reflects this plan.
+  - **REVISED proposal that supersedes one already posted** (you proposed, then the human
+    answered a clarification round or asked for a change, and THIS run re-plans with
+    different `creates`/`settle_docs`/staged spec): allocate a **FRESH** `apr_id`. The old
+    gate reflects the OLD plan; reusing its id makes the runtime no-op and your revised plan
+    NEVER reaches the human — the post just sits with their reply, looking ignored. A new id
+    → the runtime posts the updated `plan_summary` + a new gate (the latest request comment
+    is the live one). Keep the prior round's id in `plan.json.questions` bookkeeping if you
+    track it, but `apr.id` itself moves to the new token.
 - **The runtime finalizes the request, not you:** on approval it swaps the request
   to `spec-change:status:done` and closes the request post in code once apply.py
   succeeds. Do NOT put `REQUEST_ID` in `plan.json.closes` (that list is for OTHER
@@ -379,3 +393,9 @@ around" - a re-trigger REWRITES the dir, so emit a FRESH plan for what THIS run 
 (a clarification). Leftover `creates` (or any staged spec) make the runtime read the run
 as a proposal, not a clarification: it gates on the already-posted APR, no-ops, and your
 questions never reach the human. When you ask, ask and nothing else.
+
+**Resuming after the human answers.** The next run reads their reply and emits the (now
+revised) proposal. If a proposal gate was ALREADY posted before you diverted to clarify,
+that standing gate is now stale — mint a **FRESH** `apr.id` for the revised proposal (see
+the `apr` carry-forward-vs-fresh rule above), or the runtime no-ops and the answers you
+just folded in never surface as a new gate.
