@@ -814,32 +814,31 @@ span.fb-check { cursor: default; }
 }
 .code-line:hover .ln { color: var(--ink-dim); }
 .lc { flex: 1 1 auto; min-width: 0; padding-right: 14px; color: var(--ink-dim); }
-.code-blob .lc { color: #aebfcb; } /* cool slate base for source — softer than white, Solarized-ish */
+.code-blob .lc { color: #bcc6c6; } /* base identifiers — Solarized-ish soft slate */
 .code-root.wrap .lc { white-space: pre-wrap; overflow-wrap: anywhere; }
 .code-root.nowrap .lc { white-space: pre; }
 
-/* syntax highlighting — "Solar Neon": Solarized's discipline (cool low-key body
-   text, saturated accents, NOT a wall of yellow+white) pushed bolder/futuristic.
-   String=bold cyan (the standout, docstrings glow), keyword=bold blue, number=
-   magenta, function=violet; amber survives only on type names so yellow stays
-   sparse. Still colorblind-safe: load-bearing roles split across blue/cyan/
-   magenta + lightness (no red-vs-green pair). Literal hex; one fixed dark theme.
-   Reset box props on tokens: Prism's bare class names (comment, tag, string...)
-   collide with app classes (e.g. .comment's border-left) — neutralise here. */
+/* syntax highlighting — "Solarized · CVD remap". Solarized's palette shifted onto
+   the blue<->amber axis that survives red-green colourblindness: keyword=blue,
+   string=amber, function=cyan, number=violet, type=orange. Non-bold (Solarized
+   is). Every token is coloured; the important roles stay mutually distinguishable.
+   Reset box props: Prism's bare class names collide with app classes (e.g.
+   .comment's border-left) — neutralise here. */
 .code-blob .token { border: 0; padding: 0; margin: 0; background: none; }
-.token.comment, .token.prolog, .token.doctype, .token.cdata { color: #5b7383; font-style: italic; }
-.token.punctuation { color: #7d92a6; }
-.token.operator, .token.entity { color: #6ca6e0; }
+.token.comment, .token.prolog, .token.doctype, .token.cdata { color: #6c7b80; font-style: italic; }
+.token.punctuation { color: #93a1a1; }
+.token.operator, .token.entity { color: #93a1a1; }
 .token.namespace { opacity: 0.7; }
-.token.keyword, .token.atrule, .token.rule, .token.important, .token.tag, .token.selector { color: #459cff; }
-.token.function, .token.method { color: #b48cff; }
-.token.string, .token.char, .token.attr-value, .token.regex, .token.url, .token.template-string { color: #2fd9c2; }
-.token.boolean, .token.number, .token.constant, .token.symbol { color: #ec5f9e; }
-.token.class-name, .token.builtin, .token.type-definition { color: #e0b15a; }
-.token.attr-name, .token.property, .token.variable { color: #b48cff; }
-.token.inserted { color: #b9f0d0; }
-.token.deleted { color: #ffc2cb; }
-.token.keyword, .token.tag { font-weight: 600; }
+.token.keyword, .token.atrule, .token.rule, .token.important, .token.tag,
+.token.selector, .token.boolean, .token.constant { color: #268bd2; }
+.token.string, .token.char, .token.attr-value, .token.regex, .token.url,
+.token.template-string { color: #b58900; }
+.token.number, .token.symbol { color: #6c71c4; }
+.token.function, .token.method { color: #2aa198; }
+.token.class-name, .token.builtin, .token.type-definition { color: #cb4b16; }
+.token.attr-name, .token.property, .token.variable { color: #2aa198; }
+.token.inserted { color: #859900; }
+.token.deleted { color: #dc322f; }
 .token.bold { font-weight: 600; }
 .token.italic { font-style: italic; }
 
