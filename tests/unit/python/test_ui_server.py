@@ -649,5 +649,205 @@ class SpecDocsTest(unittest.TestCase):
             server._spec_file(self.record, "/etc/hosts")
 
 
+import os
+import shutil
+import subprocess
+
+
+@unittest.skipUnless(shutil.which("git"), "git not installed")
+class CodeViewerTest(unittest.TestCase):
+    """The Code tab reads the target repo's OWN git. We build a throwaway repo
+    with subprocess git (no network, no agent) and exercise the read helpers."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.repo = Path(self.tmp.name).resolve() / "repo"
+        self.repo.mkdir()
+        self.record = {"target": str(self.repo)}
+        self._init()
+
+    # -- fixture builder ------------------------------------------------- #
+    def _git(self, *args: str) -> str:
+        env = {
+            **os.environ,
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_SYSTEM": os.devnull,
+            "GIT_AUTHOR_NAME": "T", "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "T", "GIT_COMMITTER_EMAIL": "t@t",
+        }
+        out = subprocess.run(
+            ["git", "-C", str(self.repo), *args],
+            capture_output=True, env=env, check=True,
+        )
+        return out.stdout.decode()
+
+    def _write(self, rel: str, text: str) -> None:
+        p = self.repo / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="utf-8")
+
+    def _init(self) -> None:
+        self._git("init", "-b", "main")
+        self._write("README.md", "# Title\n\nroot readme")
+        self._write("src/app.py", "print('hi')\n")
+        self._write("src/util.py", "x = 1\n")
+        self._git("add", "-A")
+        self._git("commit", "-m", "first commit")
+        # a .gitignored file must never surface in the tree
+        self._write(".gitignore", "secret.txt\n")
+        self._write("secret.txt", "do not show me")
+        self._write("src/app.py", "print('hello')\n")  # modify for a diff
+        self._git("add", "-A")
+        self._git("commit", "-m", "second commit")
+        self._git("branch", "feature")
+
+    # -- meta ------------------------------------------------------------ #
+    def test_meta_reports_git_facts(self) -> None:
+        m = server._code_meta(self.record)
+        self.assertTrue(m["is_git"])
+        self.assertFalse(m["empty"])
+        self.assertEqual(m["head"], "main")
+        self.assertEqual(m["default_ref"], "main")
+        self.assertIn("main", m["branches"])
+        self.assertIn("feature", m["branches"])
+
+    def test_meta_non_git_dir(self) -> None:
+        # Stop git's upward search at the temp dir so the host's own git state
+        # (on macOS even $TMPDIR can sit inside a repo) can't leak in.
+        with tempfile.TemporaryDirectory() as plain:
+            old = os.environ.get("GIT_CEILING_DIRECTORIES")
+            os.environ["GIT_CEILING_DIRECTORIES"] = str(Path(plain).resolve().parent)
+            try:
+                m = server._code_meta({"target": plain})
+            finally:
+                if old is None:
+                    os.environ.pop("GIT_CEILING_DIRECTORIES", None)
+                else:
+                    os.environ["GIT_CEILING_DIRECTORIES"] = old
+            self.assertFalse(m["is_git"])
+            self.assertEqual(m["branches"], [])
+
+    # -- tree ------------------------------------------------------------ #
+    def test_tree_root_lists_dirs_first_and_renders_readme(self) -> None:
+        t = server._code_tree(self.record, "main", "")
+        names = [(e["type"], e["name"]) for e in t["entries"]]
+        # src (tree) sorts before the files; .gitignore is tracked so it shows,
+        # but secret.txt (ignored, untracked) must NOT.
+        self.assertEqual(names[0], ("tree", "src"))
+        flat = [e["name"] for e in t["entries"]]
+        self.assertIn("README.md", flat)
+        self.assertNotIn("secret.txt", flat)
+        self.assertIsNotNone(t["readme"])
+        self.assertEqual(t["readme"]["name"], "README.md")
+        self.assertIn("root readme", t["readme"]["text"])
+
+    def test_tree_subdir(self) -> None:
+        t = server._code_tree(self.record, "main", "src")
+        self.assertEqual(sorted(e["name"] for e in t["entries"]), ["app.py", "util.py"])
+        self.assertEqual(t["entries"][0]["path"], "src/app.py")
+        self.assertIsNone(t["readme"])
+
+    def test_tree_bad_dir_raises(self) -> None:
+        with self.assertRaises(RuntimeError):
+            server._code_tree(self.record, "main", "nope")
+
+    # -- blob ------------------------------------------------------------ #
+    def test_blob_text(self) -> None:
+        b = server._code_blob(self.record, "main", "src/app.py")
+        self.assertEqual(b["text"], "print('hello')\n")
+        self.assertFalse(b["binary"])
+        self.assertEqual(b["ext"], "py")
+        self.assertGreater(b["size"], 0)
+
+    def test_blob_at_older_ref(self) -> None:
+        # the first commit still had the original line - addressed by ref
+        first = server._code_commits(self.record, "main", 0, 10)["items"][-1]["short"]
+        b = server._code_blob(self.record, first, "src/app.py")
+        self.assertEqual(b["text"], "print('hi')\n")
+
+    def test_blob_binary_detected(self) -> None:
+        (self.repo / "blob.bin").write_bytes(b"\x00\x01\x02ABC")
+        self._git("add", "-A")
+        self._git("commit", "-m", "add binary")
+        b = server._code_blob(self.record, "main", "blob.bin")
+        self.assertTrue(b["binary"])
+        self.assertEqual(b["text"], "")
+
+    def test_blob_on_dir_raises(self) -> None:
+        with self.assertRaises(RuntimeError):
+            server._code_blob(self.record, "main", "src")
+
+    # -- commits --------------------------------------------------------- #
+    def test_commits_paginated_newest_first(self) -> None:
+        c = server._code_commits(self.record, "main", 0, 1)
+        self.assertEqual(c["total"], 2)
+        self.assertEqual(c["items"][0]["subject"], "second commit")
+        self.assertTrue(c["has_more"])
+        page2 = server._code_commits(self.record, "main", 1, 1)
+        self.assertEqual(page2["items"][0]["subject"], "first commit")
+        self.assertFalse(page2["has_more"])
+
+    # -- single commit --------------------------------------------------- #
+    def test_commit_meta_files_and_patch(self) -> None:
+        head = server._code_commits(self.record, "main", 0, 1)["items"][0]["sha"]
+        cm = server._code_commit(self.record, head)
+        self.assertEqual(cm["subject"], "second commit")
+        changed = {f["path"] for f in cm["files"]}
+        self.assertIn("src/app.py", changed)
+        self.assertIn("+print('hello')", cm["patch"])
+        self.assertFalse(cm["truncated"])
+
+    def test_commit_root_commit_shows_full_add(self) -> None:
+        first = server._code_commits(self.record, "main", 0, 10)["items"][-1]["sha"]
+        cm = server._code_commit(self.record, first)
+        statuses = {f["status"] for f in cm["files"]}
+        self.assertEqual(statuses, {"A"})  # --root makes the first commit all-adds
+
+    def test_commit_bad_sha_raises(self) -> None:
+        with self.assertRaises(RuntimeError):
+            server._code_commit(self.record, "deadbeef")
+
+    # -- compare --------------------------------------------------------- #
+    def test_compare_two_commits(self) -> None:
+        items = server._code_commits(self.record, "main", 0, 10)["items"]
+        base, head = items[-1]["short"], items[0]["short"]
+        cp = server._code_compare(self.record, base, head)
+        self.assertEqual(cp["ahead"], 1)
+        self.assertEqual(cp["base"], base)
+        self.assertIn("src/app.py", {f["path"] for f in cp["files"]})
+        self.assertIn(".gitignore", {f["path"] for f in cp["files"]})
+
+    # -- primary-branch default ------------------------------------------ #
+    def test_meta_default_ref_follows_primary_branch(self) -> None:
+        storage = self.repo.parent / "storage"
+        storage.mkdir()
+        record = {"target": str(self.repo), "storage": str(storage)}
+        # HEAD is "main", but the configured primary is "feature" -> default to it
+        (storage / "configuration.json").write_text(json.dumps({"specseed_primary_branch": "feature"}))
+        m = server._code_meta(record)
+        self.assertEqual(m["primary_branch"], "feature")
+        self.assertEqual(m["default_ref"], "feature")
+        self.assertEqual(m["head"], "main")  # head still reports the checkout
+        # a primary that doesn't exist locally falls back to HEAD
+        (storage / "configuration.json").write_text(json.dumps({"specseed_primary_branch": "ghost"}))
+        self.assertEqual(server._code_meta(record)["default_ref"], "main")
+
+    # -- validation ------------------------------------------------------ #
+    def test_check_ref(self) -> None:
+        self.assertEqual(server._check_ref(""), "HEAD")
+        self.assertEqual(server._check_ref("feature/x"), "feature/x")
+        for bad in ["--upload-pack=x", "a..b", "a b", "-rf"]:
+            with self.assertRaises(RuntimeError):
+                server._check_ref(bad)
+
+    def test_check_path(self) -> None:
+        self.assertEqual(server._check_path("/src/app.py"), "src/app.py")
+        self.assertEqual(server._check_path(""), "")
+        for bad in ["../x", "a/../b", "a//b"]:
+            with self.assertRaises(RuntimeError):
+                server._check_path(bad)
+
+
 if __name__ == "__main__":
     unittest.main()

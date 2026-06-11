@@ -14,8 +14,10 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+import re
 import socket
 import sqlite3
+import subprocess
 import sys
 import threading
 import webbrowser
@@ -454,6 +456,7 @@ def _repo_summary(record: dict) -> dict:
         "name": record["name"],
         "provider": record["provider"],
         "target": record["target"],
+        "added_at": record.get("added_at"),
         "configured": configured,
         "external_link": _external_link(record),
         "queue": {
@@ -716,6 +719,270 @@ def _spec_file(record: dict, rel: str) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# code viewer (read-only over the target repo's own git)
+# --------------------------------------------------------------------------- #
+# Source of truth is the LOCAL target repo's git - no remote is ever assumed or
+# contacted. We read committed trees (`git ls-tree`), so untracked AND gitignored
+# files never appear. Everything is addressed by a ref (branch/tag/sha) so a file
+# or commit is directly deep-linkable. Nothing is cached: git is the index.
+_CODE_MAX_BYTES = 4 * 1024 * 1024  # cap one served blob
+_DIFF_MAX_BYTES = 2 * 1024 * 1024  # cap one served patch
+_README_RE = re.compile(r"^readme(\.(md|markdown|mkd|txt|rst))?$", re.IGNORECASE)
+# A ref is a branch/tag/sha or a rev like HEAD~2. Forbid anything that could turn
+# into a flag or a range; "\x1f"/"\x1e"/":" are our own separators / the tree-ish
+# delimiter, so they're out too. Empty -> HEAD.
+_REF_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._/+@{}~^\-]*$")
+
+
+def _git_target(record: dict) -> str:
+    target = record.get("target")
+    if not target:
+        raise RuntimeError("repo has no target path")
+    return str(Path(target).expanduser())
+
+
+def _git_raw(record: dict, args: list[str], *, timeout: int = 20) -> subprocess.CompletedProcess:
+    """Run `git -C <target> <args>` capturing bytes. Never uses a shell."""
+    try:
+        return subprocess.run(
+            ["git", "-C", _git_target(record), *args],
+            capture_output=True, timeout=timeout,
+        )
+    except FileNotFoundError:
+        raise RuntimeError("git is not installed")
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("git command timed out")
+
+
+def _git(record: dict, args: list[str], **kw) -> str:
+    proc = _git_raw(record, args, **kw)
+    if proc.returncode != 0:
+        msg = proc.stderr.decode("utf-8", "replace").strip()
+        raise RuntimeError(msg or "git command failed")
+    return proc.stdout.decode("utf-8", "replace")
+
+
+def _check_ref(ref: object) -> str:
+    ref = (str(ref or "")).strip() or "HEAD"
+    if ".." in ref or not _REF_RE.match(ref):
+        raise RuntimeError(f"invalid ref: {ref!r}")
+    return ref
+
+
+def _check_path(path: object) -> str:
+    path = (str(path or "")).strip().strip("/")
+    if not path:
+        return ""
+    if "\x00" in path or any(part in ("", "..") for part in path.split("/")):
+        raise RuntimeError(f"invalid path: {path!r}")
+    return path
+
+
+def _code_meta(record: dict) -> dict:
+    """Git facts the Code tab boots from: is it a repo, its head, branches, tags.
+
+    Degrades to ``is_git: False`` for a non-repo / no-git box so the UI shows an
+    empty state instead of erroring."""
+    out = {
+        "is_git": False, "root": None, "head": None, "default_ref": None,
+        "detached": False, "empty": False, "branches": [], "tags": [],
+    }
+    root = _git_raw(record, ["rev-parse", "--show-toplevel"])
+    if root.returncode != 0:
+        return out
+    out["is_git"] = True
+    out["root"] = root.stdout.decode("utf-8", "replace").strip()
+    out["empty"] = _git_raw(record, ["rev-parse", "--verify", "-q", "HEAD"]).returncode != 0
+    branch = _git_raw(record, ["symbolic-ref", "--quiet", "--short", "HEAD"])
+    if branch.returncode == 0 and branch.stdout.strip():
+        out["head"] = branch.stdout.decode("utf-8", "replace").strip()
+    elif not out["empty"]:
+        out["head"] = _git(record, ["rev-parse", "--short", "HEAD"]).strip()
+        out["detached"] = True
+    out["default_ref"] = out["head"]
+    out["primary_branch"] = ""
+    if not out["empty"]:
+        out["branches"] = [b for b in _git(record, ["for-each-ref", "--sort=-committerdate",
+                            "--format=%(refname:short)", "refs/heads"]).splitlines() if b]
+        out["tags"] = [t for t in _git(record, ["for-each-ref", "--sort=-creatordate",
+                       "--format=%(refname:short)", "refs/tags"]).splitlines() if t]
+        # Default to the configured specseed primary branch (not whatever branch
+        # happens to be checked out), as long as it actually exists locally.
+        storage = record.get("storage")
+        if storage:
+            try:
+                primary = configure.load_config(storage).get("specseed_primary_branch") or ""
+            except Exception:  # noqa: BLE001 - a malformed config must not break browsing
+                primary = ""
+            out["primary_branch"] = primary
+            if primary and primary in out["branches"]:
+                out["default_ref"] = primary
+    return out
+
+
+def _ls_tree(record: dict, ref: str, path: str) -> list[dict]:
+    """Immediate children of a dir at a ref (lazy: one level, never recursive)."""
+    treeish = ref if not path else f"{ref}:{path}"
+    proc = _git_raw(record, ["ls-tree", "--long", "-z", treeish])
+    if proc.returncode != 0:
+        raise RuntimeError(f"no such directory at {ref}: {path or '/'}")
+    entries = []
+    for rec in proc.stdout.decode("utf-8", "replace").split("\x00"):
+        if not rec:
+            continue
+        meta, _, name = rec.partition("\t")
+        bits = meta.split()
+        if len(bits) < 4:
+            continue
+        _mode, kind, _sha, size = bits[0], bits[1], bits[2], bits[3]
+        entries.append({
+            "name": name,
+            "path": f"{path}/{name}" if path else name,
+            "type": "tree" if kind == "tree" else "blob",
+            "size": None if size == "-" else int(size),
+        })
+    entries.sort(key=lambda e: (e["type"] != "tree", e["name"].lower()))
+    return entries
+
+
+def _blob_bytes(record: dict, ref: str, path: str) -> tuple[bytes, int]:
+    """(capped bytes, full size). Raises if the path isn't a blob at the ref."""
+    treeish = f"{ref}:{path}"
+    if _git_raw(record, ["cat-file", "-t", treeish]).stdout.strip() != b"blob":
+        raise RuntimeError(f"not a file at {ref}: {path}")
+    size = int(_git(record, ["cat-file", "-s", treeish]).strip() or "0")
+    data = _git_raw(record, ["cat-file", "blob", treeish]).stdout[:_CODE_MAX_BYTES]
+    return data, size
+
+
+def _code_tree(record: dict, ref: str, path: str) -> dict:
+    """A directory at a ref: its entries plus the rendered README, if any.
+
+    The README-per-folder convention every code host follows - we surface the
+    raw text and the UI renders it under the listing."""
+    ref = _check_ref(ref)
+    path = _check_path(path)
+    entries = _ls_tree(record, ref, path)
+    out = {"ref": ref, "path": path, "entries": entries, "readme": None}
+    readme = next((e for e in entries if e["type"] == "blob" and _README_RE.match(e["name"])), None)
+    if readme:
+        data, size = _blob_bytes(record, ref, readme["path"])
+        out["readme"] = {
+            "name": readme["name"],
+            "path": readme["path"],
+            "text": data.decode("utf-8", "replace"),
+            "truncated": size > _CODE_MAX_BYTES,
+        }
+    return out
+
+
+def _code_blob(record: dict, ref: str, path: str) -> dict:
+    ref = _check_ref(ref)
+    path = _check_path(path)
+    if not path:
+        raise RuntimeError("a file path is required")
+    data, size = _blob_bytes(record, ref, path)
+    binary = b"\x00" in data[:8000]
+    return {
+        "ref": ref, "path": path, "size": size,
+        "binary": binary,
+        "truncated": size > _CODE_MAX_BYTES,
+        "text": "" if binary else data.decode("utf-8", "replace"),
+        "ext": Path(path).suffix.lstrip(".").lower(),
+    }
+
+
+_LOG_FMT = "%H%x1f%h%x1f%an%x1f%aI%x1f%s%x1f%P"  # unit-sep fields, record-sep rows
+
+
+def _parse_log(raw: str) -> list[dict]:
+    commits = []
+    for rec in raw.split("\x1e"):
+        rec = rec.strip("\n")
+        if not rec:
+            continue
+        f = rec.split("\x1f")
+        if len(f) < 6:
+            continue
+        commits.append({
+            "sha": f[0], "short": f[1], "author": f[2],
+            "date": f[3], "subject": f[4],
+            "parents": f[5].split() if f[5] else [],
+        })
+    return commits
+
+
+def _code_commits(record: dict, ref: str, offset: int, limit: int) -> dict:
+    """A page of history (newest first), with a total so the UI can lazy-load more."""
+    ref = _check_ref(ref)
+    total = int(_git(record, ["rev-list", "--count", ref]).strip() or "0")
+    raw = _git(record, ["log", f"--format={_LOG_FMT}%x1e", f"--skip={offset}",
+                        "-n", str(limit), ref])
+    items = _parse_log(raw)
+    return {"ref": ref, "items": items, "total": total,
+            "offset": offset, "limit": limit, "has_more": offset + len(items) < total}
+
+
+def _parse_name_status_z(raw: str) -> list[dict]:
+    """NUL-separated `--name-status -z` into [{status, path, old_path?}]."""
+    toks = raw.split("\x00")
+    files = []
+    i = 0
+    while i < len(toks):
+        status = toks[i]
+        if not status:
+            i += 1
+            continue
+        code = status[0]
+        if code in ("R", "C") and i + 2 < len(toks):
+            files.append({"status": code, "old_path": toks[i + 1], "path": toks[i + 2]})
+            i += 3
+        elif i + 1 < len(toks):
+            files.append({"status": code, "path": toks[i + 1]})
+            i += 2
+        else:
+            break
+    return files
+
+
+def _cap_patch(data: bytes) -> tuple[str, bool]:
+    truncated = len(data) > _DIFF_MAX_BYTES
+    return data[:_DIFF_MAX_BYTES].decode("utf-8", "replace"), truncated
+
+
+def _code_commit(record: dict, sha: object) -> dict:
+    """One commit: metadata + its diff against its first parent (root-aware)."""
+    sha = _check_ref(sha)
+    meta = _parse_log(_git(record, ["show", "-s", f"--format={_LOG_FMT}%x1e", sha]))
+    if not meta:
+        raise RuntimeError(f"no such commit: {sha}")
+    body = _git(record, ["show", "-s", "--format=%b", sha]).rstrip("\n")
+    files = _parse_name_status_z(
+        _git(record, ["diff-tree", "--no-commit-id", "--name-status", "-r", "-z", "--root", sha])
+    )
+    patch, truncated = _cap_patch(
+        _git_raw(record, ["diff-tree", "--no-commit-id", "-p", "--no-color", "-r", "--root", sha]).stdout
+    )
+    return {**meta[0], "body": body, "files": files, "patch": patch, "truncated": truncated}
+
+
+def _code_compare(record: dict, base: object, head: object) -> dict:
+    """Diff between two commits (two-dot: head vs base). No conflict resolution -
+    just what changed, plus the commits in head that aren't in base."""
+    base = _check_ref(base)
+    head = _check_ref(head)
+    files = _parse_name_status_z(
+        _git(record, ["diff", "--no-color", "--name-status", "-z", base, head])
+    )
+    patch, truncated = _cap_patch(
+        _git_raw(record, ["diff", "--no-color", base, head]).stdout
+    )
+    commits = _parse_log(_git(record, ["log", f"--format={_LOG_FMT}%x1e", f"{base}..{head}"]))
+    return {"base": base, "head": head, "files": files, "patch": patch,
+            "truncated": truncated, "commits": commits, "ahead": len(commits)}
+
+
+# --------------------------------------------------------------------------- #
 # HTTP handler
 # --------------------------------------------------------------------------- #
 class Handler(BaseHTTPRequestHandler):
@@ -835,6 +1102,9 @@ class Handler(BaseHTTPRequestHandler):
         if tail == ["spec", "file"] and self.command == "GET":
             self._json({"ok": True, "data": _spec_file(record, query.get("path", [""])[0])})
             return
+        if tail[:1] == ["code"] and self.command == "GET":
+            self._code(record, tail[1:], query)
+            return
         if tail and tail[0] == "posts":
             self._posts(record, tail[1:], query)
             return
@@ -923,6 +1193,30 @@ class Handler(BaseHTTPRequestHandler):
                 },
             }
         )
+
+    def _code(self, record: dict, sub: list[str], query: dict) -> None:
+        # /api/repos/<id>/code/* - read-only git over the local target repo.
+        one = lambda key, default="": query.get(key, [default])[0]
+        if sub == ["meta"]:
+            self._json({"ok": True, "data": _code_meta(record)})
+            return
+        if sub == ["tree"]:
+            self._json({"ok": True, "data": _code_tree(record, one("ref"), one("path"))})
+            return
+        if sub == ["blob"]:
+            self._json({"ok": True, "data": _code_blob(record, one("ref"), one("path"))})
+            return
+        if sub == ["commits"]:
+            offset, limit = _page_args(query, "commits", 50)
+            self._json({"ok": True, "data": _code_commits(record, one("ref"), offset, limit)})
+            return
+        if sub == ["commit"]:
+            self._json({"ok": True, "data": _code_commit(record, one("sha"))})
+            return
+        if sub == ["compare"]:
+            self._json({"ok": True, "data": _code_compare(record, one("base"), one("head"))})
+            return
+        self._json({"ok": False, "error": "not found"}, status=404)
 
     def _tasks(self, record: dict, sub: list[str]) -> None:
         # /api/repos/<id>/tasks/<task_id>/retry (POST) - re-queue a failed/scheduled task

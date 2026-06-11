@@ -138,6 +138,20 @@ a { color: var(--accent-2); }
   font-family: var(--mono); font-size: 10px; text-transform: uppercase;
   color: var(--ink-dim); border: 1px solid var(--line); padding: 1px 6px; border-radius: 20px;
 }
+.switcher-item.more { color: var(--accent-2); justify-content: center; font-weight: 600; }
+.switcher-item.more:hover { background: var(--panel-2); }
+
+/* repo picker popup (the switcher's overflow beyond the top 5) */
+.repo-pick-search { margin: 6px 0 12px; }
+.repo-pick-list { display: flex; flex-direction: column; gap: 4px; max-height: 55vh; overflow: auto; }
+.repo-pick-item {
+  display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;
+  padding: 10px 11px; border: 1px solid var(--line); border-radius: 9px; cursor: pointer;
+  background: var(--panel-2); color: var(--ink); font: inherit;
+}
+.repo-pick-item:hover { border-color: var(--line-2); }
+.repo-pick-item.active { border-color: var(--accent); background: rgba(56,225,192,0.07); }
+.repo-pick-item .switcher-item-name { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; background: var(--muted); }
 .dot.big { width: 13px; height: 13px; }
@@ -671,6 +685,167 @@ span.fb-check { cursor: default; }
 .spec-empty-title { font-size: 16px; font-weight: 700; margin: 12px 0 6px; }
 .spec-empty code { font-family: var(--mono); font-size: 12px; color: var(--ink-dim); background: var(--bg-2); border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; }
 
+/* ---------- code (the repository browser) ----------
+   Read-only git over the target repo, addressed by ref so any file/commit is
+   deep-linkable. Signature: every source AND diff line is its own row with a
+   sticky left gutter, so the Wrap/Scroll toggle flips white-space without the
+   line numbers ever drifting out of sync. Quiet list, loud only at the gutter. */
+.code-root { min-width: 0; }
+
+/* breadcrumb + ref + actions bar (shared across views) */
+.code-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  flex-wrap: wrap; margin-bottom: 14px;
+}
+.code-crumbs { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; min-width: 0; font-size: 14px; }
+.code-crumb {
+  font: inherit; cursor: pointer; background: transparent; border: 0; padding: 2px 4px;
+  color: var(--accent-2); border-radius: 6px;
+}
+.code-crumb:hover { background: var(--panel-2); color: var(--ink); }
+.code-crumb.current { color: var(--ink); font-weight: 600; cursor: default; }
+.code-crumb.current:hover { background: transparent; }
+.code-crumb-sep { color: var(--muted); }
+.code-bar-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.code-ref-pill {
+  font-size: 12px; color: var(--accent); background: rgba(56,225,192,0.07);
+  border: 1px solid var(--line-2); border-radius: 20px; padding: 3px 11px; white-space: nowrap;
+}
+
+/* ref switcher (native <details>, mirrors the repo switcher) */
+.code-ref { position: relative; }
+.code-ref > summary {
+  list-style: none; cursor: pointer; display: flex; align-items: center; gap: 7px;
+  padding: 7px 12px; border: 1px solid var(--line-2); border-radius: 10px; background: var(--panel-2);
+  font-weight: 600;
+}
+.code-ref > summary::-webkit-details-marker { display: none; }
+.code-ref-icon { color: var(--accent); }
+.code-ref-current { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 13px; }
+.code-ref-menu {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 40; min-width: 240px; max-height: 60vh;
+  display: flex; flex-direction: column;
+  background: var(--panel); border: 1px solid var(--line-2); border-radius: 12px; padding: 6px;
+  box-shadow: 0 24px 60px -20px #000;
+}
+.code-ref-search { margin: 2px 2px 8px; flex: none; }
+.code-ref-scroll { overflow: auto; min-height: 0; }
+.code-ref-group {
+  font-family: var(--mono); font-size: 10px; letter-spacing: 1px; text-transform: uppercase;
+  color: var(--muted); padding: 8px 8px 4px;
+}
+.code-ref-item {
+  display: block; width: 100%; text-align: left; font: inherit; cursor: pointer;
+  background: transparent; border: 0; border-radius: 8px; padding: 7px 9px; color: var(--ink);
+  font-family: var(--mono); font-size: 13px; overflow: hidden; text-overflow: ellipsis;
+}
+.code-ref-item:hover { background: var(--panel-2); }
+.code-ref-item.active { color: var(--accent); background: rgba(56,225,192,0.08); }
+
+/* directory listing */
+.code-list {
+  border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; background: var(--panel);
+}
+.code-entry {
+  display: flex; align-items: center; gap: 12px; width: 100%; text-align: left;
+  font: inherit; cursor: pointer; background: transparent; color: var(--ink);
+  border: 0; border-bottom: 1px solid var(--line); padding: 10px 14px;
+}
+.code-entry:last-child { border-bottom: 0; }
+.code-entry:hover { background: var(--panel-2); }
+.code-entry-icon { flex: none; width: 14px; text-align: center; color: var(--muted); }
+.code-entry.is-dir .code-entry-icon { color: var(--accent); }
+.code-entry.is-dir .code-entry-name { color: var(--ink); font-weight: 600; }
+.code-entry-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 13px; }
+.code-entry-size { flex: none; font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.code-empty-row { padding: 18px; text-align: center; color: var(--muted); font-family: var(--mono); font-size: 13px; }
+
+/* readme under a directory */
+.code-readme { margin-top: 16px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px 22px; }
+.code-readme-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+.code-readme-head .panel-title { margin: 0; }
+.code-readme-body .md { font-size: 13.5px; line-height: 1.6; }
+.code-readme-body .md h1 { font-size: 19px; }
+.code-readme-body .md h2 { font-size: 16px; }
+
+/* file (blob) view */
+.code-file-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; font-size: 12px; color: var(--muted); }
+.code-trunc { color: var(--warn); font-size: 11px; font-family: var(--mono); padding: 6px 2px; }
+.code-binary { padding: 30px; text-align: center; color: var(--muted); font-family: var(--mono); font-size: 13px; border: 1px dashed var(--line); border-radius: var(--radius); }
+
+/* line primitive: a row of [sticky gutter][code]. Shared by blobs and diffs.
+   The Wrap/Scroll toggle on .code-root only flips the code cell's white-space. */
+.code-blob, .diff-body {
+  background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px;
+  font-family: var(--mono); font-size: 12.5px; line-height: 1.55; overflow: hidden;
+}
+.code-root.nowrap .code-blob, .code-root.nowrap .diff-body { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.code-line { display: flex; align-items: flex-start; min-width: 100%; width: max-content; }
+.code-root.wrap .code-line { width: auto; }
+.code-line:hover { background: rgba(255,255,255,0.025); }
+.ln {
+  flex: none; width: 3.4em; padding: 0 12px 0 4px; text-align: right; user-select: none;
+  color: var(--muted); position: sticky; left: 0; background: var(--bg-2); z-index: 1;
+}
+.code-line:hover .ln { color: var(--ink-dim); }
+.lc { flex: 1 1 auto; min-width: 0; padding-right: 14px; color: var(--ink-dim); }
+.code-root.wrap .lc { white-space: pre-wrap; overflow-wrap: anywhere; }
+.code-root.nowrap .lc { white-space: pre; }
+
+/* commit history */
+.code-commit-list { display: flex; flex-direction: column; gap: 8px; }
+.code-commit-list.compact { margin-bottom: 16px; }
+.commit-row {
+  display: flex; align-items: center; gap: 12px; width: 100%; text-align: left;
+  font: inherit; cursor: pointer; background: var(--panel); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 11px; padding: 11px 14px;
+}
+.commit-row:hover { border-color: var(--line-2); transform: translateY(-1px); transition: 0.12s; }
+.commit-sha { flex: none; font-size: 12px; color: var(--accent); background: rgba(56,225,192,0.07); border: 1px solid var(--line-2); border-radius: 6px; padding: 2px 8px; }
+.commit-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.commit-subject { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.commit-sub { font-size: 12px; color: var(--muted); }
+.commit-merge { flex: none; font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--accent-2); border: 1px solid var(--line-2); border-radius: 20px; padding: 1px 7px; }
+.code-more { margin-top: 12px; width: 100%; }
+
+/* single commit / compare header */
+.commit-head { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px 20px; margin-bottom: 16px; }
+.commit-head-title { font-size: 17px; font-weight: 700; margin-bottom: 8px; }
+.commit-head-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+.commit-sha-full { color: var(--accent); }
+.commit-body { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--ink-dim); font-size: 13px; }
+.compare-range { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+.compare-arrow { color: var(--muted); }
+
+/* diff */
+.diff-stats { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 14px; margin-bottom: 16px; display: flex; flex-direction: column; gap: 4px; }
+.diff-stat { display: flex; align-items: center; gap: 10px; }
+.diff-stat-mark { flex: none; width: 18px; height: 18px; display: grid; place-items: center; border-radius: 4px; font-family: var(--mono); font-size: 11px; font-weight: 700; }
+.diff-stat-mark.s-A { color: var(--ok); background: rgba(91,227,154,0.12); }
+.diff-stat-mark.s-D { color: var(--bad); background: rgba(255,107,129,0.12); }
+.diff-stat-mark.s-M { color: var(--warn); background: rgba(246,183,90,0.12); }
+.diff-stat-mark.s-R, .diff-stat-mark.s-C, .diff-stat-mark.s-T { color: var(--accent-2); background: rgba(91,157,255,0.12); }
+.diff-stat-path { font-size: 12px; color: var(--ink-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.diff { display: flex; flex-direction: column; gap: 14px; }
+.diff-file { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.diff-file-head { padding: 8px 12px; background: var(--panel-2); border-bottom: 1px solid var(--line); font-size: 12px; color: var(--ink); word-break: break-all; }
+.diff-file .diff-body { border: 0; border-radius: 0; }
+.diff-line { display: block; padding: 0 12px; min-width: 100%; width: max-content; }
+.code-root.wrap .diff-line { width: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.code-root.nowrap .diff-line { white-space: pre; }
+.diff-line.ctx { color: var(--ink-dim); }
+.diff-line.add { color: #b9f0d0; background: rgba(91,227,154,0.09); }
+.diff-line.del { color: #ffc2cb; background: rgba(255,107,129,0.09); }
+.diff-line.hunk { color: var(--accent-2); background: rgba(91,157,255,0.06); }
+.diff-line.meta { color: var(--muted); }
+
+/* empty states */
+.code-empty { text-align: center; padding: 60px 24px; border: 1px dashed var(--line); border-radius: 14px; }
+.code-empty-mark { font-family: var(--mono); font-size: 34px; color: var(--accent); line-height: 1; }
+.code-empty-title { font-size: 16px; font-weight: 700; margin: 12px 0 6px; }
+.code-empty code { font-family: var(--mono); font-size: 12px; color: var(--ink-dim); background: var(--bg-2); border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; }
+
 /* ---------- configuration ---------- */
 .config.locked { opacity: 0.7; }
 .cfg-row { display: flex; justify-content: space-between; padding: 9px 0; border-bottom: 1px solid var(--line); }
@@ -772,6 +947,11 @@ textarea { resize: vertical; min-height: 70px; }
   /* Spec keeps the index visible (it's compact) and just stacks the pane below;
      the spine still reads top-to-bottom. */
   .spec-pane { padding: 18px 16px; }
+  /* Code: actions wrap under the title and stretch full width; the ref switcher
+     and Wrap/Scroll toggle share the row. The crumb bar stays scrollable. */
+  .code-ref, .code-ref > summary { width: auto; }
+  .code-ref-menu { right: auto; left: 0; min-width: 200px; }
+  .commit-head { padding: 16px; }
 }
 @media (max-width: 520px) {
   .stat-grid { grid-template-columns: 1fr 1fr; }
@@ -796,4 +976,14 @@ textarea { resize: vertical; min-height: 70px; }
   .spec-fields { grid-template-columns: 1fr 1fr; }
   .gate-row { flex-direction: column; align-items: stretch; gap: 8px; }
   .gate-row select { width: 100%; }
+  /* Code on a phone: crumbs scroll instead of wrapping into a tall stack; the
+     gutter shrinks to claw back width; the toggle + ref switcher fill the row. */
+  .code-crumbs { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .code-bar-actions { width: 100%; justify-content: space-between; }
+  .tab-head-actions .code-ref { flex: 1; }
+  .tab-head-actions .code-ref > summary { justify-content: space-between; }
+  .tab-head-actions .code-wrap { flex: 1; }
+  .tab-head-actions .code-wrap .seg-btn { flex: 1; }
+  .ln { width: 2.6em; padding-left: 2px; }
+  .code-blob, .diff-body { font-size: 12px; }
 }

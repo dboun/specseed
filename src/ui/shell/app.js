@@ -1,8 +1,9 @@
 import { api } from "../features/api.js";
-import { escapeHtml, toast } from "../ui/components.js";
+import { escapeHtml, toast, modal, closeModal } from "../ui/components.js";
 import { createMonitor } from "../features/monitor.js";
 import { createTracker } from "../features/tracker.js";
 import { createSpec } from "../features/spec.js";
+import { createCode } from "../features/code.js";
 import { createConfiguration } from "../features/configuration.js";
 import { openAddRepo, openSetup } from "../features/repos.js";
 
@@ -10,6 +11,7 @@ const TABS = [
   { id: "monitor", label: "Monitor" },
   { id: "tracker", label: "Tracker" },
   { id: "spec", label: "Spec" },
+  { id: "code", label: "Code" },
   { id: "configuration", label: "Configuration" },
 ];
 
@@ -160,7 +162,34 @@ function render() {
   mountFeature();
 }
 
+// Switcher ordering: live runners first (running, then otherwise-alive), then by
+// most-recently-added. Keeps the repos you're actually working sitting on top.
+function repoRank(r) {
+  if (r.runner.alive && r.runner.state === "running") return 0;
+  if (r.runner.alive) return 1;
+  return 2;
+}
+function sortedRepos() {
+  return [...state.repos].sort(
+    (a, b) => repoRank(a) - repoRank(b) || String(b.added_at || "").localeCompare(String(a.added_at || ""))
+  );
+}
+
+const SWITCHER_MAX = 5; // beyond this the list spills into a searchable popup
+
+function repoItemHtml(r, cls = "switcher-item") {
+  return `
+    <button class="${cls} ${r.id === state.currentId ? "active" : ""}" data-pick-repo="${escapeHtml(r.id)}" data-repo-name="${escapeHtml((r.name || "").toLowerCase())}">
+      <span class="dot dot-${r.runner.alive ? r.runner.state : "off"}"></span>
+      <span class="switcher-item-name">${escapeHtml(r.name)}</span>
+      <span class="provider-tag">${escapeHtml(r.provider)}</span>
+    </button>`;
+}
+
 function switcherHtml() {
+  const sorted = sortedRepos();
+  const shown = sorted.slice(0, SWITCHER_MAX);
+  const overflow = sorted.length - shown.length;
   return `
     <details class="switcher" data-switcher>
       <summary>
@@ -168,19 +197,28 @@ function switcherHtml() {
         <span class="caret">▾</span>
       </summary>
       <div class="switcher-menu">
-        ${state.repos
-          .map(
-            (r) => `
-          <button class="switcher-item ${r.id === state.currentId ? "active" : ""}" data-pick-repo="${escapeHtml(r.id)}">
-            <span class="dot dot-${r.runner.alive ? r.runner.state : "off"}"></span>
-            <span class="switcher-item-name">${escapeHtml(r.name)}</span>
-            <span class="provider-tag">${escapeHtml(r.provider)}</span>
-          </button>`
-          )
-          .join("")}
+        ${shown.map((r) => repoItemHtml(r)).join("")}
+        ${overflow > 0 ? `<button class="switcher-item more" data-repo-more>More… (${overflow})</button>` : ""}
         <button class="switcher-item add" data-add-repo>+ Add repository</button>
       </div>
     </details>`;
+}
+
+// All repos in a searchable popup, same active-first / recent ordering.
+function openRepoPicker() {
+  const list = sortedRepos().map((r) => repoItemHtml(r, "repo-pick-item")).join("");
+  const node = modal(`
+    <h2>Select repository</h2>
+    <input class="repo-pick-search" type="search" placeholder="Search repositories…" aria-label="Search repositories" />
+    <div class="repo-pick-list">${list}</div>`);
+  const input = node.querySelector(".repo-pick-search");
+  input?.addEventListener("input", () => {
+    const q = input.value.trim().toLowerCase();
+    node.querySelectorAll(".repo-pick-item").forEach((it) => {
+      it.style.display = (it.dataset.repoName || "").includes(q) ? "" : "none";
+    });
+  });
+  setTimeout(() => input?.focus(), 0);
 }
 
 // One shared web UI fronts many SEPARATE runner processes. The chip reports the
@@ -223,9 +261,11 @@ function mountFeature() {
       ? createTracker
       : state.tab === "spec"
         ? createSpec
-        : state.tab === "configuration"
-          ? createConfiguration
-          : createMonitor;
+        : state.tab === "code"
+          ? createCode
+          : state.tab === "configuration"
+            ? createConfiguration
+            : createMonitor;
   state.feature = factory({ repo, ctx, refreshTopbar, sub: state.sub });
   container.innerHTML = `<div class="loading">loading…</div>`;
   state.feature
@@ -278,6 +318,12 @@ async function refreshTopbar() {
 
 // -- global event delegation ------------------------------------------------ #
 document.addEventListener("click", (event) => {
+  const more = event.target.closest("[data-repo-more]");
+  if (more) {
+    root.querySelector("[data-switcher]")?.removeAttribute("open");
+    openRepoPicker();
+    return;
+  }
   const el = event.target.closest("[data-add-repo],[data-pick-repo],[data-tab]");
   if (el) {
     if (el.dataset.addRepo !== undefined) {
@@ -287,6 +333,7 @@ document.addEventListener("click", (event) => {
     }
     if (el.dataset.pickRepo) {
       root.querySelector("[data-switcher]")?.removeAttribute("open");
+      closeModal(); // close the picker popup if the click came from it
       pickRepo(el.dataset.pickRepo);
       return;
     }

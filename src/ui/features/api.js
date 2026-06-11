@@ -51,6 +51,15 @@ export const api = {
   spec: (id) => request(`${base(id)}/spec`),
   specFile: (id, path) => request(`${base(id)}/spec/file?path=${enc(path)}`),
 
+  // code viewer (every provider; read-only over the local target repo's git)
+  codeMeta: (id) => request(`${base(id)}/code/meta`),
+  codeTree: (id, ref, path) => request(`${base(id)}/code/tree?ref=${enc(ref)}&path=${enc(path || "")}`),
+  codeBlob: (id, ref, path) => request(`${base(id)}/code/blob?ref=${enc(ref)}&path=${enc(path)}`),
+  codeCommits: (id, ref, offset = 0, limit = 50) =>
+    request(`${base(id)}/code/commits?ref=${enc(ref)}&commits_offset=${offset}&commits_limit=${limit}`),
+  codeCommit: (id, sha) => request(`${base(id)}/code/commit?sha=${enc(sha)}`),
+  codeCompare: (id, b, h) => request(`${base(id)}/code/compare?base=${enc(b)}&head=${enc(h)}`),
+
   // tracker (local provider only)
   listPosts: (id, state) => request(`${base(id)}/posts?state=${enc(state)}`),
   getPost: (id, postId) => request(`${base(id)}/posts/${enc(postId)}`),
