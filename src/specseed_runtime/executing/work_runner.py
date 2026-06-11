@@ -168,8 +168,10 @@ def run_agent_job(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
         )
     result = dispatch._run_agent(ctx, prompt, intent, task_id=task.get("task_id"))
     # Commit the work (implement) and always return to the primary branch, however
-    # the run ended, so WIP is never stranded on a feature branch.
-    dispatch._finalize_git_branch(ctx, entity, intent, branch)
+    # the run ended, so WIP is never stranded on a feature branch. A commit that had
+    # changes but FAILED is a hard error: never let the run report success, or the
+    # issue would gate + merge an empty branch and close done with code stranded.
+    commit_error = dispatch._finalize_git_branch(ctx, entity, intent, branch)
     platform_log.log_event(
         "agent_result",
         task_id=task.get("task_id"),
@@ -220,6 +222,17 @@ def run_agent_job(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
                 getattr(result, "report_error", None) or "missing"
             ),
             detail="intent {0} missing result file".format(intent),
+            retryable=True,
+        )
+
+    # The agent finished and reported, but its edits could not be committed. The
+    # branch has no work on it, so it must NOT advance to the merge gate / done.
+    # Retry: a fresh run re-does the edits and re-attempts the commit.
+    if commit_error:
+        return HandlerOutcome(
+            success=False,
+            error="agent work could not be committed to {0}: {1}".format(branch, commit_error),
+            detail="intent {0} not committed".format(intent),
             retryable=True,
         )
 

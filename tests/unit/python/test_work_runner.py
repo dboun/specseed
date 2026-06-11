@@ -169,6 +169,31 @@ class RunAgentJobTest(WorkRunnerBase):
         self.assertEqual(runner.calls, [])
         self.assertIsNone(work_runner.read_work_outcome(ctx, 8))
 
+    def test_commit_failure_is_retryable_no_handoff(self) -> None:
+        # The agent finished and reported, but its edits could not be committed (the
+        # branch has no work). The run must FAIL retryable and never hand a result to
+        # control, or the empty branch would gate + merge as a no-op and close done.
+        eid = self._seed_local("Do it", ["issue", "issue:status:in_progress"])
+        runner = FakeAgentRunner(result=AgentResult(ok=True, report={"status": "done", "summary": "x"}))
+        ctx = self._ctx(runner)
+        with mock.patch(
+            "specseed_runtime.executing.dispatch._finalize_git_branch",
+            return_value="git commit failed",
+        ):
+            out = work_runner.run_agent_job(
+                ctx, {"task_id": 12, "action": work_lane.WORK_RUN, "post_id": str(eid),
+                      "payload": {"intent": "implement", "post_id": str(eid)}}
+            )
+
+        self.assertFalse(out.success)
+        self.assertTrue(out.retryable)
+        self.assertIn("git commit failed", out.error)
+        self.assertEqual(len(runner.calls), 1)  # the agent did run
+        self.assertIsNone(work_runner.read_work_outcome(ctx, 12))
+        self.assertEqual(
+            [t for t in self._all_tasks() if t["action"] == work_lane.PROCESS_WORK_RESULT], []
+        )
+
     def _all_tasks(self):
         return [t for t in (self.db.get_task(i) for i in range(1, 50)) if t is not None]
 

@@ -99,6 +99,28 @@ class GitLifecycleTest(unittest.TestCase):
         self.assertIn("app.py", tracked)
         self.assertNotIn(".specseed/storage/platform.log", tracked)
 
+    def test_commit_all_excludes_gitignored_specseed_dir(self) -> None:
+        # Regression: in every real target `.specseed/` is ALSO gitignored. Passing it
+        # as an :(exclude) pathspec made `git add` abort ("paths are ignored"), so the
+        # implement commit silently failed and the empty branch later merged as a no-op
+        # and closed the issue done with code stranded. The exclude must be dropped for
+        # already-ignored paths, leaving the commit to succeed.
+        (self.root / ".gitignore").write_text(".specseed/\n", encoding="utf-8")
+        self._git("add", ".gitignore")
+        self._git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "ignore")
+        git_ops.ensure_on_branch(self.root, "feat-0001-x", "main")
+        (self.root / ".specseed" / "storage").mkdir(parents=True)
+        (self.root / ".specseed" / "storage" / "platform.log").write_text("runtime\n", encoding="utf-8")
+        (self.root / "app.py").write_text("print('ok')\n", encoding="utf-8")
+
+        c = git_ops.commit_all(self.root, "specseed: work", exclude_paths=[".specseed"])
+
+        self.assertTrue(c.ok, msg=c.error)
+        self.assertEqual(c.detail, "committed")
+        tracked = self._git("ls-files").stdout.splitlines()
+        self.assertIn("app.py", tracked)
+        self.assertNotIn(".specseed/storage/platform.log", tracked)
+
     def test_work_isolated_on_branch_not_on_primary(self) -> None:
         # simulate a full implement cycle: branch, edit, commit, return to main
         branch = "feat-0001-x"

@@ -684,14 +684,23 @@ def _prepare_git_branch(
     return branch, None
 
 
-def _finalize_git_branch(ctx: ExecutionContext, entity: Any, intent: str, branch: Optional[str]) -> None:
+def _finalize_git_branch(
+    ctx: ExecutionContext, entity: Any, intent: str, branch: Optional[str]
+) -> Optional[str]:
     """Commit the agent's work (implement) and always return to the primary branch.
 
     Commits even a partial WIP (interruption) so nothing is lost. Review runs do
-    not commit (the reviewer only reads). Best-effort + logged.
+    not commit (the reviewer only reads). Always returns to primary (best-effort).
+
+    Returns a commit error string when an IMPLEMENT run had changes that FAILED to
+    commit; the caller must then fail the run, never report success. A clean
+    "nothing to commit" is not an error (no error returned). This is the guard that
+    stops a failed commit from reaching the merge gate on an empty branch and
+    closing the issue done with its code stranded in the worktree.
     """
     if branch is None:
-        return
+        return None
+    commit_error: Optional[str] = None
     if intent == AgentIntent.IMPLEMENT:
         message = "specseed: {0}".format(getattr(entity, "title", None) or "work on issue {0}".format(
             getattr(entity, "post_id", "?")))
@@ -704,6 +713,8 @@ def _finalize_git_branch(ctx: ExecutionContext, entity: Any, intent: str, branch
             detail=commit.detail,
             error=commit.error,
         )
+        if not commit.ok:
+            commit_error = commit.error or "git commit failed"
     back = git_ops.checkout(ctx.repo_root, _primary_branch(ctx))
     platform_log.log_event(
         "git_return_primary",
@@ -712,6 +723,7 @@ def _finalize_git_branch(ctx: ExecutionContext, entity: Any, intent: str, branch
         ok=back.ok,
         error=back.error,
     )
+    return commit_error
 
 
 def _merge_comment(ctx: ExecutionContext, post_id: Any, body: str) -> None:

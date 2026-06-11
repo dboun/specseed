@@ -48,11 +48,26 @@ def _run(repo_root: Path, args: list[str]) -> subprocess.CompletedProcess:
     )
 
 
-def _exclude_pathspecs(exclude_paths: Optional[list[str | Path]]) -> list[str]:
+def _is_ignored(repo_root: Path, entry: str) -> bool:
+    """True if ``entry`` is already excluded by a .gitignore."""
+    return _run(repo_root, ["check-ignore", "-q", "--", entry]).returncode == 0
+
+
+def _exclude_pathspecs(
+    repo_root: Path, exclude_paths: Optional[list[str | Path]]
+) -> list[str]:
+    """Build ``:(exclude)`` pathspecs, DROPPING any path git already ignores.
+
+    A path that is also gitignored never reaches the index via ``git add -A``, so it
+    needs no exclude pathspec. Worse, passing ``:(exclude)<ignored>`` makes ``git add``
+    abort with "paths are ignored" - which silently broke every implement commit
+    (specseed_dir is always gitignored). So only exclude paths that git would
+    otherwise stage.
+    """
     out: list[str] = []
     for raw in exclude_paths or []:
         entry = Path(raw).as_posix().strip("/")
-        if entry and entry != ".":
+        if entry and entry != "." and not _is_ignored(repo_root, entry):
             out.append(":(exclude){0}".format(entry))
     return out
 
@@ -150,7 +165,7 @@ def commit_all(
     repo_root = Path(repo_root)
     if not has_changes(repo_root):
         return GitResult(ok=True, detail="nothing to commit")
-    add = _run(repo_root, ["add", "-A", "--", ".", *_exclude_pathspecs(exclude_paths)])
+    add = _run(repo_root, ["add", "-A", "--", ".", *_exclude_pathspecs(repo_root, exclude_paths)])
     if add.returncode != 0:
         return GitResult(ok=False, error=add.stderr.strip() or "git add failed")
     if not has_staged_changes(repo_root):
@@ -248,7 +263,7 @@ def complete_merge(
     for rel in unmerged_files(repo_root):
         if _has_conflict_markers(repo_root / rel):
             return GitResult(ok=False, error="unresolved conflicts remain in {0}".format(rel))
-    add = _run(repo_root, ["add", "-A", "--", ".", *_exclude_pathspecs(exclude_paths)])
+    add = _run(repo_root, ["add", "-A", "--", ".", *_exclude_pathspecs(repo_root, exclude_paths)])
     if add.returncode != 0:
         return GitResult(ok=False, error=add.stderr.strip() or "git add failed")
     if not has_staged_changes(repo_root):
