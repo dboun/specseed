@@ -824,7 +824,7 @@ span.fb-check { cursor: default; }
    is). Every token is coloured; the important roles stay mutually distinguishable.
    Reset box props: Prism's bare class names collide with app classes (e.g.
    .comment's border-left) — neutralise here. */
-.code-blob .token { border: 0; padding: 0; margin: 0; background: none; }
+.code-blob .token, .diff-body .token { border: 0; padding: 0; margin: 0; background: none; }
 .token.comment, .token.prolog, .token.doctype, .token.cdata { color: #6c7b80; font-style: italic; }
 .token.punctuation { color: #93a1a1; }
 .token.operator, .token.entity { color: #93a1a1; }
@@ -881,12 +881,18 @@ span.fb-check { cursor: default; }
 .diff-file { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
 .diff-file-head { padding: 8px 12px; background: var(--panel-2); border-bottom: 1px solid var(--line); font-size: 12px; color: var(--ink); word-break: break-all; }
 .diff-file .diff-body { border: 0; border-radius: 0; }
+.diff-body { color: #bcc6c6; } /* base matches the blob; syntax tokens override */
 .diff-line { display: block; padding: 0 12px; min-width: 100%; width: max-content; }
 .code-root.wrap .diff-line { width: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 .code-root.nowrap .diff-line { white-space: pre; }
+/* add/remove cue = the +/- sign glyph (shape, colourblind-safe) + a tint behind
+   the line; syntax highlighting shows on top, so we no longer recolour the text */
+.diff-sign { display: inline-block; width: 1ch; color: var(--muted); user-select: none; }
 .diff-line.ctx { color: var(--ink-dim); }
-.diff-line.add { color: #b9f0d0; background: rgba(91,227,154,0.09); }
-.diff-line.del { color: #ffc2cb; background: rgba(255,107,129,0.09); }
+.diff-line.add { background: rgba(91,227,154,0.11); }
+.diff-line.del { background: rgba(255,107,129,0.11); }
+.diff-line.add .diff-sign { color: var(--ok); }
+.diff-line.del .diff-sign { color: #ff3030; }
 .diff-line.hunk { color: var(--accent-2); background: rgba(91,157,255,0.06); }
 .diff-line.meta { color: var(--muted); }
 

@@ -96,6 +96,14 @@ export function createCode({ repo, ctx, sub }) {
       if (resolved) state.route.ref = resolved;
       state.data = data;
       await highlightBlob(data.blob, route.path);
+      // diff views highlight per-line at paint time — make sure Prism is ready
+      if (route.view === "commit" || route.view === "compare") {
+        try {
+          await loadPrism();
+        } catch {
+          /* highlighting optional; diff falls back to plain escaped text */
+        }
+      }
     } catch (err) {
       state.error = err.message || String(err);
       state.data = null;
@@ -451,17 +459,40 @@ export function createCode({ repo, ctx, sub }) {
     const lines = chunk.split("\n");
     const m = lines[0].match(/^diff --git a\/(.+) b\/(.+)$/);
     const path = m ? m[2] : lines[0].replace(/^diff --git /, "");
+    // language for the NEW side; null -> plain escaped fallback
+    const ext = path.includes(".") ? path.split(".").pop().toLowerCase() : "";
+    const lang = langFor(ext, path);
+    // each line is highlighted on its own (no cross-line state) — fine for diffs.
+    // The +/- prefix is split into a sign gutter so it never feeds the tokenizer
+    // (a leading '+' would mis-lex as an operator) and add/remove stays readable.
+    const codeHtml = (text) => {
+      if (!lang) return escapeHtml(text) || " ";
+      const hl = highlightLines(text, lang);
+      return (hl && hl[0]) || escapeHtml(text) || " ";
+    };
     let body = "";
     for (const ln of lines) {
       if (/^(diff --git |index |--- |\+\+\+ |new file |deleted file |old mode |new mode |similarity |rename |copy |Binary files )/.test(ln)) {
         if (ln.startsWith("Binary files")) body += `<div class="diff-line meta">${escapeHtml(ln)}</div>`;
         continue;
       }
+      if (ln.startsWith("@@")) {
+        body += `<div class="diff-line hunk">${escapeHtml(ln) || " "}</div>`;
+        continue;
+      }
       let cls = "ctx";
-      if (ln.startsWith("@@")) cls = "hunk";
-      else if (ln.startsWith("+")) cls = "add";
-      else if (ln.startsWith("-")) cls = "del";
-      body += `<div class="diff-line ${cls}">${escapeHtml(ln) || " "}</div>`;
+      let sign = " ";
+      let rest = ln.startsWith(" ") ? ln.slice(1) : ln;
+      if (ln.startsWith("+")) {
+        cls = "add";
+        sign = "+";
+        rest = ln.slice(1);
+      } else if (ln.startsWith("-")) {
+        cls = "del";
+        sign = "-";
+        rest = ln.slice(1);
+      }
+      body += `<div class="diff-line ${cls}"><span class="diff-sign">${sign}</span>${codeHtml(rest)}</div>`;
     }
     return `<div class="diff-file">
       <div class="diff-file-head mono">${escapeHtml(path)}</div>
