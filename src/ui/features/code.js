@@ -1,6 +1,7 @@
 import { api } from "./api.js";
 import { escapeHtml, relativeTime, formatTime, toast } from "../ui/components.js";
 import { renderMarkdown } from "../ui/markdown.js";
+import { loadPrism, langFor, highlightLines } from "../ui/highlight.js";
 
 // The Code tab: a read-only browser over the target repo's OWN git. No remote is
 // assumed or contacted - we read committed trees, so untracked/gitignored files
@@ -94,6 +95,7 @@ export function createCode({ repo, ctx, sub }) {
       const resolved = data.tree?.ref || data.blob?.ref || data.commits?.ref;
       if (resolved) state.route.ref = resolved;
       state.data = data;
+      await highlightBlob(data.blob, route.path);
     } catch (err) {
       state.error = err.message || String(err);
       state.data = null;
@@ -291,6 +293,21 @@ export function createCode({ repo, ctx, sub }) {
       ${renderBlob(b)}`;
   }
 
+  // Best-effort syntax highlighting: resolve a language from the ext, lazy-load
+  // Prism, tokenize into per-line HTML, cache it on the blob (so wrap-toggle
+  // repaints reuse it). Any failure leaves _hl unset -> plain escaped fallback.
+  async function highlightBlob(b, path) {
+    if (!b || b.binary || !b.text) return;
+    const lang = langFor(b.ext, path);
+    if (!lang) return;
+    try {
+      await loadPrism();
+      b._hl = highlightLines(b.text, lang) || undefined;
+    } catch {
+      /* highlighting is optional; fall back to plain */
+    }
+  }
+
   function renderBlob(b) {
     if (b.binary) return `<div class="code-binary">Binary file — ${escapeHtml(fmtSize(b.size))}, not shown.</div>`;
     let lines = b.text.split("\n");
@@ -300,11 +317,12 @@ export function createCode({ repo, ctx, sub }) {
       note = `<div class="code-trunc">showing first ${MAX_BLOB_LINES} of ${lines.length} lines</div>`;
       lines = lines.slice(0, MAX_BLOB_LINES);
     }
+    const hl = b._hl; // per-line pre-highlighted HTML, aligned 1:1 with `lines`
     const rows = lines
-      .map(
-        (ln, i) =>
-          `<div class="code-line"><span class="ln">${i + 1}</span><span class="lc">${escapeHtml(ln) || " "}</span></div>`
-      )
+      .map((ln, i) => {
+        const lc = hl && hl[i] != null ? hl[i] || " " : escapeHtml(ln) || " ";
+        return `<div class="code-line"><span class="ln">${i + 1}</span><span class="lc">${lc}</span></div>`;
+      })
       .join("");
     return `<div class="code-blob">${rows}</div>${note}`;
   }
