@@ -833,6 +833,44 @@ class CodeViewerTest(unittest.TestCase):
         (storage / "configuration.json").write_text(json.dumps({"specseed_primary_branch": "ghost"}))
         self.assertEqual(server._code_meta(record)["default_ref"], "main")
 
+    # -- working tree (opt-in) ------------------------------------------- #
+    def test_meta_reports_clean_then_dirty(self) -> None:
+        m = server._code_meta(self.record)
+        self.assertFalse(m["dirty"])
+        self.assertEqual(m["worktree_branch"], "main")
+        # stage a new file -> dirty flips, so the UI offers the toggle
+        self._write("src/new.py", "y = 2\n")
+        self._git("add", "src/new.py")
+        self.assertTrue(server._code_meta(self.record)["dirty"])
+
+    def test_worktree_tree_shows_uncommitted_but_not_ignored(self) -> None:
+        self._write("src/new.py", "y = 2\n")  # untracked, not committed
+        self._git("add", "src/new.py")
+        # committed tree (default) doesn't have it; working tree does
+        committed = [e["name"] for e in server._code_tree(self.record, "main", "src")["entries"]]
+        self.assertNotIn("new.py", committed)
+        wt = server._code_tree(self.record, "main", "src", worktree=True)
+        self.assertTrue(wt["working_tree"])
+        self.assertIn("new.py", [e["name"] for e in wt["entries"]])
+        # gitignored secret.txt never shows even in the working tree
+        root = server._code_tree(self.record, "main", "", worktree=True)
+        self.assertNotIn("secret.txt", [e["name"] for e in root["entries"]])
+
+    def test_worktree_blob_reads_disk_and_rejects_ignored(self) -> None:
+        self._write("src/app.py", "print('WIP')\n")  # modified, uncommitted
+        b = server._code_blob(self.record, "main", "src/app.py", worktree=True)
+        self.assertTrue(b["working_tree"])
+        self.assertEqual(b["text"], "print('WIP')\n")
+        with self.assertRaises(RuntimeError):
+            server._code_blob(self.record, "main", "secret.txt", worktree=True)
+
+    def test_worktree_ignored_for_non_checked_out_ref(self) -> None:
+        self._write("src/app.py", "print('WIP')\n")  # only on disk for main
+        # asking for the working tree of a DIFFERENT branch falls back to committed
+        b = server._code_blob(self.record, "feature", "src/app.py", worktree=True)
+        self.assertFalse(b["working_tree"])
+        self.assertEqual(b["text"], "print('hello')\n")
+
     # -- validation ------------------------------------------------------ #
     def test_check_ref(self) -> None:
         self.assertEqual(server._check_ref(""), "HEAD")

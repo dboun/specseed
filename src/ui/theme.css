@@ -711,6 +711,17 @@ span.fb-check { cursor: default; }
   font-size: 12px; color: var(--accent); background: rgba(56,225,192,0.07);
   border: 1px solid var(--line-2); border-radius: 20px; padding: 3px 11px; white-space: nowrap;
 }
+/* live-working-tree affordances: the opt-in head toggle + the in-content pill */
+.code-wt-toggle {
+  display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none;
+  padding: 6px 11px; border: 1px solid var(--line-2); border-radius: 10px; background: var(--panel-2);
+  font-size: 13px; font-weight: 600; white-space: nowrap;
+}
+.code-wt-toggle input { cursor: pointer; margin: 0; }
+.code-wt-pill {
+  font-size: 12px; color: var(--warn, #e0a23a); background: rgba(224,162,58,0.10);
+  border: 1px solid var(--line-2); border-radius: 20px; padding: 3px 11px; white-space: nowrap;
+}
 
 /* ref switcher (native <details>, mirrors the repo switcher) */
 .code-ref { position: relative; }

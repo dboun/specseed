@@ -53,8 +53,10 @@ export const api = {
 
   // code viewer (every provider; read-only over the local target repo's git)
   codeMeta: (id) => request(`${base(id)}/code/meta`),
-  codeTree: (id, ref, path) => request(`${base(id)}/code/tree?ref=${enc(ref)}&path=${enc(path || "")}`),
-  codeBlob: (id, ref, path) => request(`${base(id)}/code/blob?ref=${enc(ref)}&path=${enc(path)}`),
+  codeTree: (id, ref, path, wt) =>
+    request(`${base(id)}/code/tree?ref=${enc(ref)}&path=${enc(path || "")}${wt ? "&worktree=1" : ""}`),
+  codeBlob: (id, ref, path, wt) =>
+    request(`${base(id)}/code/blob?ref=${enc(ref)}&path=${enc(path)}${wt ? "&worktree=1" : ""}`),
   codeCommits: (id, ref, offset = 0, limit = 50) =>
     request(`${base(id)}/code/commits?ref=${enc(ref)}&commits_offset=${offset}&commits_limit=${limit}`),
   codeCommit: (id, sha) => request(`${base(id)}/code/commit?sha=${enc(sha)}`),

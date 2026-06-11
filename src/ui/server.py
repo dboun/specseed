@@ -801,6 +801,10 @@ def _code_meta(record: dict) -> dict:
         out["detached"] = True
     out["default_ref"] = out["head"]
     out["primary_branch"] = ""
+    # The branch whose on-disk state the working-tree toggle can show, plus whether
+    # there's anything uncommitted there for the UI to bother offering it.
+    out["worktree_branch"] = "" if out["detached"] else (out["head"] or "")
+    out["dirty"] = _worktree_dirty(record)
     if not out["empty"]:
         out["branches"] = [b for b in _git(record, ["for-each-ref", "--sort=-committerdate",
                             "--format=%(refname:short)", "refs/heads"]).splitlines() if b]
@@ -855,18 +859,84 @@ def _blob_bytes(record: dict, ref: str, path: str) -> tuple[bytes, int]:
     return data, size
 
 
-def _code_tree(record: dict, ref: str, path: str) -> dict:
+def _worktree_branch(record: dict) -> str:
+    """The branch currently CHECKED OUT in the target's working tree, or "".
+
+    Working-tree browsing is only meaningful for this branch (its on-disk state).
+    Detached HEAD -> "" (nothing to read)."""
+    proc = _git_raw(record, ["symbolic-ref", "--quiet", "--short", "HEAD"])
+    return proc.stdout.decode("utf-8", "replace").strip() if proc.returncode == 0 else ""
+
+
+def _worktree_dirty(record: dict) -> bool:
+    """True when the working tree has uncommitted changes (staged, unstaged, or
+    untracked-but-not-ignored). Drives whether the UI offers the working-tree
+    toggle at all - no point showing it when disk == HEAD."""
+    proc = _git_raw(record, ["status", "--porcelain", "--untracked-files=normal"])
+    return proc.returncode == 0 and bool(proc.stdout.strip())
+
+
+def _worktree_ls(record: dict, path: str) -> list[dict]:
+    """Immediate children of `path` from the WORKING TREE, ignoring gitignored
+    files. `git ls-files --cached --others --exclude-standard` = tracked + staged +
+    untracked-but-not-ignored, i.e. exactly the files a user sees on disk."""
+    root = Path(_git_target(record))
+    raw = _git(record, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"])
+    prefix = f"{path}/" if path else ""
+    dirs: set[str] = set()
+    files: dict[str, str] = {}  # name -> full rel path
+    for rel in raw.split("\x00"):
+        if not rel or not rel.startswith(prefix):
+            continue
+        rest = rel[len(prefix):]
+        head, sep, _tail = rest.partition("/")
+        if sep:
+            dirs.add(head)
+        else:
+            files[head] = rel
+    entries = [{"name": n, "path": f"{path}/{n}" if path else n, "type": "tree", "size": None}
+               for n in dirs]
+    for name, rel in files.items():
+        try:
+            size = (root / rel).stat().st_size
+        except OSError:
+            size = None
+        entries.append({"name": name, "path": rel, "type": "blob", "size": size})
+    if not entries and path:
+        raise RuntimeError(f"no such directory: {path or '/'}")
+    entries.sort(key=lambda e: (e["type"] != "tree", e["name"].lower()))
+    return entries
+
+
+def _worktree_blob_bytes(record: dict, path: str) -> tuple[bytes, int]:
+    """(capped bytes, full size) read from disk. Rejects gitignored/non-files."""
+    if _git_raw(record, ["check-ignore", "-q", "--", path]).returncode == 0:
+        raise RuntimeError(f"not a file: {path}")
+    full = Path(_git_target(record)) / path
+    if not full.is_file():
+        raise RuntimeError(f"not a file: {path}")
+    size = full.stat().st_size
+    with open(full, "rb") as fh:
+        data = fh.read(_CODE_MAX_BYTES)
+    return data, size
+
+
+def _code_tree(record: dict, ref: str, path: str, worktree: bool = False) -> dict:
     """A directory at a ref: its entries plus the rendered README, if any.
 
     The README-per-folder convention every code host follows - we surface the
-    raw text and the UI renders it under the listing."""
+    raw text and the UI renders it under the listing. Default reads the COMMITTED
+    tree; `worktree=True` reads the live on-disk state instead (opt-in, only valid
+    for the checked-out branch) so staged/uncommitted work can be inspected."""
     ref = _check_ref(ref)
     path = _check_path(path)
-    entries = _ls_tree(record, ref, path)
-    out = {"ref": ref, "path": path, "entries": entries, "readme": None}
+    live = bool(worktree) and ref in (_worktree_branch(record), "HEAD")
+    entries = _worktree_ls(record, path) if live else _ls_tree(record, ref, path)
+    out = {"ref": ref, "path": path, "entries": entries, "readme": None, "working_tree": live}
     readme = next((e for e in entries if e["type"] == "blob" and _README_RE.match(e["name"])), None)
     if readme:
-        data, size = _blob_bytes(record, ref, readme["path"])
+        data, size = (_worktree_blob_bytes(record, readme["path"]) if live
+                      else _blob_bytes(record, ref, readme["path"]))
         out["readme"] = {
             "name": readme["name"],
             "path": readme["path"],
@@ -876,12 +946,13 @@ def _code_tree(record: dict, ref: str, path: str) -> dict:
     return out
 
 
-def _code_blob(record: dict, ref: str, path: str) -> dict:
+def _code_blob(record: dict, ref: str, path: str, worktree: bool = False) -> dict:
     ref = _check_ref(ref)
     path = _check_path(path)
     if not path:
         raise RuntimeError("a file path is required")
-    data, size = _blob_bytes(record, ref, path)
+    live = bool(worktree) and ref in (_worktree_branch(record), "HEAD")
+    data, size = (_worktree_blob_bytes(record, path) if live else _blob_bytes(record, ref, path))
     binary = b"\x00" in data[:8000]
     return {
         "ref": ref, "path": path, "size": size,
@@ -889,6 +960,7 @@ def _code_blob(record: dict, ref: str, path: str) -> dict:
         "truncated": size > _CODE_MAX_BYTES,
         "text": "" if binary else data.decode("utf-8", "replace"),
         "ext": Path(path).suffix.lstrip(".").lower(),
+        "working_tree": live,
     }
 
 
@@ -1200,11 +1272,12 @@ class Handler(BaseHTTPRequestHandler):
         if sub == ["meta"]:
             self._json({"ok": True, "data": _code_meta(record)})
             return
+        wt = one("worktree") in ("1", "true")
         if sub == ["tree"]:
-            self._json({"ok": True, "data": _code_tree(record, one("ref"), one("path"))})
+            self._json({"ok": True, "data": _code_tree(record, one("ref"), one("path"), wt)})
             return
         if sub == ["blob"]:
-            self._json({"ok": True, "data": _code_blob(record, one("ref"), one("path"))})
+            self._json({"ok": True, "data": _code_blob(record, one("ref"), one("path"), wt)})
             return
         if sub == ["commits"]:
             offset, limit = _page_args(query, "commits", 50)

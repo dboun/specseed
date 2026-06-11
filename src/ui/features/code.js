@@ -48,6 +48,7 @@ export function createCode({ repo, ctx, sub }) {
     loading: false,
     moreLoading: false,
     wrap: localStorage.getItem("ss.code.wrap") !== "0", // default: wrap on
+    worktree: false, // opt-in: show live on-disk (staged/uncommitted) files. default OFF
     container: null, // the tab content host, for re-paint on in-tab navigation
     root: null, // the .code-root inside it (re-found after every paint)
   };
@@ -64,13 +65,20 @@ export function createCode({ repo, ctx, sub }) {
     return `tree/${e(r.ref)}${r.path ? "/" + r.path : ""}`;
   }
 
+  // The working-tree toggle only applies to the checked-out branch (its on-disk
+  // state); for any other ref it's silently inert, so committed trees still show.
+  const refIsWorktree = (ref) => !!state.meta?.worktree_branch && ref === state.meta.worktree_branch;
+  const canWorktree = () =>
+    !!state.meta?.dirty && ["tree", "blob"].includes(state.route.view) && refIsWorktree(refOf());
+
   async function fetchRoute(r) {
     const ref = r.ref || state.meta?.default_ref;
-    if (r.view === "blob") return { blob: await api.codeBlob(repo.id, ref, r.path) };
+    const wt = state.worktree && refIsWorktree(ref);
+    if (r.view === "blob") return { blob: await api.codeBlob(repo.id, ref, r.path, wt) };
     if (r.view === "commits") return { commits: await api.codeCommits(repo.id, ref) };
     if (r.view === "commit") return { commit: await api.codeCommit(repo.id, r.sha) };
     if (r.view === "compare") return { compare: await api.codeCompare(repo.id, r.base, r.head) };
-    return { tree: await api.codeTree(repo.id, ref, r.path) };
+    return { tree: await api.codeTree(repo.id, ref, r.path, wt) };
   }
 
   // The one navigation primitive: set the route, fetch its data, repaint. The
@@ -124,10 +132,20 @@ export function createCode({ repo, ctx, sub }) {
     return `<div class="tab-head">
       <h1>Code</h1>
       <div class="tab-head-actions">
+        ${canWorktree() ? worktreeToggleHtml() : ""}
         ${showRef ? refSwitcherHtml() : ""}
         ${showWrap ? wrapToggleHtml() : ""}
       </div>
     </div>`;
+  }
+
+  // Opt-in: surfaces only when the checked-out branch has uncommitted work. Lets
+  // the user peek at staged/on-disk files the committed tree doesn't carry.
+  function worktreeToggleHtml() {
+    return `<label class="code-wt-toggle" title="show live, uncommitted files on disk for ${escapeHtml(state.meta.worktree_branch)}">
+      <input type="checkbox" data-toggle-worktree ${state.worktree ? "checked" : ""} />
+      <span>Working tree</span>
+    </label>`;
   }
 
   function refSwitcherHtml() {
@@ -218,10 +236,12 @@ export function createCode({ repo, ctx, sub }) {
         crumbs.push(`<button class="code-crumb" data-nav-tree="${escapeHtml(acc)}">${escapeHtml(seg)}</button>`);
       }
     });
+    const live = state.data?.tree?.working_tree || state.data?.blob?.working_tree;
     return `<div class="code-bar">
       <div class="code-crumbs">${crumbs.join("")}</div>
       <div class="code-bar-actions">
         <span class="code-ref-pill mono" title="viewing ref">${escapeHtml(ref)}</span>
+        ${live ? `<span class="code-wt-pill" title="live working tree — includes staged &amp; uncommitted files on disk">working tree</span>` : ""}
         <button class="btn sm btn-ghost" data-history title="commit history for ${escapeHtml(ref)}">History</button>
         <button class="btn sm btn-ghost" data-copy-link title="copy a deep link to this view">Link</button>
       </div>
@@ -459,6 +479,12 @@ export function createCode({ repo, ctx, sub }) {
       const ref = refBtn.dataset.pickRef;
       const view = state.route.view === "blob" ? "blob" : state.route.view === "commits" ? "commits" : "tree";
       return go({ view, ref, path: state.route.path || "" });
+    }
+
+    const wtToggle = t.closest("[data-toggle-worktree]");
+    if (wtToggle) {
+      state.worktree = wtToggle.checked;
+      return go({ ...state.route });
     }
 
     const wrapBtn = t.closest("[data-wrap]");
