@@ -1,4 +1,16 @@
 /* specseed — dark, futuristic control surface. No external deps. */
+
+/* Geist Mono (Vercel, SIL OFL 1.1) — vendored, self-hosted, offline. One variable
+   file covers 400-700 so bold keywords render true (not faux). License ships
+   alongside at vendor/fonts/geist-mono/LICENSE.txt. */
+@font-face {
+  font-family: "Geist Mono";
+  src: url("./vendor/fonts/geist-mono/GeistMono-Variable.woff2") format("woff2");
+  font-weight: 400 700;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   color-scheme: dark;
   --bg: #07090e;
@@ -16,7 +28,7 @@
   --bad: #ff6b81;
   --ok: #5be39a;
   --live: #7aa2ff;
-  --mono: ui-monospace, "JetBrains Mono", "SF Mono", "Cascadia Code", Menlo, monospace;
+  --mono: "Geist Mono", ui-monospace, "JetBrains Mono", "SF Mono", "Cascadia Code", Menlo, monospace;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --radius: 14px;
   --radius-sm: 9px;
@@ -804,21 +816,28 @@ span.fb-check { cursor: default; }
 .code-root.wrap .lc { white-space: pre-wrap; overflow-wrap: anywhere; }
 .code-root.nowrap .lc { white-space: pre; }
 
-/* syntax highlighting — Prism token classes, palette tuned to the dark bg
-   (literal hex like the diff lines above; one fixed dark theme, no light mode) */
-.token.comment, .token.prolog, .token.doctype, .token.cdata { color: var(--muted); font-style: italic; }
-.token.punctuation { color: var(--ink-dim); }
+/* syntax highlighting — "neon HUD". Tuned for red-green colorblindness: the
+   three most-confused-in-practice roles ride the blue<->amber axis (the channel
+   that survives deutan/protan) at strong saturation, so they never read as one
+   grey — string=amber (most prominent, docstrings glow), keyword=blue (mid),
+   comment=grey (recedes). Warm strings vs cool numbers/violet keep literals
+   apart. Literal hex; one fixed dark theme (no light mode).
+   Reset box props on tokens: Prism's bare class names (comment, tag, string...)
+   collide with app classes (e.g. .comment's border-left) — neutralise here. */
+.code-blob .token { border: 0; padding: 0; margin: 0; background: none; }
+.token.comment, .token.prolog, .token.doctype, .token.cdata { color: #5d6b84; font-style: italic; }
+.token.punctuation { color: #8496b8; }
+.token.operator, .token.entity { color: #b7c6e2; }
 .token.namespace { opacity: 0.7; }
-.token.keyword, .token.atrule, .token.rule, .token.important { color: #c792ea; }
-.token.boolean, .token.number, .token.constant, .token.symbol { color: #f78c6c; }
-.token.string, .token.char, .token.attr-value, .token.regex, .token.url, .token.template-string { color: #c3e88d; }
-.token.operator, .token.entity { color: #89ddff; }
-.token.function, .token.method { color: #82aaff; }
-.token.class-name, .token.builtin, .token.type-definition { color: #ffcb6b; }
-.token.tag, .token.selector { color: #f07178; }
-.token.attr-name, .token.property, .token.variable { color: #ffcb6b; }
+.token.keyword, .token.atrule, .token.rule, .token.important, .token.tag, .token.selector { color: #5b9dff; }
+.token.function, .token.method { color: #4fd6e6; }
+.token.string, .token.char, .token.attr-value, .token.regex, .token.url, .token.template-string { color: #ffc24d; }
+.token.boolean, .token.number, .token.constant, .token.symbol { color: #c08bff; }
+.token.class-name, .token.builtin, .token.type-definition { color: #ffd27d; }
+.token.attr-name, .token.property, .token.variable { color: #c08bff; }
 .token.inserted { color: #b9f0d0; }
 .token.deleted { color: #ffc2cb; }
+.token.keyword, .token.tag { font-weight: 600; }
 .token.bold { font-weight: 600; }
 .token.italic { font-style: italic; }
 
