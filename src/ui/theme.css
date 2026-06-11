@@ -1,8 +1,10 @@
 /* specseed — dark, futuristic control surface. No external deps. */
 
-/* Geist Mono (Vercel, SIL OFL 1.1) — vendored, self-hosted, offline. One variable
-   file covers 400-700 so bold keywords render true (not faux). License ships
-   alongside at vendor/fonts/geist-mono/LICENSE.txt. */
+/* Geist Mono © 2023 Vercel, in collaboration with basement.studio.
+   Licensed under the SIL Open Font License 1.1 — full text shipped alongside at
+   vendor/fonts/geist-mono/LICENSE.txt (http://scripts.sil.org/OFL). This notice
+   rides in the served CSS so the license travels with the font asset. Vendored,
+   self-hosted, offline; one variable file covers 400-700 so bold renders true. */
 @font-face {
   font-family: "Geist Mono";
   src: url("./vendor/fonts/geist-mono/GeistMono-Variable.woff2") format("woff2");
@@ -812,29 +814,29 @@ span.fb-check { cursor: default; }
 }
 .code-line:hover .ln { color: var(--ink-dim); }
 .lc { flex: 1 1 auto; min-width: 0; padding-right: 14px; color: var(--ink-dim); }
-.code-blob .lc { color: var(--ink); } /* brighter base for source (highlighted or plain) */
+.code-blob .lc { color: #aebfcb; } /* cool slate base for source — softer than white, Solarized-ish */
 .code-root.wrap .lc { white-space: pre-wrap; overflow-wrap: anywhere; }
 .code-root.nowrap .lc { white-space: pre; }
 
-/* syntax highlighting — "neon HUD". Tuned for red-green colorblindness: the
-   three most-confused-in-practice roles ride the blue<->amber axis (the channel
-   that survives deutan/protan) at strong saturation, so they never read as one
-   grey — string=amber (most prominent, docstrings glow), keyword=blue (mid),
-   comment=grey (recedes). Warm strings vs cool numbers/violet keep literals
-   apart. Literal hex; one fixed dark theme (no light mode).
+/* syntax highlighting — "Solar Neon": Solarized's discipline (cool low-key body
+   text, saturated accents, NOT a wall of yellow+white) pushed bolder/futuristic.
+   String=bold cyan (the standout, docstrings glow), keyword=bold blue, number=
+   magenta, function=violet; amber survives only on type names so yellow stays
+   sparse. Still colorblind-safe: load-bearing roles split across blue/cyan/
+   magenta + lightness (no red-vs-green pair). Literal hex; one fixed dark theme.
    Reset box props on tokens: Prism's bare class names (comment, tag, string...)
    collide with app classes (e.g. .comment's border-left) — neutralise here. */
 .code-blob .token { border: 0; padding: 0; margin: 0; background: none; }
-.token.comment, .token.prolog, .token.doctype, .token.cdata { color: #5d6b84; font-style: italic; }
-.token.punctuation { color: #8496b8; }
-.token.operator, .token.entity { color: #b7c6e2; }
+.token.comment, .token.prolog, .token.doctype, .token.cdata { color: #5b7383; font-style: italic; }
+.token.punctuation { color: #7d92a6; }
+.token.operator, .token.entity { color: #6ca6e0; }
 .token.namespace { opacity: 0.7; }
-.token.keyword, .token.atrule, .token.rule, .token.important, .token.tag, .token.selector { color: #5b9dff; }
-.token.function, .token.method { color: #4fd6e6; }
-.token.string, .token.char, .token.attr-value, .token.regex, .token.url, .token.template-string { color: #ffc24d; }
-.token.boolean, .token.number, .token.constant, .token.symbol { color: #c08bff; }
-.token.class-name, .token.builtin, .token.type-definition { color: #ffd27d; }
-.token.attr-name, .token.property, .token.variable { color: #c08bff; }
+.token.keyword, .token.atrule, .token.rule, .token.important, .token.tag, .token.selector { color: #459cff; }
+.token.function, .token.method { color: #b48cff; }
+.token.string, .token.char, .token.attr-value, .token.regex, .token.url, .token.template-string { color: #2fd9c2; }
+.token.boolean, .token.number, .token.constant, .token.symbol { color: #ec5f9e; }
+.token.class-name, .token.builtin, .token.type-definition { color: #e0b15a; }
+.token.attr-name, .token.property, .token.variable { color: #b48cff; }
 .token.inserted { color: #b9f0d0; }
 .token.deleted { color: #ffc2cb; }
 .token.keyword, .token.tag { font-weight: 600; }
