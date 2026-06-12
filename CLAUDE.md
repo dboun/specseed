@@ -219,3 +219,9 @@ tests/integration/python/            # opt-in integration tests (marker: integra
 - GitHub can't hard-delete issues: use `set_entry_closed`, not `delete_entry` (fine on local/GitLab).
 - Bare imports + `sys.path` wiring at import time - match surrounding files.
 - Each `scheduling/` and `tracking/` dir has its own README. Read it before editing there.
+
+## Git rules
+
+- Never commit, create branches, or w/e git related on your own.
+- If we are kind of finished with the task and it's interactive mode, you can prompt: Looks finished. Do you want to commit (type `c`) or commit-and-push (type `p`)? Then you can commit/commit-and-push accordingly.
+- At the beginning of the session, always check if there are uncommited changes. If there are, stop and inform user.
