@@ -16,9 +16,43 @@ def _load_prepare():
     return module
 
 
+def test_default_config_sets_every_runner_function_to_personal_haiku_low() -> None:
+    prepare = _load_prepare()
+    cfg = prepare.runner_config()
+    runner = cfg["runner"]
+
+    assert set(runner) == set(prepare.RUNNER_FUNCTIONS)
+    for chain in runner.values():
+        assert chain == [
+            {
+                "provider": "claude",
+                "provider_data_dir": "~/.claude-personal",
+                "model": "haiku",
+                "effort": "low",
+            }
+        ]
+
+
+def test_work_haiku_config_sets_every_runner_function_to_work_haiku_low() -> None:
+    prepare = _load_prepare()
+    cfg = prepare.runner_config("claude-work-haiku")
+    runner = cfg["runner"]
+
+    assert set(runner) == set(prepare.RUNNER_FUNCTIONS)
+    for chain in runner.values():
+        assert chain == [
+            {
+                "provider": "claude",
+                "provider_data_dir": "~/.claude-work",
+                "model": "haiku",
+                "effort": "low",
+            }
+        ]
+
+
 def test_codex_config_sets_every_runner_function_to_gpt_5_4_mini_low() -> None:
     prepare = _load_prepare()
-    cfg = prepare.codex_config()
+    cfg = prepare.runner_config("codex-gpt-5.4-mini")
     runner = cfg["runner"]
 
     assert set(runner) == set(prepare.RUNNER_FUNCTIONS)
@@ -28,23 +62,6 @@ def test_codex_config_sets_every_runner_function_to_gpt_5_4_mini_low() -> None:
                 "provider": "codex",
                 "provider_data_dir": "~/.codex",
                 "model": "gpt-5.4-mini",
-                "effort": "low",
-            }
-        ]
-
-
-def test_haiku_config_sets_every_runner_function_to_claude_haiku_low() -> None:
-    prepare = _load_prepare()
-    cfg = prepare.runner_config("haiku")
-    runner = cfg["runner"]
-
-    assert set(runner) == set(prepare.RUNNER_FUNCTIONS)
-    for chain in runner.values():
-        assert chain == [
-            {
-                "provider": "claude",
-                "provider_data_dir": "~/.claude",
-                "model": "haiku",
                 "effort": "low",
             }
         ]
@@ -81,7 +98,7 @@ def test_main_initializes_target_git_before_configure(tmp_path, monkeypatch) -> 
     assert not list((tmp_path / ".playground").glob("*/configuration.*.json"))
 
 
-def test_main_haiku_uses_haiku_config_name(tmp_path, monkeypatch) -> None:
+def test_main_option_uses_selected_config_name(tmp_path, monkeypatch) -> None:
     prepare = _load_prepare()
     written = {}
 
@@ -91,17 +108,18 @@ def test_main_haiku_uses_haiku_config_name(tmp_path, monkeypatch) -> None:
     original_write_text = Path.write_text
 
     def spy_write_text(self, text, *args, **kwargs):
-        if self.name == "configuration.haiku.json":
+        if self.name == "configuration.codex-gpt-5.4-mini.json":
             written["path"] = self
             written["data"] = json.loads(text)
         return original_write_text(self, text, *args, **kwargs)
 
     monkeypatch.setattr(Path, "write_text", spy_write_text)
 
-    assert prepare.main(["--haiku"]) == 0
+    assert prepare.main(["--option", "codex-gpt-5.4-mini"]) == 0
 
-    assert written["path"].name == "configuration.haiku.json"
+    assert written["path"].name == "configuration.codex-gpt-5.4-mini.json"
     first_chain = next(iter(written["data"]["runner"].values()))
-    assert first_chain[0]["provider"] == "claude"
-    assert first_chain[0]["model"] == "haiku"
+    assert first_chain[0]["provider"] == "codex"
+    assert first_chain[0]["provider_data_dir"] == "~/.codex"
+    assert first_chain[0]["model"] == "gpt-5.4-mini"
     assert first_chain[0]["effort"] == "low"

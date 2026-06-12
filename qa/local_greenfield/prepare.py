@@ -24,6 +24,29 @@ RUNNER_FUNCTIONS = (
     "resolve_platform_errors",
 )
 
+DEFAULT_OPTION = "claude-personal-haiku"
+
+RUNNER_OPTIONS = {
+    "claude-personal-haiku": {
+        "provider": "claude",
+        "provider_data_dir": "~/.claude-personal",
+        "model": "haiku",
+        "effort": "low",
+    },
+    "claude-work-haiku": {
+        "provider": "claude",
+        "provider_data_dir": "~/.claude-work",
+        "model": "haiku",
+        "effort": "low",
+    },
+    "codex-gpt-5.4-mini": {
+        "provider": "codex",
+        "provider_data_dir": "~/.codex",
+        "model": "gpt-5.4-mini",
+        "effort": "low",
+    },
+}
+
 
 def repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
@@ -37,34 +60,22 @@ def run(cmd: list[str], *, cwd: Path) -> None:
         raise SystemExit(result.returncode)
 
 
-def runner_config(provider: str = "codex") -> dict[str, object]:
-    if provider == "haiku":
-        spec = {
-            "provider": "claude",
-            "provider_data_dir": "~/.claude",
-            "model": "haiku",
-            "effort": "low",
-        }
-    else:
-        spec = {
-            "provider": "codex",
-            "provider_data_dir": "~/.codex",
-            "model": "gpt-5.4-mini",
-            "effort": "low",
-        }
+def runner_config(option: str = DEFAULT_OPTION) -> dict[str, object]:
+    spec = RUNNER_OPTIONS[option]
     return {"runner": {fn: [dict(spec)] for fn in RUNNER_FUNCTIONS}}
 
 
 def codex_config() -> dict[str, object]:
-    return runner_config("codex")
+    return runner_config("codex-gpt-5.4-mini")
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Prepare local_greenfield QA repo.")
     parser.add_argument(
-        "--haiku",
-        action="store_true",
-        help="use Claude haiku with low effort instead of Codex gpt-5.4-mini",
+        "--option",
+        choices=tuple(RUNNER_OPTIONS),
+        default=DEFAULT_OPTION,
+        help=f"runner option to configure (default: {DEFAULT_OPTION})",
     )
     return parser.parse_args(argv)
 
@@ -83,18 +94,18 @@ def next_instance(playground: Path, stamp: str) -> Path:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    runner_kind = "haiku" if args.haiku else "codex"
+    runner_option = args.option
     root = repo_root()
     playground = root / ".playground"
     stamp = datetime.now().strftime("%Y_%m_%d-%H_%M_%S")
     instance = next_instance(playground, stamp)
     target = instance / "repo"
-    config_file = instance / f"configuration.{runner_kind}.json"
+    config_file = instance / f"configuration.{runner_option}.json"
     specseed = root / "src" / "specseed"
 
     target.mkdir(parents=True, exist_ok=False)
     run(["git", "init", "-q"], cwd=target)
-    config_file.write_text(json.dumps(runner_config(runner_kind), indent=2) + "\n", encoding="utf-8")
+    config_file.write_text(json.dumps(runner_config(runner_option), indent=2) + "\n", encoding="utf-8")
 
     run(
         [
