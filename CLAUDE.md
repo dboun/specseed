@@ -223,5 +223,10 @@ tests/integration/python/            # opt-in integration tests (marker: integra
 ## Git rules
 
 - Never commit, create branches, or w/e git related on your own.
-- If we are kind of finished with the task and it's interactive mode, you can prompt: Looks finished. Do you want to commit (type `c`) or commit-and-push (type `p`)? Then you can commit/commit-and-push accordingly.
+- If we are kind of finished with the task and it's interactive mode, you can prompt: Looks finished. Do you want to commit (type `c`) or commit-and-push (type `p`)? Then you can commit/commit-and-push accordingly. Don't waste a bunch of tokens reading and understanding the changes. Just quickly judge based on the file names changed, e.g. 'Impl X.py' or 'Update X', unless you have also context from the chat history.
 - At the beginning of the session, always check if there are uncommited changes. If there are, stop and inform user.
+
+
+## dev machine
+
+- If the machine you are in is called 'dev' and I tell you to restart something (from 'claude'/'claude-personal', 'codex', 'specseed installed', 'specseed dev') you go in the logs (/workspace/logs/) find the relevant pid. kill -9 that pid. It has to be explicit, not 'I think that's what he wants'.
