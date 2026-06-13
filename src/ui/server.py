@@ -203,11 +203,11 @@ def _repo(repo_id: str) -> dict:
 
 
 def _tracker_db(storage: str | Path) -> Path:
-    return Path(storage) / "tracking_remote_local.db"
+    return storage_paths.storage_db_path("tracking_remote_local.db", storage)
 
 
 def _queue_db(storage: str | Path) -> Path:
-    return Path(storage) / "specseed.db"
+    return storage_paths.storage_db_path("specseed.db", storage)
 
 
 def _ui_user(storage: str | Path) -> str:
@@ -445,9 +445,10 @@ def _config_gate(status: dict) -> dict:
 def _repo_summary(record: dict) -> dict:
     storage = record["storage"]
     status = runner_control.read_runner_status(storage)
-    configured = (Path(storage) / "configuration.json").is_file() and (
-        Path(storage) / "remote.json"
-    ).is_file()
+    configured = (
+        storage_paths.config_file(storage).is_file()
+        and storage_paths.remote_file(storage).is_file()
+    )
     # live queue counts straight from the db (the runner heartbeat goes stale when
     # the runner is down, but queued work is still queued)
     counts = _queue_counts(storage)
@@ -649,15 +650,15 @@ def _toggle_comment_reaction(record: dict, entry_id, comment_id, reaction: str) 
 # spec docs (read-only over the target's generated <specseed_dir>/spec/)
 # --------------------------------------------------------------------------- #
 # Dumb on purpose: we never model what the spec "should" contain - we list
-# whatever files actually exist under the target's spec dir and serve their
-# bytes. Works for every provider (the spec is generated locally regardless of
-# tracker backend). storage is ``<specseed_dir>/storage``; spec is its sibling.
+# whatever files actually exist under the spec dir and serve their bytes. Works for
+# every provider (the spec is generated locally regardless of tracker backend). The
+# spec dir is ``<data_root>/spec`` (storage == the data root).
 _SPEC_MAX_BYTES = 4 * 1024 * 1024  # cap a single served file (specs are prose, not blobs)
 
 
 def _spec_dir(record: dict) -> Path:
-    """The target's live spec dir: ``<specseed_dir>/spec`` (sibling of storage)."""
-    return Path(record["storage"]).resolve().parent / "spec"
+    """The live spec dir: ``<data_root>/spec``."""
+    return storage_paths.spec_dir(record["storage"])
 
 
 def _mtime_iso(stat: os.stat_result) -> str:
@@ -1240,7 +1241,7 @@ class Handler(BaseHTTPRequestHandler):
                     "queue": queue["tasks"],
                     "counts": queue["counts"],
                     "errors": queue["errors"],
-                    "log": _read_log(Path(storage) / "platform.log", log_offset, log_limit),
+                    "log": _read_log(storage_paths.platform_log_file(storage), log_offset, log_limit),
                     "gate": _config_gate({**status, **queue["counts"]}),
                 },
             }
@@ -1303,7 +1304,7 @@ class Handler(BaseHTTPRequestHandler):
         action = str(body.get("action") or "").strip()
         storage = record["storage"]
         if action == "start":
-            if not (Path(storage) / "configuration.json").is_file():
+            if not storage_paths.config_file(storage).is_file():
                 raise RuntimeError("configure the repo before starting its runner")
             data = runner_control.start_runner(record)
         elif action == "pause":

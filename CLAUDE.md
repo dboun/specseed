@@ -15,13 +15,19 @@ Memory: when asking for feedback/clarifications, use `skills/specseed/references
 2. **Skill** (`skills/specseed/`) - the non-interactive spec-change worker the runtime invokes
    when a post is labeled `spec-change:<route>`. Markdown instructions.
 
-**The engine is never copied into the target.** It runs from this repo against a target repo:
-`src/specseed configure --target <target_repo>` then `src/specseed run --target <target_repo>`
-(`specseed_dir` default `.specseed`). The
-target gets ONLY data - `<specseed_dir>/storage/` (dbs, config, logs, version marker) and the
-generated `<specseed_dir>/spec/`. In THIS dev repo the target is this repo itself, so storage/spec
-land at the repo root (gitignored). Configure a target via `src/specseed_runtime/configuring/configure.py`.
-(Root `install.py` = just a design-notes stub for a future system-wide install, not code.)
+**The engine is never copied into the target, AND nothing specseed lives in the target (0.21+).**
+It runs from this repo against a target repo: `src/specseed configure --target <target_repo>` then
+`src/specseed run --target <target_repo>`. The target gets ONLY a git repo (init + root commit if
+needed) - no `.specseed/`, no gitignore line. ALL per-repo data lives in the app home under a
+single-purpose-split DATA ROOT (`$SPECSEED_HOME/repos/<slug>/`, `registry.data_root_for`), beside the
+registry. Subdirs: `db/` (work queue) `tracker/` (local tracker cache) `config/` (configuration.json,
+remote.json, token, version marker) `runtime/` (control/runner/seed/sessions) `logs/` (platform.log,
+agent-output) `spec/` (live spec) `spec-change/<id>/` (staged spec + plan.json + apply.py)
+`instructions/<route>/` (user stubs). `storage_paths.py` is the single seam mapping each file to its
+subdir; the data root is the one dir passed everywhere (registry record `data_root`, `storage` is a
+back-compat alias). Pre-0.21 in-target `.specseed/` is auto-relocated into the home on first resolve
+(`migrating/relocate.py` + the 0.20->0.21 reshape hop). Configure via
+`src/specseed_runtime/configuring/configure.py`. (Root `install.py` = a design-notes stub, not code.)
 
 **One engine, many repos.** `src/specseed serve` (or bare `specseed`) launches ONE web UI
 (`src/ui/`, vanilla JS, no deps; default port 5050 / `$PORT`) that manages every
@@ -78,7 +84,7 @@ src/
     entities/                        #   epic/ticket/issue = meaning over neutral entries (tier/status/links). EntityRef
     state_machines/                  #   legal status transitions + approvals. 0.15.0: a gate's 👍/👎/❤️ counts on its REQUEST COMMENT (latest platform comment w/ the approval-request marker), NOT the post — `_gate_reaction_users`; post reactions only when no request comment (post body is the ask). approve/reject/merge cmds still scoped to live APR/post id
     configuring/                     #   configure.py interactive setup -> config
-    migrating/                       #   storage migrations (hops); 0.3.1->0.4.0 deletes copied code; 0.4.0->0.5.0 + 0.5.0->0.7.0 drop the seed marker so new labels re-seed; 0.5.0->0.7.0 also adds tasks.not_before; 0.11.0->0.12.0 renames dev_branch->specseed_primary_branch (+ merge_to_primary/push_primary); 0.12.0->0.13.0 drops the dead permissions.remote.make_prs switch; 0.14.0->0.16.0 drops the seed marker so the new `awaiting_merge` status re-seeds
+    migrating/                       #   storage migrations (hops); 0.3.1->0.4.0 deletes copied code; 0.4.0->0.5.0 + 0.5.0->0.7.0 drop the seed marker so new labels re-seed; 0.5.0->0.7.0 also adds tasks.not_before; 0.11.0->0.12.0 renames dev_branch->specseed_primary_branch (+ merge_to_primary/push_primary); 0.12.0->0.13.0 drops the dead permissions.remote.make_prs switch; 0.14.0->0.16.0 drops the seed marker so the new `awaiting_merge` status re-seeds; 0.20.0->0.21.0 reshapes the relocated flat data root into single-purpose subdirs (db/tracker/config/runtime/logs + instructions/<route>/) — the in-target->home move itself is `migrating/relocate.py`
   ui/                  # the SHARED web UI (vanilla JS modules, no deps): server.py (multi-repo API) + shell/ + features/{repos,monitor,tracker,configuration} + theme.css
 skills/specseed/                     # the spec-change worker skill (markdown + helper scripts), at repo root
   SKILL.md                           #   START HERE. router: routes, contract, hard rules
@@ -87,7 +93,7 @@ skills/specseed/                     # the spec-change worker skill (markdown + 
   references_ext/                    #   caveman.md (density) + humanizer.md (naturalness)
   scripts/                           #   stdlib helpers over local spec/ + plan.json ONLY: requirements_generate_json, requirements_analyze, critical_path, sprint_pack
   templates/entity_templates/        #   epic/ticket/issue/bug/feature emitted into target
-storage/                             # dev runtime data (gitignored); a target's lives at <specseed_dir>/storage/
+data-dev/repos/<slug>/               # per-repo DATA ROOT in dev ($SPECSEED_HOME=data-dev); single-purpose subdirs (db/tracker/config/runtime/logs/spec/spec-change/instructions)
 tests/unit/python/                   # default test suite (units)
 tests/integration/python/            # opt-in integration tests (marker: integration)
 ```
@@ -106,6 +112,16 @@ tests/integration/python/            # opt-in integration tests (marker: integra
   runs `apply.py`) vs work handlers (read entity, judge state+perms in code, build prompt, run agent).
 - **db/database.py** - NOT a mirror; a queue of work derived from sync diffs. WAL + `BEGIN IMMEDIATE`
   claim so two workers never grab one task. Pure accessors, no policy.
+- **agent context model** (`executing/prompts.py` + `executing/agent_sessions.py`) - INFO CONTROL by
+  construction (0.21). Data is no longer in the agent's cwd, so each `build_*_prompt` states, as
+  ABSOLUTE paths, ONLY the data dirs that route may touch (impl/review/ask: `spec/` + `instructions/<route>/`,
+  NO tracker/config/db; spec route alone also gets `tracker/` to plan over the entity tree;
+  platform-error gets the whole data root to diagnose). The post body + comment thread are INJECTED into
+  the prompt (`_thread_block`, fed by `(entity, conversation)` from `context.load_entity`) - agents never
+  read a db for messages. Permissions are restated inline every run (`render_action_gates`).
+  **Continuity:** each run records the provider session id per post (`agent_sessions`, `runtime/sessions.json`);
+  the next turn passes `--resume <id>` (claude) so the agent keeps its own memory, falling back to the
+  injected thread when there is no id (first turn / codex). `RunnerChains` resumes only the PRIMARY spec.
 - **labels** (`tracking/supported_values.py` + `populate_defaults.py`) - tier + status, plus
   `type:<feature|bug|chore|spike|qa>` and `difficulty:<easy|hard>` on work posts. Seeded on startup;
   existing targets re-seed via the 0.5.0 migration (drops the seed marker).
@@ -188,25 +204,28 @@ tests/integration/python/            # opt-in integration tests (marker: integra
 
 - Version: `version.txt` (repo root) + `skills/specseed/version.txt`. Same value,
   bump BOTH. Format `X.Y.Z`. This is the engine's running code version (read from
-  `skills/specseed/version.txt` in the engine repo); the target only stores a `storage/version.txt` marker.
+  `skills/specseed/version.txt` in the engine repo); the data root stores a `config/version.txt` marker.
 - Only user bumps `X`. Bump `Y` for anything that breaks without a migration - the proverbial API:
   storage layout, db schema, config keys, script CLI/function contracts. Bump `Z` for normal changes;
   skip only for same-change follow-up.
-- **ALL generated runtime data lives flat in `<specseed_dir>/storage/`** (dbs, configuration.json,
-  remote.json, token, logs, version.txt marker). Never module-adjacent - the engine isn't in the
-  target, so anything not under `<specseed_dir>/` is lost. Default paths come from
-  `specseed_runtime/storage_paths.py`; new data files route through it.
-- `storage/version.txt` = what version last shaped storage. Code version vs marker diff drives
-  migrations. Pre-0.3.0 storage unsupported (missing marker = 0.3.0).
+- **ALL generated runtime data lives in the home DATA ROOT, split into single-purpose subdirs**
+  (`db/ tracker/ config/ runtime/ logs/`). `storage_paths.py` is the seam that maps every file to its
+  subdir; new data files route through it (never build paths by hand). The data root is in the app
+  home, NEVER in the target.
+- `config/version.txt` = what version last shaped the data root (pre-0.21 marker was flat at the root;
+  `migrate.storage_version` falls back there). Code version vs marker diff drives migrations. Pre-0.3.0
+  unsupported (missing marker = 0.3.0).
 - Y/X bump that touches storage shape -> author a hop `specseed_runtime/migrating/m_<from>__<to>.py`
-  (`FROM`/`TO` consts + `run(storage, specseed_dir)`), append to `MIGRATIONS` in `migrating/migrate.py`.
-  One hop spans consecutive migration-bearing versions only; hops chain, run one by one, never restate
-  older hops.
+  (`FROM`/`TO` consts + `run(storage, specseed_dir)`, where `storage` = the data root), append to
+  `MIGRATIONS` in `migrating/migrate.py`. One hop spans consecutive migration-bearing versions; hops
+  chain, run one by one, never restate older hops. Hops touch ONLY the data root (`storage`) - never the
+  target; target-side cleanup (relocation, gitignore strip, old router blocks) lives in
+  `migrating/relocate.py`, which runs once at resolve time.
 - Migrations idempotent: safe twice, preserve user-custom values, never clobber an existing dest,
   only rewrite old/default-shaped data. May delete old files when clearly superseded.
 - Entrypoints that migrate-before-read: `executing/run.py` (startup, via the `src/specseed`
-  launcher), `configuring/configure.py` (main). The 0.3.1->0.4.0 hop deletes any engine code an old
-  installer copied into a target's `<specseed_dir>/`.
+  launcher), `configuring/configure.py` (main). 0.20->0.21 relocates pre-0.21 in-target `.specseed/`
+  into the home + reshapes flat storage into the single-purpose subdirs.
 - Hop tests: old-shape fixture -> `run_migrations()` -> assert upgraded files + marker; run twice for
   idempotency. Copy the pattern in `tests/unit/python/test_migrating.py`. Verify each entrypoint
   triggers.

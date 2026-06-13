@@ -61,6 +61,7 @@ from specseed_runtime.scheduling.spec_change import (
     spec_change_spec_dir,
     staged_spec_files,
 )
+from specseed_runtime.storage_paths import spec_dir
 from specseed_runtime.state_machines import base as sm
 from specseed_runtime.state_machines.base import (
     APPROVAL_COMMAND_RE,
@@ -1154,11 +1155,11 @@ def _promote_staged_spec(ctx: Any, request_id: Any) -> list[str]:
     an unapproved or buggy run can never corrupt the real spec.
     """
     staged_root = spec_change_spec_dir(request_id, ctx.storage)
-    specseed_dir = Path(ctx.storage).parent
+    live_spec = spec_dir(ctx.storage)
     promoted: list[str] = []
     for src in staged_spec_files(request_id, ctx.storage):
         rel = src.relative_to(staged_root)
-        dest = specseed_dir / "spec" / rel
+        dest = live_spec / rel
         try:
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dest)
@@ -1178,13 +1179,14 @@ def _settle_docs_for_request(ctx: Any, request_id: Any) -> list[str]:
         plan = json.loads(plan_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return []
-    specseed_dir = Path(ctx.storage).parent
+    live_spec = spec_dir(ctx.storage)
     when = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
     done: list[str] = []
     for rel in plan.get("settle_docs", []) or []:
-        candidate = specseed_dir / rel
+        # settle_docs may be "spec/foo.md" (rel to data root) or "foo.md" (rel to spec/).
+        candidate = live_spec.parent / rel
         if not candidate.exists():
-            candidate = specseed_dir / "spec" / rel
+            candidate = live_spec / rel
         if candidate.exists() and _settle_doc(candidate, when):
             done.append(rel)
     return done

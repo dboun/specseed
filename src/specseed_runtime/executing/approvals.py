@@ -18,6 +18,8 @@ from __future__ import annotations
 import fcntl
 from pathlib import Path
 
+from specseed_runtime.storage_paths import spec_change_root
+
 from specseed_runtime.state_machines.approvals import (  # re-export for the worker
     APPROVAL_REQUEST_MARKER,
     APR_RE,
@@ -44,8 +46,8 @@ _COUNTER_NAME = ".apr_counter"
 
 
 def counter_path(storage: str | Path) -> Path:
-    """The APR counter file under ``<storage>/spec-change/``."""
-    return Path(storage) / "spec-change" / _COUNTER_NAME
+    """The APR counter file under ``<data_root>/spec-change/``."""
+    return spec_change_root(storage) / _COUNTER_NAME
 
 
 def next_apr_id(storage: str | Path) -> str:

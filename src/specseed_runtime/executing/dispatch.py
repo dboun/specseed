@@ -132,13 +132,15 @@ _INTENT_FUNCTION = {
 
 
 def _run_agent(
-    ctx: ExecutionContext, prompt: str, intent: str, task_id: Any = None
+    ctx: ExecutionContext, prompt: str, intent: str, task_id: Any = None,
+    resume_id: Any = None,
 ) -> Any:
     """Run the prompt on the chain for ``intent``'s function.
 
     Works with both a per-function :class:`RunnerChains` (production) and a bare
     runner (a test double injected straight into the context). Spawned children
-    are ledgered against ``task_id`` for startup orphan reclaim."""
+    are ledgered against ``task_id`` for startup orphan reclaim. ``resume_id``
+    continues a prior conversation on the same post (continuity)."""
     runner = ctx.runner
     on_start = None
     live_log = None
@@ -162,6 +164,7 @@ def _run_agent(
                 on_start=on_start,
                 intent=intent,
                 live_log=live_log,
+                resume_id=resume_id,
             )
         return runner.run(
             prompt,
@@ -171,6 +174,7 @@ def _run_agent(
             on_start=on_start,
             intent=intent,
             live_log=live_log,
+            resume_id=resume_id,
         )
     finally:
         if task_id is not None:

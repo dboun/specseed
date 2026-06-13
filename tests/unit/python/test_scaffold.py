@@ -47,39 +47,32 @@ class GitEnforceTest(unittest.TestCase):
 
 
 class InstructionFilesTest(unittest.TestCase):
+    """Stubs land in the home DATA ROOT under instructions/<route>/, never the target."""
+
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name)
+        self.root = Path(self.tmp.name)  # the data root
 
-    def test_seeds_four_route_stubs_empty(self) -> None:
-        written = scaffold.write_instruction_files(self.root, ".specseed")
-        names = {Path(p).name for p in written}
-        self.assertEqual(
-            names,
-            {"AGENTS_INSTRUCTIONS_IMPL.md", "AGENTS_INSTRUCTIONS_SPEC.md",
-             "AGENTS_INSTRUCTIONS_REVIEW.md", "AGENTS_INSTRUCTIONS_ASK.md"},
-        )
-        # empty user-owned stub: just an HTML comment, no injected guidance
-        body = (self.root / ".specseed" / "AGENTS_INSTRUCTIONS_IMPL.md").read_text(encoding="utf-8")
+    def test_seeds_four_route_repo_stubs_empty(self) -> None:
+        written = scaffold.write_instruction_files(self.root)
+        rels = {Path(p).relative_to(self.root).as_posix() for p in written}
+        self.assertEqual(rels, {
+            "instructions/impl/repo.md", "instructions/spec/repo.md",
+            "instructions/review/repo.md", "instructions/ask/repo.md",
+        })
+        body = (self.root / "instructions" / "impl" / "repo.md").read_text(encoding="utf-8")
         self.assertIn("<!-- specseed:", body)
         self.assertNotIn("OFF-LIMITS", body)
         self.assertNotIn("vision.md", body)
 
     def test_never_overwrites_user_content(self) -> None:
-        d = self.root / ".specseed"
-        d.mkdir(parents=True)
-        mine = d / "AGENTS_INSTRUCTIONS_IMPL.md"
+        mine = self.root / "instructions" / "impl" / "repo.md"
+        mine.parent.mkdir(parents=True)
         mine.write_text("my repo notes\n", encoding="utf-8")
-        written = scaffold.write_instruction_files(self.root, ".specseed")
+        written = scaffold.write_instruction_files(self.root)
         self.assertEqual(mine.read_text(encoding="utf-8"), "my repo notes\n")
         self.assertNotIn(str(mine), [str(p) for p in written])
-
-    def test_no_router_files_written_to_repo_root(self) -> None:
-        scaffold.write_instruction_files(self.root, ".specseed")
-        # the only thing specseed adds to a target is <specseed_dir>/
-        self.assertFalse((self.root / "CLAUDE.md").exists())
-        self.assertFalse((self.root / "AGENTS.md").exists())
 
 
 class CustomInstructionStubsTest(unittest.TestCase):
@@ -88,85 +81,46 @@ class CustomInstructionStubsTest(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
 
-    def test_seeds_five_files(self) -> None:
-        written = scaffold.write_custom_instruction_stubs(self.root, ".specseed")
-        names = {Path(p).name for p in written}
-        self.assertEqual(names, {
-            "CUSTOM_INSTRUCTIONS.md", "CUSTOM_INSTRUCTIONS_IMPL.md",
-            "CUSTOM_INSTRUCTIONS_SPEC.md", "CUSTOM_INSTRUCTIONS_REVIEW.md",
-            "CUSTOM_INSTRUCTIONS_ASK.md",
+    def test_seeds_global_plus_per_route(self) -> None:
+        written = scaffold.write_custom_instruction_stubs(self.root)
+        rels = {Path(p).relative_to(self.root).as_posix() for p in written}
+        self.assertEqual(rels, {
+            "instructions/custom.md",
+            "instructions/impl/custom.md", "instructions/spec/custom.md",
+            "instructions/review/custom.md", "instructions/ask/custom.md",
         })
 
     def test_never_overwrites_user_content(self) -> None:
-        d = self.root / ".specseed"
-        d.mkdir(parents=True)
-        mine = d / "CUSTOM_INSTRUCTIONS_IMPL.md"
+        mine = self.root / "instructions" / "impl" / "custom.md"
+        mine.parent.mkdir(parents=True)
         mine.write_text("my rules\n", encoding="utf-8")
-        written = scaffold.write_custom_instruction_stubs(self.root, ".specseed")
-        # the existing file is untouched and not reported as written
+        written = scaffold.write_custom_instruction_stubs(self.root)
         self.assertEqual(mine.read_text(encoding="utf-8"), "my rules\n")
-        self.assertNotIn(str(mine), written)
+        self.assertNotIn(str(mine), [str(p) for p in written])
 
 
-class RepoGitignoreTest(unittest.TestCase):
+class ScaffoldTargetTest(unittest.TestCase):
+    """The target gets ONLY git; data + stubs live in the home data root."""
+
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name)
-
-    def test_adds_entry_and_is_idempotent(self) -> None:
-        p = scaffold.ensure_repo_gitignored(self.root, ".specseed")
-        self.assertEqual(p, self.root / ".gitignore")
-        self.assertIn(".specseed/", p.read_text(encoding="utf-8"))
-        # twice = no duplicate line
-        scaffold.ensure_repo_gitignored(self.root, ".specseed")
-        self.assertEqual(p.read_text(encoding="utf-8").count(".specseed/"), 1)
-
-    def test_preserves_existing_gitignore_content(self) -> None:
-        gi = self.root / ".gitignore"
-        gi.write_text("*.pyc\n", encoding="utf-8")
-        scaffold.ensure_repo_gitignored(self.root, "seedmeta")
-        text = gi.read_text(encoding="utf-8")
-        self.assertIn("*.pyc", text)
-        self.assertIn("seedmeta/", text)
+        self.target = Path(self.tmp.name) / "target"
+        self.target.mkdir()
+        self.data_root = Path(self.tmp.name) / "home" / "repos" / "x"
 
     @unittest.skipUnless(_HAS_GIT, "git not available")
-    def test_scaffold_target_always_ignores(self) -> None:
-        result = scaffold.scaffold_target(self.root, ".specseed", "main")
-        self.assertEqual(result["gitignore"], str(self.root / ".gitignore"))
-        self.assertIn(".specseed/", (self.root / ".gitignore").read_text(encoding="utf-8"))
-
-    @unittest.skipUnless(_HAS_GIT, "git not available")
-    def test_scaffold_target_commits_gitignore_without_sweeping_other_files(self) -> None:
-        (self.root / "note.txt").write_text("user work\n", encoding="utf-8")
-
-        result = scaffold.scaffold_target(self.root, ".specseed", "main")
-
-        self.assertIn("commit .gitignore", result["gitignore_commit"])
-        show = subprocess.run(
-            ["git", "show", "HEAD:.gitignore"],
-            cwd=self.root, capture_output=True, text=True,
-        )
-        self.assertEqual(show.returncode, 0)
-        self.assertIn(".specseed/", show.stdout)
-        tracked = subprocess.run(
-            ["git", "ls-files"],
-            cwd=self.root, capture_output=True, text=True,
-        ).stdout.splitlines()
-        self.assertIn(".gitignore", tracked)
-        self.assertNotIn("note.txt", tracked)
-
-    def test_absolute_dir_inside_repo_uses_relative_entry(self) -> None:
-        # An absolute specseed dir under the repo is ignored by its repo-relative path.
-        p = scaffold.ensure_repo_gitignored(self.root, self.root / "state")
-        self.assertEqual(p, self.root / ".gitignore")
-        self.assertIn("state/", p.read_text(encoding="utf-8"))
-
-    def test_dir_outside_repo_is_noop(self) -> None:
-        # A dir outside the repo is already excluded - nothing in-tree to ignore.
-        outside = self.root.parent / "elsewhere-storage"
-        self.assertIsNone(scaffold.ensure_repo_gitignored(self.root, outside))
-        self.assertFalse((self.root / ".gitignore").exists())
+    def test_writes_nothing_into_target_but_git(self) -> None:
+        (self.target / "note.txt").write_text("user work\n", encoding="utf-8")
+        result = scaffold.scaffold_target(self.target, self.data_root, "main")
+        # no .gitignore, no .specseed, no router files in the target
+        self.assertFalse((self.target / ".gitignore").exists())
+        self.assertFalse((self.target / ".specseed").exists())
+        self.assertFalse((self.target / "CLAUDE.md").exists())
+        # stubs landed in the data root
+        self.assertTrue((self.data_root / "instructions" / "impl" / "repo.md").exists())
+        self.assertNotIn("gitignore", result)
+        self.assertTrue(scaffold.is_git_repo(self.target))
 
 
 if __name__ == "__main__":

@@ -4,18 +4,18 @@ configure.py — interactive technical setup for specseed, run INSIDE a target r
 
 PURE PYTHON: stdlib only, NO agent calls, no tokens spent. A human runs this once
 on a repo (and any time they want to change settings). It writes files into the
-storage dir below the configured specseed directory:
+data root's config/ subdir (the data root lives in the app home, NOT in the target):
 
-  configuration.json   PORTABLE "how you work" — poll interval + the approval
+  config/configuration.json   PORTABLE "how you work" — poll interval + the approval
                        switches (local git + remote actions). Copyable between repos.
-  remote.json          PER-REPO mirror wiring — provider, repo, plus mirror state.
+  config/remote.json   PER-REPO mirror wiring — provider, repo, plus mirror state.
                        NOT portable.
-  token_remote.txt     The raw remote access token, on its own. Secret — the script
-                       appends it to storage/.gitignore so it never gets committed.
+  config/token_remote.txt   The raw remote access token, on its own. Secret — it lives
+                       in the data root (outside the repo), so it is never committed.
 
-storage/ also carries the sqlite databases and version.txt (the storage version
-marker). This script runs pending migrations (migrating/migrate.py) before it
-reads or writes anything there.
+The data root also carries the sqlite databases (db/, tracker/) and the version
+marker (config/version.txt). This script runs pending migrations
+(migrating/migrate.py) before it reads or writes anything there.
 
 Remote is the source of truth in this build: the runner polls it on an interval
 (default 45s) and reacts to what changed. So the remote repo + access token live
@@ -104,7 +104,7 @@ DEFAULT_AGENT_GATES = {
 
 
 # --------------------------------------------------------------------------- #
-# paths — a real config run passes --storage (<target>/<specseed_dir>/storage).
+# paths — a real config run passes --storage (the home data root, repos/<slug>).
 # The dev default is this code repo's own storage/ (see storage_paths.py).
 # --------------------------------------------------------------------------- #
 def default_storage_dir():
@@ -151,15 +151,6 @@ def detect_default_branch(repo_root):
     return DEFAULT_PRIMARY_BRANCH
 
 
-def storage_for_specseed_dir(specseed_dir):
-    return Path(specseed_dir) / "storage"
-
-
-def specseed_dir_from_storage(storage):
-    storage = Path(storage)
-    return storage.parent if storage.name == "storage" else storage
-
-
 def _relative_to_repo(path, repo_root):
     path = Path(path).resolve()
     repo_root = Path(repo_root).resolve()
@@ -169,28 +160,24 @@ def _relative_to_repo(path, repo_root):
         return path
 
 
+# Config files live in the data root's config/ subdir (storage_paths is the seam).
+from specseed_runtime.storage_paths import (  # noqa: E402
+    config_file as _sp_config_file,
+    remote_file as _sp_remote_file,
+    token_file as _sp_token_file,
+)
+
+
 def config_file(storage):
-    return Path(storage) / "configuration.json"
+    return _sp_config_file(storage)
 
 
 def remote_file(storage):
-    return Path(storage) / "remote.json"
+    return _sp_remote_file(storage)
 
 
 def token_file(storage):
-    return Path(storage) / "token_remote.txt"
-
-
-def gitignore_file(storage):
-    return Path(storage) / ".gitignore"
-
-
-# Repo-.gitignore helpers live in scaffold.py now (so every entry path - configure,
-# add, startup repair - ignores the specseed dir). Re-exported here for callers/tests.
-from specseed_runtime.configuring.scaffold import (  # noqa: E402
-    ensure_repo_gitignored,
-    repo_gitignore_file,
-)
+    return _sp_token_file(storage)
 
 
 def load_token(storage):
@@ -205,23 +192,6 @@ def write_token(storage, token):
     p = token_file(storage)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text((token or "") + "\n", encoding="utf-8")
-    return p
-
-
-def ensure_gitignored(storage, entry="token_remote.txt"):
-    """Append `entry` to storage/.gitignore (creating it), unless already listed."""
-    p = gitignore_file(storage)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    existing = ""
-    try:
-        existing = p.read_text(encoding="utf-8")
-    except OSError:
-        pass
-    if entry in (line.strip() for line in existing.splitlines()):
-        return p
-    sep = "" if existing == "" or existing.endswith("\n\n") else ("\n" if existing.endswith("\n") else "\n\n")
-    with p.open("a", encoding="utf-8") as fh:
-        fh.write(f"{sep}{entry}\n")
     return p
 
 
@@ -260,10 +230,9 @@ def default_agent_gates():
 
 def default_config():
     return {
+        # Vestigial since 0.21 (data lives in the home data root, not the target).
+        # Kept so the relocation lookup has a default for pre-0.21 in-target data.
         "specseed_dir": DEFAULT_SPECSEED_DIR,
-        # <specseed_dir>/ is ALWAYS added to the target's .gitignore (storage holds
-        # dbs, tokens, logs; spec is generated). No opt-out - tracked storage breaks
-        # every merge-gate checkout. Done in scaffold_target on every entry path.
         # The integration branch work merges into. "primary branch" = where changes
         # go; default main (or master if that is the repo's branch).
         "specseed_primary_branch": DEFAULT_PRIMARY_BRANCH,
@@ -470,42 +439,33 @@ def write_config_files(
     repo_root=None,
     specseed_rel=None,
 ):
-    """Persist config/remote/token files using configure.py's file policy.
+    """Persist config/remote/token files into the data root's config/ subdir.
 
     remote.json is ALWAYS written now (it holds the enabled+provider choice). The
-    token is only written when the remote is enabled and a token was supplied.
-
-    Scaffolding ALWAYS gitignores the specseed dir (no opt-out); scaffold_target
-    no-ops the .gitignore edit when the dir lives outside the repo.
+    token is only written when the remote is enabled and a token was supplied. The
+    data root lives in the app home (outside any git repo), so the token needs no
+    gitignore.
     """
     written = {}
     written["config"] = _write_json(config_file(storage), cfg)
     written["remote"] = _write_json(remote_file(storage), remote)
     if remote.get("enabled") and token:
         written["token"] = write_token(storage, token)
-        written["storage_gitignore"] = ensure_gitignored(storage)
     # Git is mandatory + the engine is off-limits: init a non-git target, give the
-    # primary branch a root commit, drop the identity guardrails, and gitignore the
-    # specseed dir. All idempotent.
+    # primary branch a root commit, and seed the user-owned instruction stubs in the
+    # data root. Nothing is written into the target. All idempotent.
     if repo_root is not None:
-        specseed_dir = cfg.get("specseed_dir") or (
-            specseed_rel.as_posix() if specseed_rel is not None else DEFAULT_SPECSEED_DIR
-        )
         primary_branch = cfg.get("specseed_primary_branch") or DEFAULT_PRIMARY_BRANCH
-        result = scaffold.scaffold_target(repo_root, specseed_dir, primary_branch)
+        result = scaffold.scaffold_target(repo_root, storage, primary_branch)
         written["scaffold"] = result
-        if result.get("gitignore"):
-            written["repo_gitignore"] = Path(result["gitignore"])
     return written
 
 
 def _specseed_config_value(storage, repo_root):
-    specseed_root = specseed_dir_from_storage(storage)
-    try:
-        rel = Path(specseed_root).resolve().relative_to(Path(repo_root).resolve())
-        return rel.as_posix(), rel
-    except ValueError:
-        return Path(specseed_root).resolve().as_posix(), None
+    # The specseed_dir config key is vestigial since 0.21 (data lives in the home
+    # data root, not under the target). Kept only so the relocation lookup has a
+    # default to find pre-0.21 in-target data.
+    return DEFAULT_SPECSEED_DIR, None
 
 
 def run_defaults(
@@ -541,7 +501,7 @@ def run_defaults(
         specseed_rel=specseed_rel,
     )
     print(f"Configured {repo_root}")
-    for name in ("config", "remote", "repo_gitignore"):
+    for name in ("config", "remote"):
         if name in written:
             print(f"  {name}: {written[name]}")
     return 0
@@ -658,45 +618,12 @@ GITLAB_TOKEN_HELP = """\
 # --------------------------------------------------------------------------- #
 # interactive sections — each mutates cfg / remote in place
 # --------------------------------------------------------------------------- #
-def section_specseed_dir(cfg, storage, explicit_storage=False):
-    """Choose the repo-relative specseed dir. It is ALWAYS gitignored (no opt-out)."""
-    repo_root = repo_root_from_cwd()
-    current_dir = specseed_dir_from_storage(storage)
-    configured = cfg.get("specseed_dir")
-    if configured:
-        default_rel = Path(configured)
-    elif explicit_storage:
-        default_rel = _relative_to_repo(current_dir, repo_root)
-    else:
-        default_rel = Path(DEFAULT_SPECSEED_DIR)
-
-    print("\n--- specseed directory ---")
-    print(f"Target repo: {repo_root}")
-    specseed_rel = Path(ask_str(
-        "Specseed directory under the target repo",
-        default_rel.as_posix(),
-    ))
-    if specseed_rel.is_absolute():
-        try:
-            specseed_rel = specseed_rel.resolve().relative_to(repo_root)
-        except ValueError:
-            print("  absolute path is outside the target repo; keeping the current storage dir.")
-            specseed_rel = _relative_to_repo(current_dir, repo_root)
-    specseed_value = specseed_rel.as_posix().strip("/")
-    specseed_rel = Path(specseed_value) if specseed_value else Path(DEFAULT_SPECSEED_DIR)
-
-    cfg["specseed_dir"] = specseed_rel.as_posix()
-    next_storage = storage if explicit_storage else storage_for_specseed_dir(repo_root / specseed_rel)
-    print(f"  (always gitignored: {specseed_rel.as_posix()}/ -> {repo_gitignore_file(repo_root)})")
-    return next_storage, repo_root, specseed_rel
-
-
 def _detect_origin(storage):
-    """Best-effort: read origin URL from the repo we live inside."""
+    """Best-effort: read origin URL from the target repo (cwd)."""
     try:
         out = subprocess.run(
             ["git", "remote", "get-url", "origin"],
-            cwd=str(Path(storage).resolve().parent.parent),
+            cwd=str(repo_root_from_cwd()),
             capture_output=True,
             text=True,
         )
@@ -738,7 +665,7 @@ def section_backend(cfg, remote, storage):
     token = ask_secret("  Paste access token:", load_token(storage))
     if not token:
         print("  (no token set — the remote stays unreachable until you add one.)")
-    print("  NOTE: the token goes to token_remote.txt (gitignored automatically).\n")
+    print("  NOTE: the token goes to config/token_remote.txt in the data root (outside the repo).\n")
     return token
 
 
@@ -892,7 +819,7 @@ def section_interval(cfg):
 # --------------------------------------------------------------------------- #
 def summary_lines(cfg, remote, token):
     L = []
-    L.append(f"specseed dir: {cfg.get('specseed_dir') or DEFAULT_SPECSEED_DIR} (always gitignored)")
+    L.append("data root: app home (repos/<slug>/ - target stays clean, nothing gitignored)")
     primary_branch = cfg.get("specseed_primary_branch") or DEFAULT_PRIMARY_BRANCH
     if remote.get("enabled"):
         L.append(f"remote: {remote.get('provider')} mirror — repo={remote.get('repo') or '?'}, "
@@ -940,10 +867,8 @@ def print_summary(cfg, remote, token):
 # drivers
 # --------------------------------------------------------------------------- #
 def run_interactive(storage, explicit_storage=False):
-    initial_cfg = load_config(storage)
-    storage, repo_root, specseed_rel = section_specseed_dir(
-        initial_cfg, storage, explicit_storage=explicit_storage
-    )
+    repo_root = repo_root_from_cwd()
+    specseed_rel = Path(DEFAULT_SPECSEED_DIR)
 
     existing = _load_json(config_file(storage))
     if existing is not None:
@@ -953,7 +878,8 @@ def run_interactive(storage, explicit_storage=False):
         cfg = default_config()
         cfg["specseed_dir"] = specseed_rel.as_posix()
         cfg["specseed_primary_branch"] = detect_default_branch(repo_root)
-        print(f"Configuring a fresh repo (storage at {Path(storage).resolve()}).")
+        print(f"Configuring a fresh repo (data root at {Path(storage).resolve()}).")
+        print(f"Target repo: {repo_root} (stays clean - all data lives in the data root).")
 
     remote = load_remote_state(storage)
     print("Press Enter to accept the shown default at any prompt.")
@@ -983,12 +909,10 @@ def run_interactive(storage, explicit_storage=False):
         specseed_rel=specseed_rel,
     )
     print(f"\nWrote {written['config']}")
-    if "repo_gitignore" in written:
-        print(f"Updated {written['repo_gitignore']} with {specseed_rel.as_posix()}/")
     if "remote" in written:
         print(f"Wrote {written['remote']}")
     if "token" in written:
-        print(f"Wrote {written['token']} (secret — added to {written['storage_gitignore']})")
+        print(f"Wrote {written['token']} (secret — lives in the data root, outside the repo)")
 
     _print_start_help(storage)
     return 0
@@ -997,17 +921,14 @@ def run_interactive(storage, explicit_storage=False):
 def _print_start_help(storage):
     """Tell the human how to launch the scheduler now that config is written."""
     repo_root = repo_root_from_cwd()
-    specseed_dir = _relative_to_repo(specseed_dir_from_storage(storage), repo_root)
-    run_script = specseed_dir / "specseed_runtime" / "executing" / "run.py"
     print(
-        "\nNext: start the scheduler from your repo root.\n"
-        f"  python3 {shlex.quote(run_script.as_posix())}\n"
+        "\nNext: start the scheduler (the engine runs from its own checkout).\n"
+        f"  src/specseed run --target {shlex.quote(str(repo_root))}\n"
         "It polls the remote on your interval, syncs changes into the local mirror,\n"
         "and drains the work queue (running agents in a stoppable background thread).\n"
         "Useful flags:\n"
         "  --once               run a single poll+drain pass and exit (good for cron)\n"
         "  --interval SECONDS   override the poll interval\n"
-        "  --storage PATH       use a non-default storage dir\n"
         "Control it live from the CONTROL post with: STATUS, START, PAUSE, STOP\n"
         "The first remote population also creates a draft `spec-change:adapt` post.\n"
         "Describe what you want there, remove the `draft` label, and save it.\n"

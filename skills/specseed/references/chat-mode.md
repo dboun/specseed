@@ -20,8 +20,8 @@ input source and the handoff differ.
 ## Notes
 
 **Detect it:** no scheduler handed you a `spec-change:<route>` label + request id, AND
-the runtime is absent (`specseed_runtime` not importable, no `tracking_local.db` /
-`<specseed_dir>/storage/`). Otherwise you are in runner mode (the default). When
+the runtime is absent (`specseed_runtime` not importable, no `tracking_local.db`, no
+data root named in the prompt). Otherwise you are in runner mode (the default). When
 unsure, assume runner mode.
 
 **Inputs** come from the conversation, not `resolve_local()`: the request is what the
@@ -39,9 +39,9 @@ can drop them into a repo or resume in Claude Code. Spec edits are STAGED (never
 to live `spec/`), same as runner mode:
 
 ```
-storage/spec-change/<id>/spec/...     # STAGED spec edits, mirroring the live spec/ tree
-storage/spec-change/<id>/plan.json    # the work-breakdown delta (incl. settle_docs)
-storage/spec-change/<id>/apply.py     # the reconcile script (inert here)
+spec-change/<id>/spec/...     # STAGED spec edits, mirroring the live spec/ tree
+spec-change/<id>/plan.json    # the work-breakdown delta (incl. settle_docs)
+spec-change/<id>/apply.py     # the reconcile script (inert here)
 ```
 
 Produce `apply.py` exactly as the protocol's header says; it does not run here (no

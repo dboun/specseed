@@ -33,6 +33,7 @@ from types import SimpleNamespace
 from typing import Any, Optional
 
 from specseed_runtime.executing import advance
+from specseed_runtime.executing import agent_sessions
 from specseed_runtime.executing import context as context_mod
 from specseed_runtime.executing import dispatch
 from specseed_runtime.executing import platform_log
@@ -126,7 +127,7 @@ def run_agent_job(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
     payload = task.get("payload") or {}
     intent = str(payload.get("intent") or "")
     post_id = payload.get("post_id") or task.get("post_id")
-    entity, _conversation = context_mod.load_entity(ctx, post_id)
+    entity, conversation = context_mod.load_entity(ctx, post_id)
     if entity is None:
         return HandlerOutcome(success=True, detail="no entity for {0!r}; nothing to run".format(post_id))
 
@@ -147,13 +148,15 @@ def run_agent_job(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
     if intent == AgentIntent.SPEC_CHANGE:
         # the `spec-change:<sub>` label suffix is the spec SUBROUTE (route is always `spec`)
         subroute = dispatch._spec_change_route(entity)
-        prompt = prompts.build_spec_change_prompt(subroute, getattr(entity, "post_id", None), entity, ctx)
+        prompt = prompts.build_spec_change_prompt(
+            subroute, getattr(entity, "post_id", None), entity, ctx, conversation
+        )
     elif intent == AgentIntent.IMPLEMENT:
-        prompt = prompts.build_implement_prompt(entity, ctx)
+        prompt = prompts.build_implement_prompt(entity, ctx, conversation)
     elif intent == AgentIntent.REVIEW:
-        prompt = prompts.build_review_prompt(entity, ctx)
+        prompt = prompts.build_review_prompt(entity, ctx, conversation)
     elif intent == AgentIntent.ASK:
-        prompt = prompts.build_ask_prompt(entity, ctx)
+        prompt = prompts.build_ask_prompt(entity, ctx, conversation)
     else:
         return HandlerOutcome(success=False, error="work_run: unknown intent {0!r}".format(intent))
 
@@ -166,7 +169,13 @@ def run_agent_job(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
             detail="intent {0} stopped before agent".format(intent),
             retryable=True,
         )
-    result = dispatch._run_agent(ctx, prompt, intent, task_id=task.get("task_id"))
+    # Continuity: resume this post's prior conversation if we have one (else the
+    # injected thread seeds context), then remember the new session id for next turn.
+    resume_id = agent_sessions.resume_id_for(ctx.storage, post_id)
+    result = dispatch._run_agent(
+        ctx, prompt, intent, task_id=task.get("task_id"), resume_id=resume_id
+    )
+    agent_sessions.remember(ctx.storage, post_id, getattr(result, "session_id", None))
     # Commit the work (implement) and always return to the primary branch, however
     # the run ended, so WIP is never stranded on a feature branch. A commit that had
     # changes but FAILED is a hard error: never let the run report success, or the

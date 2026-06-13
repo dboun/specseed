@@ -17,7 +17,7 @@ them one by one.
 
 Runnable directly against a target's storage:
 
-    python3 src/specseed_runtime/migrating/migrate.py --storage <target>/.specseed/storage
+    python3 src/specseed_runtime/migrating/migrate.py --storage <home>/repos/<slug>
 
 Only Python stdlib is used.
 """
@@ -56,9 +56,10 @@ from specseed_runtime.migrating import m_0_14_0__0_16_0
 from specseed_runtime.migrating import m_0_16_0__0_18_0
 from specseed_runtime.migrating import m_0_18_0__0_19_0
 from specseed_runtime.migrating import m_0_19_0__0_20_0
+from specseed_runtime.migrating import m_0_20_0__0_21_0
 from specseed_runtime.storage_paths import (
-    default_specseed_dir,
     default_storage_dir,
+    legacy_version_marker_file,
     skill_version_file,
     version_marker_file,
 )
@@ -68,7 +69,7 @@ from specseed_runtime.storage_paths import (
 BASELINE_VERSION = "0.3.0"
 
 # Ordered hop chain, oldest first. Append new hops here; never edit shipped ones.
-MIGRATIONS = (m_0_3_0__0_3_1, m_0_3_1__0_4_0, m_0_4_0__0_5_0, m_0_5_0__0_7_0, m_0_7_0__0_9_0, m_0_9_0__0_11_0, m_0_11_0__0_12_0, m_0_12_0__0_13_0, m_0_13_0__0_14_0, m_0_14_0__0_16_0, m_0_16_0__0_18_0, m_0_18_0__0_19_0, m_0_19_0__0_20_0)
+MIGRATIONS = (m_0_3_0__0_3_1, m_0_3_1__0_4_0, m_0_4_0__0_5_0, m_0_5_0__0_7_0, m_0_7_0__0_9_0, m_0_9_0__0_11_0, m_0_11_0__0_12_0, m_0_12_0__0_13_0, m_0_13_0__0_14_0, m_0_14_0__0_16_0, m_0_16_0__0_18_0, m_0_18_0__0_19_0, m_0_19_0__0_20_0, m_0_20_0__0_21_0)
 
 
 def parse_version(text: str) -> tuple[int, ...]:
@@ -91,12 +92,20 @@ def code_version(specseed_dir: Optional[str | Path] = None) -> str:
 
 
 def storage_version(storage: Optional[str | Path] = None) -> str:
-    """What version last shaped this storage dir. Missing marker = baseline."""
-    try:
-        text = version_marker_file(storage).read_text(encoding="utf-8").strip()
-    except OSError:
-        return BASELINE_VERSION
-    return text or BASELINE_VERSION
+    """What version last shaped this data root. Missing marker = baseline.
+
+    The marker moved to ``config/version.txt`` in 0.21.0. A pre-0.21 (relocated)
+    data root still has it flat at ``<root>/version.txt``; fall back there so the
+    0.20->0.21 hop is picked up instead of misreading the version as baseline.
+    """
+    for marker in (version_marker_file(storage), legacy_version_marker_file(storage)):
+        try:
+            text = marker.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if text:
+            return text
+    return BASELINE_VERSION
 
 
 def write_storage_version(version: str, storage: Optional[str | Path] = None) -> Path:
@@ -107,8 +116,15 @@ def write_storage_version(version: str, storage: Optional[str | Path] = None) ->
 
 
 def _specseed_dir_for_storage(storage: Path) -> Path:
-    """The tree a storage dir belongs to (where a hop hunts for old files)."""
-    return storage.parent if storage.name == "storage" else default_specseed_dir()
+    """The dir a hop may hunt for old files in.
+
+    A legacy in-place ``.../storage`` dir -> its parent (the old specseed dir), so
+    pre-0.21 hops still find target-side leftovers when run directly. A home DATA
+    ROOT (any other name) -> ITSELF: never the engine checkout, so an ancient hop
+    (e.g. 0.3.1->0.4.0, which rmtrees ``<specseed_dir>/skills``) can't delete the
+    running engine. Target-side cleanup for relocated data lives in relocate.py.
+    """
+    return storage.parent if storage.name == "storage" else storage
 
 
 def run_migrations(

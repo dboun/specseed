@@ -17,9 +17,11 @@ scaffold writing CLAUDE.md, or a migration losing the marker / file).
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tempfile
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -121,9 +123,9 @@ def test_ask_post_runs_ask_bundle_read_only_and_posts_answer() -> None:
         p = ask_prompts[0]
         # Bundle: the real ask route doc + its reply protocol read are present.
         assert "===== routes/ask.md =====" in p
-        # The MANDATORY target-instruction reads for the ASK route (Phase 1/2 names).
-        assert "{0}/AGENTS_INSTRUCTIONS_ASK.md".format(_SPECSEED_DIR) in p
-        assert "{0}/CUSTOM_INSTRUCTIONS_ASK.md".format(_SPECSEED_DIR) in p
+        # The MANDATORY instruction reads for the ASK route (absolute, home instructions/).
+        assert str(h.root / "instructions" / "ask" / "repo.md") in p
+        assert str(h.root / "instructions" / "ask" / "custom.md") in p
         # READ-ONLY: the ask prompt must NOT carry git policy or action gates.
         assert "Git rules (the runtime owns git" not in p
         assert "Action gates (honour BEFORE" not in p
@@ -177,8 +179,8 @@ def test_spec_change_adapt_runs_spec_bundle_and_classifies_as_proposal() -> None
         assert "===== routes/spec.md =====" in p
         assert "===== spec_subroutes/adapt.md =====" in p
         # MANDATORY SPEC instruction-file reads (subroute inherits the parent route).
-        assert "{0}/AGENTS_INSTRUCTIONS_SPEC.md".format(_SPECSEED_DIR) in p
-        assert "{0}/CUSTOM_INSTRUCTIONS_SPEC.md".format(_SPECSEED_DIR) in p
+        assert str(h.root / "instructions" / "spec" / "repo.md") in p
+        assert str(h.root / "instructions" / "spec" / "custom.md") in p
         # Per-request execution fact, staged under the request dir, STOP after.
         assert "Run the spec 'adapt' subroute for spec-change request {0}".format(eid) in p
 
@@ -193,61 +195,63 @@ def test_spec_change_adapt_runs_spec_bundle_and_classifies_as_proposal() -> None
 
 # --- scaffold adds NO target-root CLAUDE.md/AGENTS.md ------------------------ #
 
-def test_scaffold_writes_no_target_root_claude_or_agents() -> None:
+def test_scaffold_writes_nothing_into_target_but_git() -> None:
     with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        result = scaffold.scaffold_target(root, _SPECSEED_DIR, primary_branch="main")
-        # No router-block scaffolding survives (Phase 2 removed it).
+        target = Path(tmp) / "repo"
+        target.mkdir()
+        data_root = Path(tmp) / "home" / "repos" / "x"
+        result = scaffold.scaffold_target(target, data_root, primary_branch="main")
+        # No router-block scaffolding, no gitignore, nothing in the target.
         assert "router" not in result
-        assert not (root / "CLAUDE.md").exists()
-        assert not (root / "AGENTS.md").exists()
-        # The canonical per-route guardrail + custom stubs ARE created in <sd>/.
-        sd = root / _SPECSEED_DIR
-        for name in (
-            "AGENTS_INSTRUCTIONS_IMPL.md", "AGENTS_INSTRUCTIONS_SPEC.md",
-            "AGENTS_INSTRUCTIONS_REVIEW.md", "AGENTS_INSTRUCTIONS_ASK.md",
-            "CUSTOM_INSTRUCTIONS.md", "CUSTOM_INSTRUCTIONS_IMPL.md",
-            "CUSTOM_INSTRUCTIONS_SPEC.md", "CUSTOM_INSTRUCTIONS_REVIEW.md",
-            "CUSTOM_INSTRUCTIONS_ASK.md",
+        assert "gitignore" not in result
+        assert not (target / "CLAUDE.md").exists()
+        assert not (target / ".specseed").exists()
+        assert not (target / ".gitignore").exists()
+        # Per-route guardrail + custom stubs land in the home data root.
+        for rel in (
+            "instructions/impl/repo.md", "instructions/spec/repo.md",
+            "instructions/review/repo.md", "instructions/ask/repo.md",
+            "instructions/custom.md", "instructions/impl/custom.md",
+            "instructions/spec/custom.md", "instructions/review/custom.md",
+            "instructions/ask/custom.md",
         ):
-            assert (sd / name).exists(), "missing canonical stub {0}".format(name)
+            assert (data_root / rel).exists(), "missing canonical stub {0}".format(rel)
 
 
-# --- migration strips the router block, keeps the files, marks 0.20.0 -------- #
+# --- relocation strips the router block + reshapes a pre-0.21 target ---------- #
 
-def test_migration_0_20_0_strips_router_block_keeps_files_marks_marker() -> None:
+def test_relocation_strips_router_and_chain_reshapes() -> None:
+    from specseed_runtime import registry
+    from specseed_runtime.migrating import relocate
+
     with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        sd = repo / _SPECSEED_DIR
-        storage = sd / "storage"
-        storage.mkdir(parents=True, exist_ok=True)
-        # Already-configured target: marker at 0.19.0 + a CLAUDE.md carrying the
-        # router block surrounded by the user's own content.
-        migrate.write_storage_version("0.19.0", storage)
-        user_top = "# My project\n\nProject notes the human wrote.\n"
-        user_bottom = "## Conventions\n\nKeep PRs small.\n"
-        (repo / "CLAUDE.md").write_text(
-            user_top
-            + "\n<!-- specseed:router:start -->\nspecseed router junk\n<!-- specseed:router:end -->\n\n"
-            + user_bottom,
-            encoding="utf-8",
-        )
+        home = Path(tmp) / "home"
+        with mock.patch.dict(os.environ, {"SPECSEED_HOME": str(home)}):
+            target = Path(tmp) / "repo"
+            sd = target / _SPECSEED_DIR
+            storage = sd / "storage"
+            storage.mkdir(parents=True, exist_ok=True)
+            migrate.write_storage_version("0.20.0", storage)
+            (storage / "configuration.json").write_text("{}", encoding="utf-8")
+            # repo-root CLAUDE.md carrying the router block among user content
+            (target / "CLAUDE.md").write_text(
+                "# My project\n\nProject notes the human wrote.\n"
+                "\n<!-- specseed:router:start -->\nspecseed router junk\n<!-- specseed:router:end -->\n\n"
+                "## Conventions\n\nKeep PRs small.\n",
+                encoding="utf-8",
+            )
 
-        applied = migrate.run_migrations(storage, sd)
-        assert "m_0_19_0__0_20_0" in applied
+            dr = relocate.relocate_legacy_data(target, _SPECSEED_DIR)
+            assert dr == registry.data_root_for(target)
 
-        text = (repo / "CLAUDE.md").read_text(encoding="utf-8")
-        assert (repo / "CLAUDE.md").exists()          # file kept, not deleted
-        assert "specseed router junk" not in text     # block stripped
-        assert "<!-- specseed:router:start -->" not in text
-        assert "Project notes the human wrote." in text   # user content kept
-        assert "Keep PRs small." in text
-        # Marker advanced to the engine version.
-        assert migrate.storage_version(storage) == "0.20.0"
-        # New ASK-route stubs seeded by the hop.
-        assert (sd / "AGENTS_INSTRUCTIONS_ASK.md").exists()
-        assert (sd / "CUSTOM_INSTRUCTIONS_ASK.md").exists()
+            text = (target / "CLAUDE.md").read_text(encoding="utf-8")
+            assert "specseed router junk" not in text     # block stripped by relocation
+            assert "Project notes the human wrote." in text
+            assert "Keep PRs small." in text
+            assert not sd.exists()                          # legacy dir removed
 
-        # Idempotent: a second run is a no-op and keeps the marker at 0.20.0.
-        assert migrate.run_migrations(storage, sd) == []
-        assert migrate.storage_version(storage) == "0.20.0"
+            applied = migrate.run_migrations(storage=dr)
+            assert applied == ["m_0_20_0__0_21_0"]
+            assert (dr / "config" / "configuration.json").exists()
+            assert (dr / "instructions" / "ask" / "repo.md").exists()
+            assert migrate.storage_version(dr) == migrate.code_version()

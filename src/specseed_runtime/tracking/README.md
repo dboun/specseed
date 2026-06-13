@@ -22,8 +22,8 @@ on the differences the sync reports.
 | File | Class | Role |
 | --- | --- | --- |
 | `tracking_base.py` | `TrackingBase` (ABC) | The provider-neutral contract plus the `Tracking*` data shapes (`TrackingResult`, `TrackingEntrySummary`, `TrackingSyncChange`, …). Vocabulary is deliberately neutral: the normalized resource is an **entry**, not an "issue". |
-| `tracking_local.py` | `TrackingLocal` | The local copy. A full sqlite implementation of the contract (entries, labels, comments, reactions, pins). Default db: `<specseed_dir>/storage/tracking_local.db` (via `storage_paths.py`). |
-| `tracking_remote_local.py` | `TrackingRemoteLocal` | A **remote** that has no network — it inherits `TrackingLocal` unchanged and only swaps its default db to `<specseed_dir>/storage/tracking_remote_local.db`. Used as a stand-in source of truth for local development and tests. |
+| `tracking_local.py` | `TrackingLocal` | The local copy. A full sqlite implementation of the contract (entries, labels, comments, reactions, pins). Default db: `<data_root>/tracker/tracking_local.db` (via `storage_paths.py`). |
+| `tracking_remote_local.py` | `TrackingRemoteLocal` | A **remote** that has no network — it inherits `TrackingLocal` unchanged and only swaps its default db to `<data_root>/tracker/tracking_remote_local.db`. Used as a stand-in source of truth for local development and tests. |
 | `tracking_remote_github.py` | `TrackingRemoteGitHub` | The real GitHub-backed remote. |
 | `tracking_remote_gitlab.py` | `TrackingRemoteGitLab` | The real GitLab-backed remote. |
 

@@ -25,14 +25,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from specseed_runtime.configuring import scaffold
-
 FROM = "0.19.0"
 TO = "0.20.0"
-
-# Historical markers - frozen here; scaffold no longer defines them.
-_ROUTER_START = "<!-- specseed:router:start -->"
-_ROUTER_END = "<!-- specseed:router:end -->"
 
 # Old engine-generated guardrail bodies began with this heading. Files still starting
 # with it are default-shaped (no user edits) and safe to retire.
@@ -45,42 +39,21 @@ _OLD_GUARDRAIL_FILES = (
 _SEED_MARKER = "seed_state.json"
 
 
-def _strip_router_block(text: str) -> str:
-    """Remove the delimited specseed router block and tidy the gap. Idempotent."""
-    if _ROUTER_START not in text or _ROUTER_END not in text:
-        return text
-    head, _, rest = text.partition(_ROUTER_START)
-    _, _, tail = rest.partition(_ROUTER_END)
-    trailing = "\n" if text.endswith("\n") else ""
-    head = head.rstrip("\n")
-    tail = tail.lstrip("\n")
-    if head and tail:
-        return head + "\n\n" + tail + trailing
-    return (head or tail) + trailing
-
-
 def run(storage: str | Path, specseed_dir: str | Path) -> None:
+    """Retire stale guardrail bodies + force a label re-seed.
+
+    Operates only on the data root (``storage``). The router-block strip from the
+    target's CLAUDE.md/AGENTS.md moved to ``relocate.py`` in 0.21 (only relocation
+    knows the target); stub seeding moved to the 0.21 hop + startup scaffold (the new
+    ``instructions/<route>/`` layout). Pre-0.21 data reaches here FLAT (post-
+    relocation), so old guardrail stubs + the seed marker sit directly under storage.
+    """
     storage = Path(storage)
-    specseed_dir = Path(specseed_dir)
-    repo_root = specseed_dir.parent
 
-    # 1. strip the router block from repo-root CLAUDE.md / AGENTS.md (keep the files)
-    for fname in ("CLAUDE.md", "AGENTS.md"):
-        p = repo_root / fname
-        try:
-            text = p.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        new = _strip_router_block(text)
-        if new != text:
-            try:
-                p.write_text(new, encoding="utf-8")
-            except OSError:
-                pass
-
-    # 2. retire old engine-generated guardrail bodies (reseeded empty below)
+    # Retire old engine-generated guardrail bodies (now flat in the data root). The
+    # 0.21 reshape moves any remaining (user-owned) stubs into instructions/<route>/.
     for fname in _OLD_GUARDRAIL_FILES:
-        p = specseed_dir / fname
+        p = storage / fname
         try:
             body = p.read_text(encoding="utf-8")
         except OSError:
@@ -91,11 +64,7 @@ def run(storage: str | Path, specseed_dir: str | Path) -> None:
             except OSError:
                 pass
 
-    # seed any missing guardrail + custom stubs (incl. the new ASK route), create-if-absent
-    scaffold.write_instruction_files(repo_root, specseed_dir)
-    scaffold.write_custom_instruction_stubs(repo_root, specseed_dir)
-
-    # 3. re-seed labels on next startup so the new `ask` label lands (question -> ask)
+    # Re-seed labels on next startup so the new `ask` label lands (question -> ask).
     marker = storage / _SEED_MARKER
     if marker.exists():
         try:

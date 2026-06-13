@@ -24,6 +24,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from specseed_runtime.storage_paths import (
+    control_file as sp_control_file,
+    runner_file as sp_runner_file,
+    runner_out_file as sp_runner_out_file,
+)
+
 RUNNING = "running"
 PAUSED = "paused"
 STOPPED = "stopped"
@@ -35,15 +41,15 @@ STALE_AFTER_S = 30.0
 
 
 def control_file(storage: str | Path) -> Path:
-    return Path(storage) / "control.json"
+    return sp_control_file(storage)
 
 
 def status_file(storage: str | Path) -> Path:
-    return Path(storage) / "runner.json"
+    return sp_runner_file(storage)
 
 
 def runner_log_file(storage: str | Path) -> Path:
-    return Path(storage) / "runner.out"
+    return sp_runner_out_file(storage)
 
 
 def _now() -> str:

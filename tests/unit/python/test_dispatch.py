@@ -252,7 +252,7 @@ class DispatchRoutingTest(DispatchTestBase):
         self.assertTrue(out.success)
         self.assertEqual(len(self.runner.calls), 1)
         self.assertIn("Route: impl.", self.runner.calls[0]["prompt"])  # impl skill bundle
-        self.assertIn("Implement specseed work issue", self.runner.calls[0]["prompt"])
+        self.assertIn("Implement this work issue", self.runner.calls[0]["prompt"])
         self.assertEqual(self.runner.calls[0]["cwd"], str(self.root))
 
     def test_review_runs_review_prompt(self) -> None:
@@ -269,7 +269,7 @@ class DispatchRoutingTest(DispatchTestBase):
         self.assertTrue(out.success)
         self.assertEqual(len(self.runner.calls), 1)
         self.assertIn("Route: review.", self.runner.calls[0]["prompt"])  # review skill bundle
-        self.assertIn("Review completed work", self.runner.calls[0]["prompt"])
+        self.assertIn("Review the completed work", self.runner.calls[0]["prompt"])
 
     def test_ask_label_runs_ask_prompt(self) -> None:
         self.ctx.runner = FakeAgentRunner(AgentResult(
@@ -302,8 +302,8 @@ class DispatchRoutingTest(DispatchTestBase):
         from specseed_runtime.storage_paths import default_specseed_dir
         skill_dir = str(default_specseed_dir() / "skills" / "specseed")
         self.assertIn(f"Skill root dir: {skill_dir}", self.runner.calls[0]["prompt"])
-        # staging + apply.py live under the target's specseed dir
-        self.assertIn("seedmeta/storage/spec-change/", self.runner.calls[0]["prompt"])
+        # staging + apply.py live under the data root's spec-change dir (absolute path)
+        self.assertIn(str(self.root / "storage" / "spec-change"), self.runner.calls[0]["prompt"])
 
     def test_inject_label_runs_inject_route_prompt(self) -> None:
         eid = self._seed_local_entry("Manual hotfix", ["spec-change:inject"])

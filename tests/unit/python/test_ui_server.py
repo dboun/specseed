@@ -21,7 +21,8 @@ _spec.loader.exec_module(server)
 
 
 def _make_queue_db(storage: Path, tasks: int = 0, errors: int = 0, *, old_shape: bool = False) -> None:
-    db = storage / "specseed.db"
+    db = server._queue_db(storage)
+    db.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db)
     lane_cols = "" if old_shape else ", lane TEXT NOT NULL DEFAULT 'control', priority INTEGER NOT NULL DEFAULT 50"
     conn.executescript(
@@ -175,7 +176,9 @@ class EnrichListTest(unittest.TestCase):
 
     def _make_tracker_db(self, rows) -> None:
         # rows: (entry_id, body, updated_at)
-        conn = sqlite3.connect(self.storage / "tracking_remote_local.db")
+        tdb = server._tracker_db(self.storage)
+        tdb.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(tdb)
         conn.execute(
             "CREATE TABLE comments (id INTEGER PRIMARY KEY, entry_id INTEGER, body TEXT, "
             "created_at TEXT, updated_at TEXT)"
@@ -249,7 +252,9 @@ class EnrichListTest(unittest.TestCase):
 
 def _make_queue_rows(storage: Path, rows) -> None:
     """rows: (post_id, status, lane). Full (lane+priority) schema."""
-    conn = sqlite3.connect(storage / "specseed.db")
+    db = server._queue_db(storage)
+    db.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db)
     conn.executescript(
         """
         CREATE TABLE tasks (
@@ -307,14 +312,14 @@ class AgentOutputServerTest(unittest.TestCase):
 
     def test_read_agent_output_reads_log_else_empty(self) -> None:
         self.assertEqual(server._read_agent_output(self.storage, 1), "")
-        out = self.storage / "agent-output"
-        out.mkdir()
+        out = server.storage_paths.agent_output_dir(self.storage)
+        out.mkdir(parents=True)
         (out / "1.log").write_text("● Read(a.py)\n● done\n", encoding="utf-8")
         self.assertEqual(server._read_agent_output(self.storage, 1), "● Read(a.py)\n● done\n")
 
     def test_read_agent_output_tails_large_file(self) -> None:
-        out = self.storage / "agent-output"
-        out.mkdir()
+        out = server.storage_paths.agent_output_dir(self.storage)
+        out.mkdir(parents=True)
         (out / "1.log").write_text("\n".join(f"line {i}" for i in range(100000)), encoding="utf-8")
         tail = server._read_agent_output(self.storage, 1, tail_bytes=200)
         self.assertLessEqual(len(tail.encode("utf-8")), 200)
@@ -329,8 +334,8 @@ class AgentOutputServerTest(unittest.TestCase):
 
     def test_read_tasks_flags_has_output(self) -> None:
         _make_queue_rows(self.storage, [("7", "in_progress", "work"), ("8", "success", "work")])
-        out = self.storage / "agent-output"
-        out.mkdir()
+        out = server.storage_paths.agent_output_dir(self.storage)
+        out.mkdir(parents=True)
         (out / "1.log").write_text("x", encoding="utf-8")  # task 1 has a log; task 2 doesn't
         items = {it["task_id"]: it["has_output"] for it in server._read_tasks(self.storage)["tasks"]["items"]}
         self.assertTrue(items[1])
@@ -357,7 +362,8 @@ class RetryTaskTest(unittest.TestCase):
         self.storage = Path(self.tmp.name)
 
     def _seed(self) -> None:
-        db = self.storage / "specseed.db"
+        db = server._queue_db(self.storage)
+        db.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(db)
         conn.executescript(
             """
@@ -387,7 +393,7 @@ class RetryTaskTest(unittest.TestCase):
         conn.close()
 
     def _row(self, task_id: int) -> dict:
-        conn = sqlite3.connect(self.storage / "specseed.db")
+        conn = sqlite3.connect(server._queue_db(self.storage))
         conn.row_factory = sqlite3.Row
         row = conn.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
         conn.close()
@@ -459,7 +465,7 @@ class InProgressPostIdsTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def _insert(self, post_id, status, lane="work") -> None:
-        conn = sqlite3.connect(self.storage / "specseed.db")
+        conn = sqlite3.connect(server._queue_db(self.storage))
         conn.execute(
             "INSERT INTO tasks(action, post_id, status, created_at, lane) VALUES (?, ?, ?, ?, ?)",
             ("act", post_id, status, "2026-01-01T00:00:00Z", lane),
@@ -479,7 +485,7 @@ class InProgressPostIdsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             storage = Path(tmp)
             _make_queue_db(storage, old_shape=True)
-            conn = sqlite3.connect(storage / "specseed.db")
+            conn = sqlite3.connect(server._queue_db(storage))
             conn.execute(
                 "INSERT INTO tasks(action, post_id, status, created_at) VALUES (?, ?, ?, ?)",
                 ("act", "7", "in_progress", "2026-01-01T00:00:00Z"),
@@ -571,12 +577,12 @@ class SpecDocsTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        # mirror the real layout: <specseed_dir>/storage and <specseed_dir>/spec.
+        # New layout: the spec dir is <data_root>/spec (storage == the data root).
         # resolve() to match _spec_dir (macOS /var -> /private/var symlink).
         self.root = Path(self.tmp.name).resolve()
-        self.storage = self.root / "storage"
+        self.storage = self.root / "data_root"
         self.storage.mkdir()
-        self.spec = self.root / "spec"
+        self.spec = self.storage / "spec"
         self.record = {"storage": str(self.storage)}
 
     def _write(self, rel: str, text: str) -> Path:
@@ -585,7 +591,7 @@ class SpecDocsTest(unittest.TestCase):
         path.write_text(text, encoding="utf-8")
         return path
 
-    def test_spec_dir_is_storage_sibling(self) -> None:
+    def test_spec_dir_under_data_root(self) -> None:
         self.assertEqual(server._spec_dir(self.record), self.spec)
 
     def test_list_missing_dir(self) -> None:
@@ -820,17 +826,19 @@ class CodeViewerTest(unittest.TestCase):
 
     # -- primary-branch default ------------------------------------------ #
     def test_meta_default_ref_follows_primary_branch(self) -> None:
-        storage = self.repo.parent / "storage"
+        storage = self.repo.parent / "data_root"
         storage.mkdir()
         record = {"target": str(self.repo), "storage": str(storage)}
+        cfg = server.storage_paths.config_file(storage)
+        cfg.parent.mkdir(parents=True, exist_ok=True)
         # HEAD is "main", but the configured primary is "feature" -> default to it
-        (storage / "configuration.json").write_text(json.dumps({"specseed_primary_branch": "feature"}))
+        cfg.write_text(json.dumps({"specseed_primary_branch": "feature"}))
         m = server._code_meta(record)
         self.assertEqual(m["primary_branch"], "feature")
         self.assertEqual(m["default_ref"], "feature")
         self.assertEqual(m["head"], "main")  # head still reports the checkout
         # a primary that doesn't exist locally falls back to HEAD
-        (storage / "configuration.json").write_text(json.dumps({"specseed_primary_branch": "ghost"}))
+        cfg.write_text(json.dumps({"specseed_primary_branch": "ghost"}))
         self.assertEqual(server._code_meta(record)["default_ref"], "main")
 
     # -- working tree (opt-in) ------------------------------------------- #

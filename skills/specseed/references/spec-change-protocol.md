@@ -30,14 +30,16 @@ current work posts from the **local** tracker only.
 
 ```python
 from specseed_runtime.tracking.resolve_remote import resolve_local
-local = resolve_local(storage=STORAGE_DIR)    # STORAGE_DIR = <specseed_dir>/storage
+local = resolve_local(storage=STORAGE_DIR)    # STORAGE_DIR = the DATA ROOT (absolute path in the prompt)
 post = local.get_entry(REQUEST_ID).data       # title, body, comments
 work = local.list_entries(is_open=None).data  # current epics/tickets/issues
 ```
 
-**Always pass `storage=` explicitly.** Bare `resolve_local()`/`resolve_remote()`
-fall back to `$SPECSEED_STORAGE` (the runner exports it) and then to the ENGINE
-repo's dev storage - the wrong db when the engine runs against a target.
+`STORAGE_DIR` is the **data root** - the absolute path the runtime prompt names
+(in the app home, NOT the target). The spec route is the one route allowed to read
+the local tracker. **Always pass `storage=` explicitly.** Bare
+`resolve_local()`/`resolve_remote()` fall back to `$SPECSEED_STORAGE` and then the
+ENGINE repo's dev storage - the wrong db when the engine runs against a target.
 
 Never call `resolve_remote()` to *read*: the local cache exists so a planning
 pass never hits the provider API. The remote is touched only by the script you
@@ -45,19 +47,20 @@ emit, when the executor runs it.
 
 ## The three outputs
 
-You read live `<specseed_dir>/spec/` for CONTEXT only. You never write there. All
-three outputs land under the request dir:
+You read the live spec dir (absolute path in the prompt) for CONTEXT only. You never
+write there. All three outputs land under your spec-change request dir (also an
+absolute path the prompt names):
 
 ```
-<specseed_dir>/storage/spec-change/<request_id>/
+<request_dir>/                # = the spec-change dir the prompt gives you
 ├── spec/...      # STAGED spec edits, mirroring the live spec/ tree
 ├── plan.json     # the work-breakdown delta you decided (inspectable)
 └── apply.py      # mutates the REMOTE posts to match plan.json
 ```
 
-1. **Staged spec edits** under `<specseed_dir>/storage/spec-change/<id>/spec/`. Every
-   created or edited doc goes here at the SAME relative path it has under live `spec/`
-   (so `spec/sad.md` stages at `storage/spec-change/<id>/spec/sad.md`). The runtime
+1. **Staged spec edits** under `<request_dir>/spec/`. Every created or edited doc goes
+   here at the SAME relative path it has under live `spec/` (so `spec/sad.md` stages at
+   `<request_dir>/spec/sad.md`). The runtime
    promotes these into live `spec/` ONLY after a human approves, so an unapproved or
    buggy run cannot corrupt the real spec. Use
    `scheduling/spec_change.py:spec_change_spec_dir(request_id)` for the staging path.
@@ -167,7 +170,7 @@ for _root in _HERE.parents:
         sys.path.insert(0, str(_root / "src"))
         break
 
-# This file lives at <storage>/spec-change/<id>/apply.py - storage is two
+# This file lives at <data_root>/spec-change/<id>/apply.py - the data root is two
 # levels up. Self-locating: correct even run by hand, without the runner's env.
 _STORAGE = _HERE.parents[2]
 
@@ -313,7 +316,7 @@ Consequences for what you write:
 
   You do NOT hand-write or post the approval comment — the runtime builds it from
   `apr` (verbatim `approval_request_comment`, hidden marker + how-to-approve text)
-  and posts it. `STORAGE_DIR` = `<specseed_dir>/storage`.
+  and posts it. `STORAGE_DIR` = the data root (absolute path in the prompt).
 - **Carry forward vs mint fresh — the gate the human sees must match the plan.** The
   runtime no-ops a propose run whose `apr.id` is ALREADY posted on the thread (idempotency
   — see the approval gate). So:

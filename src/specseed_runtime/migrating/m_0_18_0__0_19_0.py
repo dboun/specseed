@@ -1,35 +1,21 @@
-"""0.19.0: harden target gitignore on existing storage.
+"""0.19.0: (historically) harden the target gitignore on existing storage.
 
-The specseed dir holds runtime dbs/logs/token/spec output. It must be ignored on
-the target repo history before work branches are cut, or storage can get tracked
-and later block checkouts/merge prep.
+This hop once added ``<specseed_dir>/`` to the target ``.gitignore`` so in-target
+runtime state wouldn't be tracked. 0.21.0 moves ALL data OUT of the target (no
+in-target dir, no gitignore line), so this step is OBSOLETE - the 0.21 relocation
+strips the old gitignore line itself. Kept as a no-op so the migration chain still
+spans this version. Pre-0.21 targets reaching here flat are handled by relocation.
 """
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
-
-from specseed_runtime.configuring import scaffold
 
 
 FROM = "0.18.0"
 TO = "0.19.0"
 
 
-def _primary_branch(storage: Path) -> str:
-    cfg_path = storage / "configuration.json"
-    try:
-        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return "main"
-    return str(cfg.get("specseed_primary_branch") or "main")
-
-
 def run(storage: str | Path, specseed_dir: str | Path) -> None:
-    storage = Path(storage)
-    specseed_dir = Path(specseed_dir)
-    repo_root = specseed_dir.parent
-    scaffold.ensure_git_repo(repo_root, _primary_branch(storage))
-    gi = scaffold.ensure_repo_gitignored(repo_root, specseed_dir)
-    scaffold.ensure_gitignore_committed(repo_root, gi)
+    # No-op: in-target gitignore is obsolete (relocation handles it in 0.21).
+    return None

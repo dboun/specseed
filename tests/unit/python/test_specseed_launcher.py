@@ -44,20 +44,18 @@ class DevPortTest(unittest.TestCase):
 
 
 class ResolvePathsTest(unittest.TestCase):
-    def test_relative_specseed_dir_joins_under_target(self) -> None:
+    def test_returns_home_data_root_not_in_target(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            target = Path(tmp).resolve()
-            got_target, storage = specseed.resolve_paths(str(target), ".specseed")
-            self.assertEqual(got_target, target)
-            self.assertEqual(storage, target / ".specseed" / "storage")
-
-    def test_absolute_specseed_dir_respected(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            target = Path(tmp) / "repo"
+            home = Path(tmp) / "home"
+            target = Path(tmp).resolve() / "repo"
             target.mkdir()
-            abs_dir = Path(tmp) / "elsewhere" / "seed"
-            _t, storage = specseed.resolve_paths(str(target), str(abs_dir))
-            self.assertEqual(storage, abs_dir.resolve() / "storage")
+            with mock.patch.dict(os.environ, {"SPECSEED_HOME": str(home)}):
+                got_target, data_root = specseed.resolve_paths(str(target), ".specseed")
+                self.assertEqual(got_target, target)
+                self.assertEqual(data_root, specseed.registry.data_root_for(target))
+                # data root is in the home, NOT inside the target
+                self.assertTrue(str(data_root).startswith(str(home.resolve())))
+                self.assertFalse((target / ".specseed").exists())
 
 
 class ParseArgsTest(unittest.TestCase):
@@ -86,45 +84,54 @@ class MainTest(unittest.TestCase):
 
     def test_delegates_to_run_with_storage_and_repo_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            target = Path(tmp).resolve()
-            with mock.patch.object(specseed.run_mod, "main", return_value=0) as run_main:
-                rc = specseed.main(
-                    ["run", "--target", str(target), "--once", "--interval", "15"]
-                )
+            home = Path(tmp) / "home"
+            target = Path(tmp).resolve() / "repo"
+            target.mkdir()
+            with mock.patch.dict(os.environ, {"SPECSEED_HOME": str(home)}):
+                data_root = specseed.registry.data_root_for(target)
+                with mock.patch.object(specseed.run_mod, "main", return_value=0) as run_main:
+                    rc = specseed.main(
+                        ["run", "--target", str(target), "--once", "--interval", "15"]
+                    )
 
-            self.assertEqual(rc, 0)
-            argv = run_main.call_args.args[0]
-            storage = str(target / ".specseed" / "storage")
-            self.assertIn("--storage", argv)
-            self.assertEqual(argv[argv.index("--storage") + 1], storage)
-            self.assertIn("--repo-root", argv)
-            self.assertEqual(argv[argv.index("--repo-root") + 1], str(target))
-            self.assertIn("--once", argv)
-            self.assertEqual(argv[argv.index("--interval") + 1], "15.0")
-            # storage got created; no engine code landed in the target
-            self.assertTrue((target / ".specseed" / "storage").is_dir())
-            self.assertFalse((target / ".specseed" / "specseed_runtime").exists())
-            self.assertFalse((target / ".specseed" / "skills").exists())
+                self.assertEqual(rc, 0)
+                argv = run_main.call_args.args[0]
+                self.assertIn("--storage", argv)
+                self.assertEqual(argv[argv.index("--storage") + 1], str(data_root))
+                self.assertIn("--repo-root", argv)
+                self.assertEqual(argv[argv.index("--repo-root") + 1], str(target))
+                self.assertIn("--once", argv)
+                self.assertEqual(argv[argv.index("--interval") + 1], "15.0")
+                # data root got created in home; nothing landed in the target
+                self.assertTrue(data_root.is_dir())
+                self.assertFalse((target / ".specseed").exists())
 
     def test_configure_defaults_writes_config_and_remote_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            target = Path(tmp).resolve()
-            rc = specseed.main(["configure", "--target", str(target), "--defaults"])
-
-            self.assertEqual(rc, 0)
-            storage = target / ".specseed" / "storage"
-            self.assertTrue((storage / "configuration.json").is_file())
-            self.assertTrue((storage / "remote.json").is_file())
-            self.assertFalse((target / ".specseed" / "specseed_runtime").exists())
+            home = Path(tmp) / "home"
+            target = Path(tmp).resolve() / "repo"
+            target.mkdir()
+            with mock.patch.dict(os.environ, {"SPECSEED_HOME": str(home)}):
+                rc = specseed.main(["configure", "--target", str(target), "--defaults"])
+                self.assertEqual(rc, 0)
+                dr = specseed.registry.data_root_for(target)
+                self.assertTrue((dr / "config" / "configuration.json").is_file())
+                self.assertTrue((dr / "config" / "remote.json").is_file())
+                self.assertFalse((target / ".specseed").exists())
 
     def test_configure_defaults_overwrite_resets_existing_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            target = Path(tmp).resolve()
+            home = Path(tmp) / "home"
+            target = Path(tmp).resolve() / "repo"
+            target.mkdir()
+            self._home = mock.patch.dict(os.environ, {"SPECSEED_HOME": str(home)})
+            self._home.start()
+            self.addCleanup(self._home.stop)
             self.assertEqual(
                 specseed.main(["configure", "--target", str(target), "--defaults"]),
                 0,
             )
-            storage = target / ".specseed" / "storage"
+            storage = specseed.registry.data_root_for(target) / "config"
             cfg_path = storage / "configuration.json"
             remote_path = storage / "remote.json"
             cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
@@ -152,28 +159,23 @@ class MainTest(unittest.TestCase):
             self.assertEqual(cfg["poll_interval_seconds"], specseed.configure.DEFAULT_POLL_INTERVAL)
             self.assertIsNone(remote["repo"])
 
-    def test_configure_defaults_allows_absolute_specseed_dir_outside_target(self) -> None:
+    def test_configure_keeps_target_clean_no_gitignore(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
             target = Path(tmp) / "repo"
             target.mkdir()
-            specseed_dir = Path(tmp) / "state"
-            rc = specseed.main(
-                [
-                    "configure",
-                    "--target",
-                    str(target),
-                    "--specseed-dir",
-                    str(specseed_dir),
-                    "--defaults",
-                ]
-            )
-
-            self.assertEqual(rc, 0)
-            self.assertTrue((specseed_dir / "storage" / "configuration.json").is_file())
-            self.assertFalse((target / ".gitignore").exists())
+            with mock.patch.dict(os.environ, {"SPECSEED_HOME": str(home)}):
+                rc = specseed.main(["configure", "--target", str(target), "--defaults"])
+                self.assertEqual(rc, 0)
+                dr = specseed.registry.data_root_for(target)
+                self.assertTrue((dr / "config" / "configuration.json").is_file())
+                # target stays clean: no .specseed, no .gitignore line
+                self.assertFalse((target / ".specseed").exists())
+                self.assertFalse((target / ".gitignore").exists())
 
     def test_configure_uses_config_and_remote_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
             target = Path(tmp) / "repo"
             target.mkdir()
             config_path = Path(tmp) / "configuration.json"
@@ -187,27 +189,28 @@ class MainTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            rc = specseed.main(
-                [
-                    "configure",
-                    "--target",
-                    str(target),
-                    "--use-config-file",
-                    str(config_path),
-                    "--use-remote-file",
-                    str(remote_path),
-                ]
-            )
+            with mock.patch.dict(os.environ, {"SPECSEED_HOME": str(home)}):
+                rc = specseed.main(
+                    [
+                        "configure",
+                        "--target",
+                        str(target),
+                        "--use-config-file",
+                        str(config_path),
+                        "--use-remote-file",
+                        str(remote_path),
+                    ]
+                )
 
-            self.assertEqual(rc, 0)
-            storage = target / ".specseed" / "storage"
-            cfg = json.loads((storage / "configuration.json").read_text(encoding="utf-8"))
-            remote = json.loads((storage / "remote.json").read_text(encoding="utf-8"))
-            self.assertEqual(cfg["poll_interval_seconds"], 12)
-            self.assertEqual(cfg["specseed_primary_branch"], "develop")
-            self.assertEqual(remote["repo"], "local/example")
-            # specseed dir lives in-tree -> always gitignored (no opt-out anymore).
-            self.assertIn(".specseed/", (target / ".gitignore").read_text(encoding="utf-8"))
+                self.assertEqual(rc, 0)
+                storage = specseed.registry.data_root_for(target) / "config"
+                cfg = json.loads((storage / "configuration.json").read_text(encoding="utf-8"))
+                remote = json.loads((storage / "remote.json").read_text(encoding="utf-8"))
+                self.assertEqual(cfg["poll_interval_seconds"], 12)
+                self.assertEqual(cfg["specseed_primary_branch"], "develop")
+                self.assertEqual(remote["repo"], "local/example")
+                # target stays clean - no gitignore line is added anymore
+                self.assertFalse((target / ".gitignore").exists())
 
 class ManagementTest(unittest.TestCase):
     """add / list / start / pause over the global registry (isolated home)."""
@@ -226,10 +229,11 @@ class ManagementTest(unittest.TestCase):
                 record = specseed.registry.get_repo(str(target))
                 self.assertIsNotNone(record)
                 self.assertEqual(record["provider"], "local")
-            storage = target / ".specseed" / "storage"
-            self.assertTrue((storage / "configuration.json").is_file())
-            remote = json.loads((storage / "remote.json").read_text(encoding="utf-8"))
-            self.assertFalse(remote["enabled"])
+                storage = specseed.registry.data_root_for(target) / "config"
+                self.assertTrue((storage / "configuration.json").is_file())
+                remote = json.loads((storage / "remote.json").read_text(encoding="utf-8"))
+                self.assertFalse(remote["enabled"])
+                self.assertFalse((target / ".specseed").exists())
 
     def test_add_github_requires_repo_and_token(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -266,7 +270,7 @@ class ManagementTest(unittest.TestCase):
                     specseed.main(["add", "--target", str(target), "--provider", "local"]), 0
                 )
                 self.assertEqual(specseed.main(["pause", "--target", str(target)]), 0)
-                storage = target / ".specseed" / "storage"
+                storage = specseed.registry.data_root_for(target)
                 self.assertEqual(
                     specseed.runner_control.read_desired(storage), specseed.runner_control.PAUSED
                 )

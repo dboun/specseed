@@ -13,10 +13,23 @@ from unittest import mock
 from specseed_runtime.configuring import configure
 
 
-def _local_answers(*, specseed="seedmeta", primary_branch="", write=""):
-    """Answer sequence for the local-only interactive flow (all defaults)."""
+def _config_file(storage):
+    return configure.config_file(storage)
+
+
+def _write_cfg(storage, data):
+    cf = _config_file(storage)
+    cf.parent.mkdir(parents=True, exist_ok=True)
+    cf.write_text(json.dumps(data), "utf-8")
+
+
+def _local_answers(*, primary_branch="", write=""):
+    """Answer sequence for the local-only interactive flow (all defaults).
+
+    0.21: the specseed-dir prompt is gone (data lives in the home data root), so the
+    sequence starts at the local-only question.
+    """
     answers = [
-        specseed,    # specseed dir (always gitignored - no prompt)
         "",          # local only (yes)
     ]
     # runner: per function, primary spec = provider/model/effort/data_dir (4) +
@@ -38,34 +51,30 @@ def _local_answers(*, specseed="seedmeta", primary_branch="", write=""):
     return iter(answers)
 
 
-class ConfigureSpecseedDirTest(unittest.TestCase):
-    def test_custom_specseed_dir_is_saved_and_gitignored(self) -> None:
+class ConfigureCleanTargetTest(unittest.TestCase):
+    """0.21: config lands in the data root's config/ subdir; the target stays clean."""
+
+    def test_interactive_writes_config_into_data_root_no_gitignore(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            storage_hint = root / "bootstrap" / "storage"
+            storage = root / "home" / "repos" / "x"  # the data root passed in
             answers = _local_answers()
-
             old_cwd = Path.cwd()
             try:
                 os.chdir(root)
                 with mock.patch.object(configure, "_input", side_effect=lambda _prompt: next(answers)):
-                    rc = configure.run_interactive(storage_hint, explicit_storage=False)
+                    rc = configure.run_interactive(storage, explicit_storage=True)
             finally:
                 os.chdir(old_cwd)
-
             self.assertEqual(rc, 0)
-            config_path = root / "seedmeta" / "storage" / "configuration.json"
-            cfg = json.loads(config_path.read_text(encoding="utf-8"))
-            self.assertEqual(cfg["specseed_dir"], "seedmeta")
-            self.assertIn("seedmeta/", (root / ".gitignore").read_text(encoding="utf-8"))
+            cfg = json.loads(_config_file(storage).read_text(encoding="utf-8"))
+            self.assertEqual(cfg["specseed_dir"], configure.DEFAULT_SPECSEED_DIR)
+            self.assertFalse((root / ".gitignore").exists())
 
-    def test_defaults_path_gitignores_specseed_dir(self) -> None:
-        # Non-interactive path (the one `add` uses): .gitignore must still be
-        # written, since storage holds dbs/tokens/logs. Regression for the bug
-        # where add-then-run never ignored the specseed dir.
+    def test_defaults_path_writes_config_no_gitignore(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            storage = root / ".specseed" / "storage"
+            storage = root / "home" / "repos" / "x"
             old_cwd = Path.cwd()
             try:
                 os.chdir(root)
@@ -73,27 +82,25 @@ class ConfigureSpecseedDirTest(unittest.TestCase):
             finally:
                 os.chdir(old_cwd)
             self.assertEqual(rc, 0)
-            cfg = json.loads((storage / "configuration.json").read_text(encoding="utf-8"))
-            # toggle is gone (always on); the .gitignore entry must still be written.
+            cfg = json.loads(_config_file(storage).read_text(encoding="utf-8"))
             self.assertNotIn("gitignore_specseed_dir", cfg)
-            self.assertIn(".specseed/", (root / ".gitignore").read_text(encoding="utf-8"))
+            self.assertFalse((root / ".gitignore").exists())
 
-    def test_abort_does_not_gitignore_specseed_dir(self) -> None:
+    def test_abort_writes_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            storage = root / "home" / "repos" / "x"
             answers = _local_answers(write="n")
-
             old_cwd = Path.cwd()
             try:
                 os.chdir(root)
                 with mock.patch.object(configure, "_input", side_effect=lambda _prompt: next(answers)):
-                    rc = configure.run_interactive(root / "bootstrap" / "storage", explicit_storage=False)
+                    rc = configure.run_interactive(storage, explicit_storage=True)
             finally:
                 os.chdir(old_cwd)
-
             self.assertEqual(rc, 1)
             self.assertFalse((root / ".gitignore").exists())
-            self.assertFalse((root / "seedmeta" / "storage" / "configuration.json").exists())
+            self.assertFalse(_config_file(storage).exists())
 
 
 class ConfigureDevBranchTest(unittest.TestCase):
@@ -112,7 +119,7 @@ class ConfigureDevBranchTest(unittest.TestCase):
                 os.chdir(old_cwd)
 
             self.assertEqual(rc, 0)
-            cfg = json.loads((root / "seedmeta" / "storage" / "configuration.json").read_text("utf-8"))
+            cfg = json.loads(_config_file(storage_hint).read_text("utf-8"))
             self.assertEqual(cfg["specseed_primary_branch"], "develop")
 
     def test_default_config_has_primary_branch(self) -> None:
@@ -140,13 +147,13 @@ class ConfigurePermissionsShapeTest(unittest.TestCase):
         finally:
             os.chdir(old_cwd)
         self.assertEqual(rc, 0)
-        return root / "seedmeta" / "storage"
+        return storage_hint
 
     def test_new_shape_written_and_remote_json_always_written(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             storage = self._run_local_flow(Path(tmp))
 
-            cfg = json.loads((storage / "configuration.json").read_text("utf-8"))
+            cfg = json.loads(_config_file(storage).read_text("utf-8"))
             self.assertNotIn("backend", cfg)
             perms = cfg["permissions"]
             self.assertEqual(set(perms), {"git", "remote", "platform", "agents"})
@@ -163,7 +170,7 @@ class ConfigurePermissionsShapeTest(unittest.TestCase):
             self.assertNotIn("require_human_approval", cfg["review"])
 
             # remote.json now ALWAYS written; holds the local-vs-remote choice.
-            remote = json.loads((storage / "remote.json").read_text("utf-8"))
+            remote = json.loads(configure.remote_file(storage).read_text("utf-8"))
             self.assertFalse(remote["enabled"])
             self.assertIsNone(remote["provider"])
 
@@ -177,7 +184,7 @@ class ConfigurePermissionsShapeTest(unittest.TestCase):
                 "review": {"enabled": True, "require_human_approval": True},
                 "permissions": {"git": {"enabled": False}},
             }
-            (storage / "configuration.json").write_text(json.dumps(legacy), "utf-8")
+            _write_cfg(storage, legacy)
 
             cfg = configure.load_config(storage)
             self.assertNotIn("backend", cfg)
@@ -226,9 +233,7 @@ class ConfigureRunnerChainsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             storage = Path(tmp) / "storage"
             storage.mkdir(parents=True)
-            (storage / "configuration.json").write_text(
-                json.dumps({"version": 1, "dev_branch": "custom"}), "utf-8"
-            )
+            _write_cfg(storage, {"version": 1, "dev_branch": "custom"})
             cfg = configure.load_config(storage)
             self.assertNotIn("version", cfg)
             # legacy dev_branch translated to specseed_primary_branch
@@ -239,6 +244,8 @@ class ConfigureRunnerChainsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             storage = Path(tmp) / "storage"
             storage.mkdir(parents=True)
+            # pre-0.21 storage is FLAT; the migration chain (incl. the 0.21 reshape)
+            # renames dev_branch and relocates the file into config/.
             (storage / "configuration.json").write_text(
                 json.dumps({"version": 1, "dev_branch": "custom"}), "utf-8"
             )
@@ -247,13 +254,13 @@ class ConfigureRunnerChainsTest(unittest.TestCase):
                 rc = configure.main(["--storage", str(storage), "--show"])
 
             self.assertEqual(rc, 0)
-            on_disk = json.loads((storage / "configuration.json").read_text("utf-8"))
+            on_disk = json.loads(_config_file(storage).read_text("utf-8"))
             self.assertNotIn("version", on_disk)
             # the 0.12.0 hop renamed dev_branch on disk
             self.assertNotIn("dev_branch", on_disk)
             self.assertEqual(on_disk["specseed_primary_branch"], "custom")
             # marker fast-forwarded to the running code's version
-            marker = (storage / "version.txt").read_text("utf-8").strip()
+            marker = (storage / "config" / "version.txt").read_text("utf-8").strip()
             self.assertRegex(marker, r"^\d+\.\d+\.\d+$")
 
     def test_load_config_migrates_legacy_runner_on_disk(self) -> None:
@@ -261,7 +268,7 @@ class ConfigureRunnerChainsTest(unittest.TestCase):
             storage = Path(tmp) / "storage"
             storage.mkdir(parents=True)
             legacy = {"version": 1, "runner": {"provider": "claude", "model": "sonnet", "effort": "medium"}}
-            (storage / "configuration.json").write_text(json.dumps(legacy), "utf-8")
+            _write_cfg(storage, legacy)
             cfg = configure.load_config(storage)
             self.assertEqual(set(cfg["runner"]), set(configure.RUNNER_FUNCTIONS))
             self.assertEqual(cfg["runner"]["implementation"][0]["model"], "sonnet")

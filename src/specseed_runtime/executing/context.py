@@ -78,5 +78,8 @@ def load_entity(ctx: ExecutionContext, post_id: Optional[str]) -> tuple[Optional
     entity.depends_on = parse_depends_on(body)
     if not entity.parent_id:
         entity.parent_id = parse_parent(body)
+    # The agent reads the post body + thread FROM THE PROMPT now (never the db), so
+    # carry the body on the entity for prompts.build_* to inject.
+    entity.body = body or ""
     comments = list(getattr(details, "comments", []) or [])
     return entity, comments

@@ -50,7 +50,7 @@ ops handoff), the spec gets a `deployment.md`. Note the intent in `plan.json`.
 For each selected theme, answer it in this order; stop at the first that resolves it:
 
 1. The spec-change post (title, body, comments).
-2. The existing spec under `<specseed_dir>/spec/`.
+2. The existing spec under the live spec dir (absolute path in the prompt).
 3. (adopt) the code: what it actually does is the answer.
 4. A sensible, clearly-stated default for the project's apparent size.
 

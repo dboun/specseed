@@ -4,7 +4,7 @@ spec_change.py - queue a generated spec-change script for execution.
 When the specseed skill finishes a spec-change route (adopt / adapt / tweak /
 inject / plan-next-sprint) it has produced two things:
 
-  1. optional edits to the local spec docs under ``<specseed_dir>/spec/``, and
+  1. optional edits to the local spec docs under ``<data_root>/spec/``, and
   2. a self-contained Python script under
      ``storage/spec-change/<id>/apply.py`` that mutates the **remote** posts to
      match (create/update/close epics, tickets, issues; labels; comments;
@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Optional
 
 from specseed_runtime.db.database import Database
-from specseed_runtime.tracking.resolve_remote import default_storage_dir
+from specseed_runtime.storage_paths import spec_change_root as _spec_change_root
 
 # The queue action a spec-change run is enqueued under. The scheduler
 # (``executing/scheduler.py``) claims tasks with this action and hands them to
@@ -58,9 +58,8 @@ DEFAULT_SCRIPT_NAME = "apply.py"
 
 
 def spec_change_root(storage: Optional[str | Path] = None) -> Path:
-    """``storage/spec-change`` - parent of every per-request spec-change dir."""
-    base = Path(storage) if storage else default_storage_dir()
-    return base / "spec-change"
+    """``<data_root>/spec-change`` - parent of every per-request spec-change dir."""
+    return _spec_change_root(storage)
 
 
 def spec_change_dir(request_id: str, storage: Optional[str | Path] = None) -> Path:
@@ -75,7 +74,7 @@ def spec_change_dir(request_id: str, storage: Optional[str | Path] = None) -> Pa
 def spec_change_spec_dir(request_id: str, storage: Optional[str | Path] = None) -> Path:
     """``storage/spec-change/<request_id>/spec`` - the STAGED spec for a request.
 
-    Plan-first: a spec-change worker never edits live ``<specseed_dir>/spec/`` in
+    Plan-first: a spec-change worker never edits live ``<data_root>/spec/`` in
     place. It writes each created/edited doc here, mirroring the same relative path
     it has under ``spec/`` (so ``spec/sad.md`` stages at ``.../spec/sad.md``). The
     runtime promotes these into the live tree ONLY on approval. An unapproved or
@@ -119,9 +118,9 @@ def enqueue_spec_change_run(
     rounds, sprint shuffles) leave it ``False`` so they never close the request.
 
     With a ``request_id`` the script's home is ALWAYS ``spec_change_dir(request_id)``;
-    only the basename of ``script_path`` is trusted. Agents pass repo-root-relative
-    paths (".specseed/storage/spec-change/<id>/apply.py") which, joined naively
-    under the spec-change dir, double the prefix and enqueue a nonexistent script.
+    only the basename of ``script_path`` is trusted. Agents may pass a path with a
+    leading ``spec-change/<id>/apply.py`` segment which, joined naively under the
+    spec-change dir, doubles the prefix and enqueues a nonexistent script.
     So: try the literal join, snap to ``<dir>/<basename>`` when the join is missing,
     and fail loud here (not at run time, where it would retry forever) if the
     script still does not exist.

@@ -6,7 +6,7 @@ route -> each `## Mandatory skill reads` -> their reads -> the script preambles)
 walks that graph ONCE and returns every doc the route needs, in reading order, so the
 prompt already contains everything.
 
-PUBLIC API: `generate_prompt_from_skill(mode, route, subroute=None, specseed_dir=None)
+PUBLIC API: `generate_prompt_from_skill(mode, route, subroute=None, instructions_dir=None)
 -> str` returns the assembled prompt as a string (raises ValueError on a bad mode /
 missing route or subroute file). The CLI just prints it. Every other function is private
 (`__`-prefixed).
@@ -21,13 +21,11 @@ WHAT IT PRODUCES:
      into; a script is inlined as its PREAMBLE ONLY (the text between the first pair of
      triple-double-quotes), never the full code;
   5. a trailing `===== END OF SPECSEED SKILL FILES ... =====` marker;
-  6. when ``specseed_dir`` is given AND the route owns per-route instruction files (spec /
-     impl / review / ask) AND the mode is not ``chat``: a `TARGET INSTRUCTION FILES`
-     block telling the agent to MANDATORILY read
-     `<specseed_dir>/AGENTS_INSTRUCTIONS_<ROUTE>.md`,
-     `<specseed_dir>/CUSTOM_INSTRUCTIONS_<ROUTE>.md`, and the global
-     `<specseed_dir>/CUSTOM_INSTRUCTIONS.md` (`<ROUTE>` = route name upper-cased; a
-     subroute inherits its parent route's `<ROUTE>`, so spec subroutes use `SPEC`);
+  6. when ``instructions_dir`` is given AND the route owns per-route instruction files
+     (spec / impl / review / ask) AND the mode is not ``chat``: an `INSTRUCTION FILES`
+     block telling the agent to MANDATORILY read the ABSOLUTE (home, not target)
+     `<instructions_dir>/<route>/repo.md`, `<instructions_dir>/<route>/custom.md`, and the
+     global `<instructions_dir>/custom.md` (a spec subroute inherits its parent `spec`);
   7. a trailing `===== PROMPT FOLLOWS ... =====` marker.
 Each file appears at most once (the walk dedupes), so cyclic reads cannot loop forever.
 
@@ -79,15 +77,16 @@ def generate_prompt_from_skill(
     mode: str,
     route: str | None = None,
     subroute: str | None = None,
-    specseed_dir: str | None = None,
+    instructions_dir: str | None = None,
 ) -> str:
     """Assemble and return the invocation prompt.
 
     ``route`` optional: omit it for the WHOLE skill (every route, each recursed). With a
     ``route``, that route only; with a ``subroute`` too, that subroute. A subroute without
-    a route is invalid. ``specseed_dir`` (runner modes only) drives the trailing TARGET
-    INSTRUCTION FILES block. Raises ValueError on an unknown ``mode`` or a missing route /
-    subroute file (or a subroute given with no route).
+    a route is invalid. ``instructions_dir`` (runner modes only) is the ABSOLUTE path to
+    the home ``instructions/`` dir; it drives the trailing INSTRUCTION FILES block. Raises
+    ValueError on an unknown ``mode`` or a missing route / subroute file (or a subroute
+    given with no route).
     """
     if mode not in MODES:
         raise ValueError(f"mode must be one of {', '.join(MODES)}")
@@ -132,32 +131,31 @@ def generate_prompt_from_skill(
             for f in sorted((SKILL_DIR / "spec_subroutes").glob("*.md")):
                 __emit(f.relative_to(SKILL_DIR).as_posix(), emitted, parts)
     parts.append("===== END OF SPECSEED SKILL FILES. NO REASON TO LOOK AROUND SKILL OR READ SCRIPTS. YOU SHOULD KNOW EVERYTHING NEEDED. =====")
-    instr = __instruction_reads(mode, route, specseed_dir)
+    instr = __instruction_reads(mode, route, instructions_dir)
     if instr:
         parts.append(instr)
     parts.append("===== PROMPT FOLLOWS (IF EMPTY STOP AND WAIT) =====")
     return "\n".join(parts)
 
 
-def __instruction_reads(mode: str, route: str | None, specseed_dir: str | None) -> str:
-    """The TARGET INSTRUCTION FILES block, or '' when it does not apply.
+def __instruction_reads(mode: str, route: str | None, instructions_dir: str | None) -> str:
+    """The INSTRUCTION FILES block, or '' when it does not apply.
 
     Emitted only for a real route that owns instruction files, in a runner mode (not
-    chat), with a ``specseed_dir`` given. ``<ROUTE>`` is the route name upper-cased (a
-    subroute already shares its parent route here, since ``route`` is the top-level one).
+    chat), with ``instructions_dir`` given (the ABSOLUTE home ``instructions/`` path).
+    The files live OUTSIDE the target repo, so the paths are absolute.
     """
-    if mode == "chat" or not specseed_dir or route not in INSTRUCTION_ROUTES:
+    if mode == "chat" or not instructions_dir or route not in INSTRUCTION_ROUTES:
         return ""
-    R = route.upper()
-    sd = str(specseed_dir).rstrip("/")
+    base = str(instructions_dir).rstrip("/")
     return (
-        "===== TARGET INSTRUCTION FILES (MANDATORY READ BEFORE THE WORK) =====\n"
-        "Read these target files (paths relative to the repo you work in). They hold "
-        "repo-level context and user overrides; honor them. A missing or empty file means "
-        "nothing to honor, so skip it.\n"
-        f"- {sd}/AGENTS_INSTRUCTIONS_{R}.md  (repo-level structure + quick context)\n"
-        f"- {sd}/CUSTOM_INSTRUCTIONS_{R}.md  (user custom instructions for this route)\n"
-        f"- {sd}/CUSTOM_INSTRUCTIONS.md  (user custom instructions for every route)"
+        "===== INSTRUCTION FILES (MANDATORY READ BEFORE THE WORK) =====\n"
+        "Read these ABSOLUTE files (user-owned; they live in the specseed home, NOT the "
+        "target repo). They hold repo-level context and user overrides; honor them. A "
+        "missing or empty file means nothing to honor, so skip it.\n"
+        f"- {base}/{route}/repo.md  (repo-level structure + quick context)\n"
+        f"- {base}/{route}/custom.md  (user custom instructions for this route)\n"
+        f"- {base}/custom.md  (user custom instructions for every route)"
     )
 
 
@@ -255,16 +253,16 @@ def __block(parts: list[str], label: str, content: str) -> None:
 
 
 def __main(argv: list[str]) -> int:
-    specseed_dir = None
+    instructions_dir = None
     pos: list[str] = []
     for a in argv:
-        if a.startswith("--specseed-dir="):
-            specseed_dir = a.split("=", 1)[1]
+        if a.startswith("--instructions-dir="):
+            instructions_dir = a.split("=", 1)[1]
         else:
             pos.append(a)
     if not (1 <= len(pos) <= 3):
         print(
-            "Usage: generate_prompt_from_skill.py <mode> [route] [subroute] [--specseed-dir=<dir>]",
+            "Usage: generate_prompt_from_skill.py <mode> [route] [subroute] [--instructions-dir=<dir>]",
             file=sys.stderr,
         )
         return 2
@@ -272,7 +270,7 @@ def __main(argv: list[str]) -> int:
     route = pos[1] if len(pos) >= 2 else None
     subroute = pos[2] if len(pos) == 3 else None
     try:
-        out = generate_prompt_from_skill(mode, route, subroute, specseed_dir=specseed_dir)
+        out = generate_prompt_from_skill(mode, route, subroute, instructions_dir=instructions_dir)
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2

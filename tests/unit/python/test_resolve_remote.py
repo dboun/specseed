@@ -22,7 +22,10 @@ class ResolveRemoteAuthorTest(unittest.TestCase):
         self.storage = Path(self.tmp.name)
 
     def _write_config(self, cfg: dict) -> None:
-        (self.storage / "configuration.json").write_text(json.dumps(cfg), encoding="utf-8")
+        from specseed_runtime.storage_paths import config_file
+        cf = config_file(self.storage)
+        cf.parent.mkdir(parents=True, exist_ok=True)
+        cf.write_text(json.dumps(cfg), encoding="utf-8")
 
     def test_author_is_platform_username_when_set(self) -> None:
         self._write_config({"platform_username": "specseed"})

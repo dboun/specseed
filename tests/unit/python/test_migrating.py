@@ -59,10 +59,12 @@ class VersionPlumbingTest(unittest.TestCase):
                 storage_paths.skill_version_file().read_text(encoding="utf-8").strip(),
             )
 
-    def test_default_db_paths_point_into_storage(self) -> None:
-        for name in ("specseed.db", "tracking_local.db", "tracking_remote_local.db"):
+    def test_default_db_paths_point_into_subdirs(self) -> None:
+        expect = {"specseed.db": "db", "tracking_local.db": "tracker",
+                  "tracking_remote_local.db": "tracker"}
+        for name, subdir in expect.items():
             path = storage_paths.storage_db_path(name)
-            self.assertEqual(path.parent.name, "storage")
+            self.assertEqual(path.parent.name, subdir)
             self.assertEqual(path.name, name)
 
 
@@ -80,7 +82,7 @@ class RunMigrationsTest(unittest.TestCase):
                  "m_0_5_0__0_7_0", "m_0_7_0__0_9_0", "m_0_9_0__0_11_0",
                  "m_0_11_0__0_12_0", "m_0_12_0__0_13_0", "m_0_13_0__0_14_0",
                  "m_0_14_0__0_16_0", "m_0_16_0__0_18_0", "m_0_18_0__0_19_0",
-                 "m_0_19_0__0_20_0"],
+                 "m_0_19_0__0_20_0", "m_0_20_0__0_21_0"],
             )
             self.assertEqual(migrate.storage_version(storage), migrate.code_version())
 
@@ -124,7 +126,8 @@ class RunMigrationsTest(unittest.TestCase):
             # no explicit specseed_dir: <...>/storage -> parent is the tree
             migrate.run_migrations(storage=storage)
 
-            self.assertEqual((storage / "specseed.db").read_bytes(), b"queue")
+            # 0.3.1 moves the stray into storage; the 0.21 reshape lands it in db/.
+            self.assertEqual((storage / "db" / "specseed.db").read_bytes(), b"queue")
             self.assertFalse(stray.exists())
 
 
@@ -225,7 +228,7 @@ class Hop_0_3_1__0_4_0_Test(unittest.TestCase):
             self.assertFalse((specseed_dir / "skills").exists())
             # data survives untouched
             self.assertEqual(
-                (storage / "configuration.json").read_text(encoding="utf-8"), '{"keep": true}\n'
+                (storage / "config" / "configuration.json").read_text(encoding="utf-8"), '{"keep": true}\n'
             )
             self.assertEqual((specseed_dir / "spec" / "vision.md").read_text(encoding="utf-8"), "# vision\n")
             self.assertEqual(migrate.storage_version(storage), migrate.code_version())
@@ -260,7 +263,7 @@ class Hop_0_4_0__0_5_0_Test(unittest.TestCase):
             self.assertFalse((storage / "seed_state.json").exists())
             # unrelated storage data survives
             self.assertEqual(
-                (storage / "configuration.json").read_text(encoding="utf-8"), '{"keep": true}\n'
+                (storage / "config" / "configuration.json").read_text(encoding="utf-8"), '{"keep": true}\n'
             )
             self.assertEqual(migrate.storage_version(storage), migrate.code_version())
 
@@ -317,11 +320,15 @@ class Hop050To070Test(unittest.TestCase):
             applied = migrate.run_migrations(storage=storage, specseed_dir=specseed_dir)
 
             self.assertIn("m_0_5_0__0_7_0", applied)
-            self.assertIn("not_before", self._columns(storage))
+            # the full chain reshapes (0.21): the queue db now lives in db/.
+            qdb = storage_paths.storage_db_path("specseed.db", storage)
+            with sqlite3.connect(qdb) as conn:
+                cols = {r[1] for r in conn.execute("PRAGMA table_info(tasks)")}
+            self.assertIn("not_before", cols)
             self.assertFalse((storage / "seed_state.json").exists())
             self.assertEqual(migrate.storage_version(storage), migrate.code_version())
             # the old row survives and the new column reads NULL
-            with sqlite3.connect(storage / "specseed.db") as conn:
+            with sqlite3.connect(qdb) as conn:
                 row = conn.execute("SELECT post_id, not_before FROM tasks").fetchone()
             self.assertEqual(row, ("5", None))
 
@@ -387,11 +394,14 @@ class Hop0160To0180Test(unittest.TestCase):
             applied = migrate.run_migrations(storage=storage, specseed_dir=specseed_dir)
 
             self.assertIn("m_0_16_0__0_18_0", applied)
-            cols = self._columns(storage)
+            # the full chain reshapes (0.21): the queue db now lives in db/.
+            qdb = storage_paths.storage_db_path("specseed.db", storage)
+            with sqlite3.connect(qdb) as conn:
+                cols = {r[1] for r in conn.execute("PRAGMA table_info(tasks)")}
             self.assertIn("lane", cols)
             self.assertIn("priority", cols)
             # the pre-split row defaults to the control lane at the default priority
-            with sqlite3.connect(storage / "specseed.db") as conn:
+            with sqlite3.connect(qdb) as conn:
                 row = conn.execute("SELECT post_id, lane, priority FROM tasks").fetchone()
             self.assertEqual(row, ("5", "control", 50))
 
@@ -661,115 +671,108 @@ class Hop0130To0140Test(unittest.TestCase):
             self.assertEqual(m_0_13_0__0_14_0.run(storage, specseed_dir), [])
 
 
-@unittest.skipUnless(_HAS_GIT, "git not available")
 class Hop0180To0190Test(unittest.TestCase):
-    """0.19.0: ensure the specseed dir ignore rule is committed."""
+    """0.21 made the in-target gitignore obsolete; the 0.18->0.19 hop is now a no-op."""
 
-    def test_commits_specseed_gitignore_rule(self) -> None:
+    def test_is_noop_and_touches_nothing(self) -> None:
         from specseed_runtime.migrating import m_0_18_0__0_19_0
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             specseed_dir, storage = _fixture_tree(root, version="0.18.0")
             storage.mkdir(parents=True, exist_ok=True)
-            (storage / "configuration.json").write_text(
-                json.dumps({"specseed_primary_branch": "main"}) + "\n", encoding="utf-8"
-            )
-
-            m_0_18_0__0_19_0.run(storage, specseed_dir)
-
-            show = subprocess.run(
-                ["git", "show", "HEAD:.gitignore"],
-                cwd=root, capture_output=True, text=True,
-            )
-            self.assertEqual(show.returncode, 0)
-            self.assertIn(".specseed/", show.stdout)
-
-            # Idempotent: second run has nothing new to commit.
-            before = subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                cwd=root, capture_output=True, text=True,
-            ).stdout.strip()
-            m_0_18_0__0_19_0.run(storage, specseed_dir)
-            after = subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                cwd=root, capture_output=True, text=True,
-            ).stdout.strip()
-            self.assertEqual(before, after)
+            self.assertIsNone(m_0_18_0__0_19_0.run(storage, specseed_dir))
+            # never creates a target .gitignore (data lives in the home data root now)
+            self.assertFalse((root / ".gitignore").exists())
 
 
 class Hop_0_19_0__0_20_0_Test(unittest.TestCase):
-    """Strips the repo-root CLAUDE.md/AGENTS.md router block, reshapes guardrails."""
-
-    _ROUTER = (
-        "<!-- specseed:router:start -->\n"
-        "**IMPORTANT (specseed):** read the guardrail file in `.specseed/` ...\n"
-        "<!-- specseed:router:end -->"
-    )
+    """Retires old-bodied guardrail stubs + drops the seed marker. Data-root only now
+    (the router strip moved to relocation; stub seeding moved to the 0.21 hop)."""
 
     def _old_shape(self, root: Path):
         specseed_dir, storage = _fixture_tree(root)
         storage.mkdir(parents=True, exist_ok=True)
-        repo_root = specseed_dir.parent
-        # repo-root router files: one with user content around the block, one block-only
-        (repo_root / "CLAUDE.md").write_text(
-            "# My project\n\nuser notes\n\n" + self._ROUTER + "\n", encoding="utf-8")
-        (repo_root / "AGENTS.md").write_text(self._ROUTER + "\n", encoding="utf-8")
-        # an old engine-default guardrail (retire) + a user-edited one (keep)
-        (specseed_dir / "AGENTS_INSTRUCTIONS_IMPL.md").write_text(
+        # Post-relocation the old guardrail stubs sit FLAT in the data root (storage):
+        # one engine-default body (retire) + one user-edited (keep).
+        (storage / "AGENTS_INSTRUCTIONS_IMPL.md").write_text(
             "# specseed agent rules (implementing a work issue)\n\nold body\n", encoding="utf-8")
-        (specseed_dir / "AGENTS_INSTRUCTIONS_SPEC.md").write_text(
+        (storage / "AGENTS_INSTRUCTIONS_SPEC.md").write_text(
             "my own repo notes\n", encoding="utf-8")
-        # a seed marker, so the hop drops it (question -> ask re-seeds on next startup)
         (storage / "seed_state.json").write_text('{"kind": "remote_local"}\n', encoding="utf-8")
-        return specseed_dir, storage, repo_root
+        return specseed_dir, storage
 
-    def test_strips_router_keeps_user_content_and_reshapes(self) -> None:
+    def test_retires_old_guardrails_and_drops_seed_marker(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            specseed_dir, storage, repo_root = self._old_shape(Path(tmp))
+            specseed_dir, storage = self._old_shape(Path(tmp))
             m_0_19_0__0_20_0.run(storage, specseed_dir)
 
-            claude = (repo_root / "CLAUDE.md").read_text(encoding="utf-8")
-            self.assertNotIn("specseed:router", claude)
-            self.assertIn("# My project", claude)   # user content preserved
-            self.assertIn("user notes", claude)
-            # files kept (not deleted), only our block removed
-            self.assertTrue((repo_root / "AGENTS.md").exists())
-            self.assertNotIn("specseed:router", (repo_root / "AGENTS.md").read_text(encoding="utf-8"))
-
-            # old-default guardrail retired -> empty stub; user-edited one untouched
-            impl = (specseed_dir / "AGENTS_INSTRUCTIONS_IMPL.md").read_text(encoding="utf-8")
-            self.assertNotIn("old body", impl)
-            self.assertIn("<!-- specseed:", impl)
+            # engine-default body retired (deleted); user-edited one untouched
+            self.assertFalse((storage / "AGENTS_INSTRUCTIONS_IMPL.md").exists())
             self.assertEqual(
-                (specseed_dir / "AGENTS_INSTRUCTIONS_SPEC.md").read_text(encoding="utf-8"),
+                (storage / "AGENTS_INSTRUCTIONS_SPEC.md").read_text(encoding="utf-8"),
                 "my own repo notes\n",
             )
-            # new ASK-route stubs seeded
-            self.assertTrue((specseed_dir / "AGENTS_INSTRUCTIONS_ASK.md").exists())
-            self.assertTrue((specseed_dir / "CUSTOM_INSTRUCTIONS_ASK.md").exists())
             # seed marker dropped so the `ask` label re-seeds on next startup
             self.assertFalse((storage / "seed_state.json").exists())
 
     def test_idempotent_second_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            specseed_dir, storage, repo_root = self._old_shape(Path(tmp))
+            specseed_dir, storage = self._old_shape(Path(tmp))
             m_0_19_0__0_20_0.run(storage, specseed_dir)
-            claude1 = (repo_root / "CLAUDE.md").read_text(encoding="utf-8")
-            snap = {p.name: p.read_text(encoding="utf-8") for p in specseed_dir.glob("*.md")}
-
+            snap = {p.name: p.read_text(encoding="utf-8") for p in storage.glob("*.md")}
             m_0_19_0__0_20_0.run(storage, specseed_dir)
-            self.assertEqual((repo_root / "CLAUDE.md").read_text(encoding="utf-8"), claude1)
             self.assertEqual(
-                {p.name: p.read_text(encoding="utf-8") for p in specseed_dir.glob("*.md")}, snap)
+                {p.name: p.read_text(encoding="utf-8") for p in storage.glob("*.md")}, snap)
 
-    def test_no_root_files_is_safe_and_seeds_stubs(self) -> None:
+    def test_missing_files_is_safe(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             specseed_dir, storage = _fixture_tree(Path(tmp))
             storage.mkdir(parents=True, exist_ok=True)
-            m_0_19_0__0_20_0.run(storage, specseed_dir)  # no CLAUDE/AGENTS present
-            self.assertFalse((specseed_dir.parent / "CLAUDE.md").exists())  # never created
-            self.assertTrue((specseed_dir / "AGENTS_INSTRUCTIONS_ASK.md").exists())
+            m_0_19_0__0_20_0.run(storage, specseed_dir)  # nothing to retire/drop
+
+
+class Hop_0_20_0__0_21_0_Test(unittest.TestCase):
+    """Reshapes a flat (relocated) data root into single-purpose subdirs + stubs."""
+
+    def test_reshapes_flat_into_subdirs_and_seeds_stubs(self) -> None:
+        from specseed_runtime.migrating import m_0_20_0__0_21_0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "data_root"
+            root.mkdir()
+            (root / "specseed.db").write_text("db")
+            (root / "tracking_local.db").write_text("t")
+            (root / "configuration.json").write_text("{}")
+            (root / "token_remote.txt").write_text("secret")
+            (root / "control.json").write_text("{}")
+            (root / "platform.log").write_text("log")
+            (root / ".gitignore").write_text("token_remote.txt")
+            (root / "AGENTS_INSTRUCTIONS_IMPL.md").write_text("myimpl")
+            (root / "CUSTOM_INSTRUCTIONS.md").write_text("myglobal")
+
+            m_0_20_0__0_21_0.run(root, root)
+
+            self.assertTrue((root / "db" / "specseed.db").exists())
+            self.assertTrue((root / "tracker" / "tracking_local.db").exists())
+            self.assertTrue((root / "config" / "configuration.json").exists())
+            self.assertTrue((root / "config" / "token_remote.txt").exists())
+            self.assertTrue((root / "runtime" / "control.json").exists())
+            self.assertTrue((root / "logs" / "platform.log").exists())
+            # stubs renamed into instructions/<route>/, content preserved
+            self.assertEqual(
+                (root / "instructions" / "impl" / "repo.md").read_text(encoding="utf-8"), "myimpl")
+            self.assertEqual(
+                (root / "instructions" / "custom.md").read_text(encoding="utf-8"), "myglobal")
+            # the old per-storage .gitignore (token-only) is dropped; flat files gone
+            self.assertFalse((root / ".gitignore").exists())
+            self.assertFalse((root / "specseed.db").exists())
+            # missing stubs seeded fresh in the new layout
+            self.assertTrue((root / "instructions" / "spec" / "repo.md").exists())
+
+            # idempotent
+            m_0_20_0__0_21_0.run(root, root)
+            self.assertTrue((root / "db" / "specseed.db").exists())
 
 
 if __name__ == "__main__":

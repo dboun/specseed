@@ -1,10 +1,11 @@
 """registry.py - the global multi-repo registry.
 
 specseed is one thing you run once and manage many repos from. The per-repo
-runtime data still lives PER TARGET under ``<target>/<specseed_dir>/storage/`` -
-the runners stay separate. What is shared is this small global index of *which*
-repos exist, where their storage is, and which tracker provider each uses. Both
-the CLI and the web service are thin control planes over it.
+runtime data lives in the app home, one DATA ROOT per repo under
+``$SPECSEED_HOME/repos/<slug>/`` (NEVER inside the target) - the runners stay
+separate. What is shared is this small global index of *which* repos exist, where
+their data root is, and which tracker provider each uses. Both the CLI and the web
+service are thin control planes over it.
 
 Lives flat in ``$SPECSEED_HOME`` (default ``~/.specseed``; a dev checkout -
 this file under ``src/specseed_runtime/`` - uses ``<repo>/data-dev`` instead):
@@ -13,11 +14,13 @@ this file under ``src/specseed_runtime/`` - uses ``<repo>/data-dev`` instead):
 
 A repo record:
 
-    {id, name, target, specseed_dir, storage, provider, added_at}
+    {id, name, target, specseed_dir, data_root, storage, provider, added_at}
 
 ``provider`` is one of ``local`` / ``github`` / ``gitlab`` and is FINAL once set
-(switching tracker backends is not supported). ``storage`` is derived so callers
-never recompute it. Only Python stdlib is used.
+(switching tracker backends is not supported). ``data_root`` is derived so callers
+never recompute it (``storage`` is a back-compat alias = ``data_root``).
+``specseed_dir`` is vestigial: kept only to locate pre-0.21 in-target data for the
+one-time relocation. Only Python stdlib is used.
 """
 
 from __future__ import annotations
@@ -72,12 +75,28 @@ def registry_file() -> Path:
     return specseed_home() / "registry.json"
 
 
+def data_root_for(target: str | Path) -> Path:
+    """The per-repo DATA ROOT: ``$SPECSEED_HOME/repos/<slug>``.
+
+    Lives in the app home (beside the registry), NEVER inside the target repo, so
+    the target stays clean and agents can't wander into engine state. Split into
+    single-purpose subdirs by ``storage_paths.py``.
+    """
+    target = Path(target).expanduser().resolve()
+    return specseed_home() / "repos" / _slug(target)
+
+
 def storage_for(target: str | Path, specseed_dir: str | Path = DEFAULT_SPECSEED_DIR) -> Path:
-    """Where a target's storage dir lands. Mirrors the launcher's resolve_paths."""
+    """Back-compat alias for :func:`data_root_for`. ``specseed_dir`` is ignored -
+    data no longer lives under the target; it is only kept for legacy relocation."""
+    return data_root_for(target)
+
+
+def legacy_specseed_dir(target: str | Path, specseed_dir: str | Path = DEFAULT_SPECSEED_DIR) -> Path:
+    """The pre-0.21 in-target ``<target>/<specseed_dir>/`` dir (for relocation)."""
     target = Path(target).expanduser().resolve()
     sd = Path(specseed_dir).expanduser()
-    root = (sd if sd.is_absolute() else target / sd).resolve()
-    return root / "storage"
+    return (sd if sd.is_absolute() else target / sd).resolve()
 
 
 def _slug(target: Path) -> str:
@@ -154,11 +173,11 @@ def add_repo(
     if provider not in PROVIDERS:
         raise ValueError(f"unsupported provider: {provider!r} (one of {PROVIDERS})")
     target = Path(target).expanduser().resolve()
-    storage = storage_for(target, specseed_dir)
+    data_root = data_root_for(target)
     registry = load_registry()
     for record in registry["repos"]:
         same_target = Path(record.get("target", "")).expanduser().resolve() == target
-        if same_target and record.get("specseed_dir") == str(specseed_dir):
+        if same_target:
             if name:
                 record["name"] = name
             return record
@@ -167,7 +186,9 @@ def add_repo(
         "name": name or target.name,
         "target": str(target),
         "specseed_dir": str(specseed_dir),
-        "storage": str(storage),
+        # data_root is canonical; "storage" kept as an alias many consumers read.
+        "data_root": str(data_root),
+        "storage": str(data_root),
         "provider": provider,
         "added_at": _now(),
     }

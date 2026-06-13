@@ -122,7 +122,7 @@ class SchedulerTest(unittest.TestCase):
         sched = self._scheduler()
         sched.run_once()
 
-        log_path = self.root / "storage" / "platform.log"
+        log_path = self.root / "storage" / "logs" / "platform.log"
         self.assertTrue(log_path.exists())
         events = [
             json.loads(line)["event"]
@@ -377,7 +377,7 @@ class HeartbeatDuringTaskTest(unittest.TestCase):
         sched.run_once()
         # the wait loop ticked the heartbeat repeatedly during the 0.3s run
         self.assertGreaterEqual(calls["n"], 3)
-        self.assertTrue((root / "storage" / "runner.json").exists())
+        self.assertTrue((root / "storage" / "runtime" / "runner.json").exists())
 
 
 class FailureRecoveryEndToEndTest(SchedulerTest):

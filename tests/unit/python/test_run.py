@@ -10,6 +10,7 @@ from unittest import mock
 
 from specseed_runtime.db.database import Database
 from specseed_runtime.executing import run
+from specseed_runtime.storage_paths import config_file, runner_file, seed_marker_file
 from specseed_runtime.executing.agent_runner import (
     ClaudeAgentRunner,
     CodexAgentRunner,
@@ -67,7 +68,7 @@ class EnsureRemoteSeededTest(unittest.TestCase):
         self.assertEqual(resolve.call_count, 1)
 
         self.assertIn(FIRST_ADAPT_DRAFT_TITLE, self._titles())
-        marker = json.loads((self.storage / "seed_state.json").read_text(encoding="utf-8"))
+        marker = json.loads(seed_marker_file(self.storage).read_text(encoding="utf-8"))
         self.assertEqual(marker, {"kind": "remote_local", "repo": None})
 
     def test_changed_backend_reseeds(self) -> None:
@@ -76,7 +77,7 @@ class EnsureRemoteSeededTest(unittest.TestCase):
             run.ensure_remote_seeded(self.storage, config)
 
         # A stale marker for a different backend must not block re-seeding.
-        (self.storage / "seed_state.json").write_text(
+        seed_marker_file(self.storage).write_text(
             json.dumps({"kind": "remote_github", "repo": "o/r"}) + "\n",
             encoding="utf-8",
         )
@@ -106,12 +107,14 @@ class BuildSchedulerMigratesStorageTest(unittest.TestCase):
             )
 
             self.assertIsNotNone(scheduler)
-            self.assertEqual((storage / "specseed.db").read_bytes(), b"queue-bytes")
+            # After the 0.21 reshape the queue db lands in db/ and the marker in config/.
+            self.assertEqual((storage / "db" / "specseed.db").read_bytes(), b"queue-bytes")
             self.assertFalse(stray.exists())
             # Migrates up to the running engine (target's copied skills don't pin it).
             from specseed_runtime.migrating.migrate import code_version
             self.assertEqual(
-                (storage / "version.txt").read_text(encoding="utf-8").strip(), code_version()
+                (storage / "config" / "version.txt").read_text(encoding="utf-8").strip(),
+                code_version(),
             )
 
 
@@ -120,8 +123,9 @@ class BuildSchedulerRefusesOwnedStorageTest(unittest.TestCase):
     startup reclaim would kill the owner's in-flight agent)."""
 
     def _stale_owner(self, storage: Path, pid: int = 4242) -> None:
-        storage.mkdir(parents=True, exist_ok=True)
-        (storage / "runner.json").write_text(
+        rf = runner_file(storage)
+        rf.parent.mkdir(parents=True, exist_ok=True)
+        rf.write_text(
             json.dumps(
                 {"pid": pid, "state": "running", "updated_at": "2000-01-01T00:00:00Z"}
             ),
@@ -165,8 +169,9 @@ class BuildSchedulerConfigReloadTest(unittest.TestCase):
     """A config-built scheduler re-reads configuration.json on resume."""
 
     def _write_config(self, storage: Path, provider: str) -> None:
-        storage.mkdir(parents=True, exist_ok=True)
-        (storage / "configuration.json").write_text(
+        cf = config_file(storage)
+        cf.parent.mkdir(parents=True, exist_ok=True)
+        cf.write_text(
             json.dumps({"runner": {"implementation": [{"provider": provider}]}}),
             encoding="utf-8",
         )

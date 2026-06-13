@@ -2,7 +2,7 @@
 
 The scheduler and queue plumbing should be explainable after the fact without
 requiring a foreground terminal. This module writes compact JSON lines to
-``<specseed_dir>/storage/platform.log`` once configured by ``run.py`` or a
+``<data_root>/logs/platform.log`` once configured by ``run.py`` or a
 ``Scheduler`` created with a storage directory.
 """
 
@@ -14,18 +14,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from specseed_runtime.storage_paths import platform_log_file
+
 
 _lock = threading.RLock()
 _path: Optional[Path] = None
 
 
 def configure(storage: str | Path) -> Path:
-    """Set the destination log file to ``Path(storage) / "platform.log"``."""
+    """Set the destination log file to ``<data_root>/logs/platform.log``."""
     global _path
     with _lock:
-        storage_path = Path(storage)
-        _path = storage_path / "platform.log"
-        storage_path.mkdir(parents=True, exist_ok=True)
+        _path = platform_log_file(storage)
+        _path.parent.mkdir(parents=True, exist_ok=True)
         return _path
 
 

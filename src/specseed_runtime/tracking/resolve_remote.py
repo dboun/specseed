@@ -29,7 +29,13 @@ from pathlib import Path
 from typing import Optional
 
 from specseed_runtime.platform_identity import platform_username
-from specseed_runtime.storage_paths import default_storage_dir, storage_db_path
+from specseed_runtime.storage_paths import (
+    config_file,
+    default_storage_dir,
+    remote_file,
+    storage_db_path,
+    token_file,
+)
 from specseed_runtime.tracking.tracking_base import TrackingBase
 from specseed_runtime.tracking.tracking_local import TrackingLocal
 from specseed_runtime.tracking.tracking_remote_github import TrackingRemoteGitHub
@@ -50,18 +56,18 @@ def _load_json(path: Path) -> Optional[dict]:
 
 def load_config(storage: Optional[str | Path] = None) -> dict:
     """Return configuration.json (or an empty dict if missing/unreadable)."""
-    return _load_json(_resolve_storage(storage) / "configuration.json") or {}
+    return _load_json(config_file(_resolve_storage(storage))) or {}
 
 
 def load_remote_state(storage: Optional[str | Path] = None) -> dict:
     """Return remote.json (or an empty dict if missing/unreadable)."""
-    return _load_json(_resolve_storage(storage) / "remote.json") or {}
+    return _load_json(remote_file(_resolve_storage(storage))) or {}
 
 
 def load_token(storage: Optional[str | Path] = None) -> Optional[str]:
     """Return the raw access token from token_remote.txt, or None."""
     try:
-        token = (_resolve_storage(storage) / "token_remote.txt").read_text(encoding="utf-8").strip()
+        token = token_file(_resolve_storage(storage)).read_text(encoding="utf-8").strip()
         return token or None
     except OSError:
         return None

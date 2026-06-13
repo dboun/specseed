@@ -892,9 +892,14 @@ class SpecChangeRequestSettleTest(_Base):
         d.mkdir(parents=True, exist_ok=True)
         (d / "plan.json").write_text(json.dumps({"settle_docs": settle_docs}), encoding="utf-8")
 
-    def _write_doc(self, name, text="---\ncomponent: api\n---\n\n# SRS\n"):
-        (self.root / "spec").mkdir(parents=True, exist_ok=True)
-        (self.root / "spec" / name).write_text(text, encoding="utf-8")
+    def _live_spec(self, ctx):
+        from specseed_runtime.storage_paths import spec_dir
+        return spec_dir(ctx.storage)
+
+    def _write_doc(self, ctx, name, text="---\ncomponent: api\n---\n\n# SRS\n"):
+        live = self._live_spec(ctx)
+        live.mkdir(parents=True, exist_ok=True)
+        (live / name).write_text(text, encoding="utf-8")
 
     def _stage_doc(self, ctx, rid, rel, text="# staged SRS\n"):
         from specseed_runtime.scheduling.spec_change import spec_change_spec_dir
@@ -906,13 +911,13 @@ class SpecChangeRequestSettleTest(_Base):
     def test_approval_settles_docs_and_finalizes(self) -> None:
         ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
         rid, entity = self._request_entity()
-        self._write_doc("api-srs.md")
+        self._write_doc(ctx, "api-srs.md")
         self._write_plan(ctx, rid, ["spec/api-srs.md"])
         detail = advance.resolve_spec_change_request(ctx, entity, _SR2(approved_by=["alice"]))
         self.assertIn("settled", detail)
         self.assertIn("spec-change:status:done", self._remote_labels(rid))
         self.assertNotIn("spec-change:status:awaiting_approval", self._remote_labels(rid))
-        self.assertIn("settled: true", (self.root / "spec" / "api-srs.md").read_text(encoding="utf-8"))
+        self.assertIn("settled: true", (self._live_spec(ctx) / "api-srs.md").read_text(encoding="utf-8"))
         self.assertFalse(self._remote_details(rid).is_open)  # request closed on approval
 
     def test_approval_enqueues_apply_when_work_present(self) -> None:
@@ -920,7 +925,7 @@ class SpecChangeRequestSettleTest(_Base):
         # apply run and leaves the request OPEN (apply.py finalizes/closes it).
         ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
         rid, entity = self._request_entity()
-        self._write_doc("api-srs.md")
+        self._write_doc(ctx, "api-srs.md")
         d = spec_change_dir(rid, ctx.storage)
         d.mkdir(parents=True, exist_ok=True)
         (d / "plan.json").write_text(
@@ -963,12 +968,12 @@ class SpecChangeRequestSettleTest(_Base):
     def test_rejection_marks_rejected_and_does_not_settle(self) -> None:
         ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
         rid, entity = self._request_entity()
-        self._write_doc("api-srs.md")
+        self._write_doc(ctx, "api-srs.md")
         self._write_plan(ctx, rid, ["spec/api-srs.md"])
         detail = advance.resolve_spec_change_request(ctx, entity, _SR2(rejected_by=["alice"]))
         self.assertIn("rejected", detail)
         self.assertIn("spec-change:status:rejected", self._remote_labels(rid))
-        self.assertNotIn("settled: true", (self.root / "spec" / "api-srs.md").read_text(encoding="utf-8"))
+        self.assertNotIn("settled: true", (self._live_spec(ctx) / "api-srs.md").read_text(encoding="utf-8"))
         self.assertFalse(self._remote_details(rid).is_open)  # request closed on rejection
 
     def test_no_verdict_returns_none(self) -> None:
@@ -990,7 +995,7 @@ class SpecChangeRequestSettleTest(_Base):
         rid, entity = self._request_entity()
         self._stage_doc(ctx, rid, "api-srs.md", text="---\ncomponent: api\n---\n\n# new SRS\n")
         self._write_plan(ctx, rid, ["spec/api-srs.md"])
-        live = self.root / "spec" / "api-srs.md"
+        live = self._live_spec(ctx) / "api-srs.md"
         self.assertFalse(live.exists())  # nothing in live spec/ before approval
         detail = advance.resolve_spec_change_request(ctx, entity, _SR2(approved_by=["alice"]))
         self.assertIn("promoted 1", detail)
@@ -1005,7 +1010,7 @@ class SpecChangeRequestSettleTest(_Base):
         self._stage_doc(ctx, rid, "api-srs.md")
         self._write_plan(ctx, rid, ["spec/api-srs.md"])
         advance.resolve_spec_change_request(ctx, entity, _SR2(rejected_by=["alice"]))
-        self.assertFalse((self.root / "spec" / "api-srs.md").exists())  # never promoted
+        self.assertFalse((self._live_spec(ctx) / "api-srs.md").exists())  # never promoted
 
     def test_dispatch_resolves_request_without_agent(self) -> None:
         # An approve comment on the request must settle + finalize deterministically,
@@ -1025,8 +1030,8 @@ class SpecChangeRequestSettleTest(_Base):
         self.local.add_entry_comment(rid, "approve APR-0001")
         # mirror into remote so the swap can mutate it (same first id)
         self.remote.add_entry("adapt request", labels=self.REQ_LABELS)
-        self._write_doc("api-srs.md")
         ctx = self._ctx(self._config(), _BoomRunner())
+        self._write_doc(ctx, "api-srs.md")
         self._write_plan(ctx, rid, ["spec/api-srs.md"])
         # the approve comment is authored by "agent" (the local author); make it an approver
         ctx.config["approvals"]["approver_usernames"] = ["agent", "alice"]

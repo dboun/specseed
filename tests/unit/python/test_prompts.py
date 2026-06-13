@@ -57,8 +57,11 @@ class SkillBundleWiringTest(unittest.TestCase):
         import json, tempfile
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
+        from specseed_runtime.storage_paths import remote_file
         storage = Path(tmp.name)
-        (storage / "remote.json").write_text(
+        rf = remote_file(storage)
+        rf.parent.mkdir(parents=True, exist_ok=True)
+        rf.write_text(
             json.dumps({"enabled": True, "provider": "github", "repo": "o/r"}),
             encoding="utf-8",
         )
@@ -91,9 +94,20 @@ class SkillBundleWiringTest(unittest.TestCase):
         self.assertIn("answer", out)  # the result-file schema
 
     def test_bundle_carries_instruction_file_reads(self):
-        out = prompts.build_implement_prompt(_Entity(), _Ctx({"specseed_dir": ".specseed"}))
-        self.assertIn(".specseed/AGENTS_INSTRUCTIONS_IMPL.md", out)
-        self.assertIn(".specseed/CUSTOM_INSTRUCTIONS_IMPL.md", out)
+        out = prompts.build_implement_prompt(_Entity(), _Ctx(storage="/tmp/dataroot"))
+        self.assertIn("/tmp/dataroot/instructions/impl/repo.md", out)
+        self.assertIn("/tmp/dataroot/instructions/impl/custom.md", out)
+        self.assertIn("/tmp/dataroot/instructions/custom.md", out)
+
+    def test_impl_grants_spec_not_tracker_and_injects_thread(self):
+        ent = _Entity()
+        ent.body = "do the thing"
+        out = prompts.build_implement_prompt(ent, _Ctx(storage="/tmp/dataroot"), [])
+        self.assertIn("/tmp/dataroot/spec", out)           # spec grant
+        self.assertNotIn("/tmp/dataroot/tracker", out)     # impl gets NO tracker dir
+        self.assertNotIn("/tmp/dataroot/config", out)      # never config/token
+        self.assertIn("do the thing", out)                 # body injected
+        self.assertIn("never query a tracker db", out)
 
 
 class _Post:
@@ -159,11 +173,14 @@ class MergeConflictAndPlatformErrorBundleTest(unittest.TestCase):
 
 class SkillModeTest(unittest.TestCase):
     def _storage(self, remote: dict | None) -> str:
+        from specseed_runtime.storage_paths import remote_file
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         storage = Path(tmp.name)
         if remote is not None:
-            (storage / "remote.json").write_text(json.dumps(remote), encoding="utf-8")
+            rf = remote_file(storage)
+            rf.parent.mkdir(parents=True, exist_ok=True)
+            rf.write_text(json.dumps(remote), encoding="utf-8")
         return str(storage)
 
     def test_no_storage_defaults_specseed_ui(self):

@@ -12,10 +12,21 @@ from specseed_runtime.storage_paths import (
     SPECSEED_STORAGE_ENV,
     agent_output_dir,
     agent_output_file,
+    config_file,
+    control_file,
     default_specseed_dir,
     default_storage_dir,
+    instructions_dir,
+    platform_log_file,
     prune_agent_output,
+    runner_file,
+    sessions_file,
+    spec_change_root,
+    spec_dir,
     storage_db_path,
+    token_file,
+    tracker_dir,
+    version_marker_file,
 )
 
 
@@ -46,13 +57,39 @@ class DefaultStorageDirTest(unittest.TestCase):
             self.assertEqual(default_storage_dir(), default_specseed_dir() / "storage")
 
     def test_storage_db_path_honors_env_default(self) -> None:
-        with mock.patch.dict(
-            "os.environ", {SPECSEED_STORAGE_ENV: "/tmp/target/.specseed/storage"}
-        ):
+        with mock.patch.dict("os.environ", {SPECSEED_STORAGE_ENV: "/tmp/data/root"}):
             self.assertEqual(
-                storage_db_path("specseed.db"),
-                Path("/tmp/target/.specseed/storage/specseed.db"),
+                storage_db_path("specseed.db"), Path("/tmp/data/root/db/specseed.db")
             )
+
+
+class SubdirLayoutTest(unittest.TestCase):
+    """Every accessor routes its file to the right single-purpose subdir."""
+
+    root = Path("/tmp/data/root")
+
+    def test_db_files_split_queue_vs_tracker(self) -> None:
+        self.assertEqual(storage_db_path("specseed.db", self.root), self.root / "db" / "specseed.db")
+        self.assertEqual(
+            storage_db_path("tracking_local.db", self.root), self.root / "tracker" / "tracking_local.db"
+        )
+        self.assertEqual(tracker_dir(self.root), self.root / "tracker")
+
+    def test_config_files_under_config(self) -> None:
+        self.assertEqual(config_file(self.root), self.root / "config" / "configuration.json")
+        self.assertEqual(token_file(self.root), self.root / "config" / "token_remote.txt")
+        self.assertEqual(version_marker_file(self.root), self.root / "config" / "version.txt")
+
+    def test_runtime_files_under_runtime(self) -> None:
+        self.assertEqual(control_file(self.root), self.root / "runtime" / "control.json")
+        self.assertEqual(runner_file(self.root), self.root / "runtime" / "runner.json")
+        self.assertEqual(sessions_file(self.root), self.root / "runtime" / "sessions.json")
+
+    def test_logs_spec_instructions(self) -> None:
+        self.assertEqual(platform_log_file(self.root), self.root / "logs" / "platform.log")
+        self.assertEqual(spec_dir(self.root), self.root / "spec")
+        self.assertEqual(spec_change_root(self.root), self.root / "spec-change")
+        self.assertEqual(instructions_dir(self.root), self.root / "instructions")
 
 
 class AgentOutputTest(unittest.TestCase):
@@ -61,9 +98,11 @@ class AgentOutputTest(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.storage = Path(self._tmp.name)
 
-    def test_paths_are_flat_under_agent_output(self) -> None:
-        self.assertEqual(agent_output_dir(self.storage), self.storage / "agent-output")
-        self.assertEqual(agent_output_file(42, self.storage), self.storage / "agent-output" / "42.log")
+    def test_paths_under_logs_agent_output(self) -> None:
+        self.assertEqual(agent_output_dir(self.storage), self.storage / "logs" / "agent-output")
+        self.assertEqual(
+            agent_output_file(42, self.storage), self.storage / "logs" / "agent-output" / "42.log"
+        )
 
     def test_prune_keeps_newest_n(self) -> None:
         out = agent_output_dir(self.storage)

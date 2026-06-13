@@ -282,7 +282,7 @@ class _EchoRunner(SubprocessAgentRunner):
         super().__init__(poll_interval=0.05)
         self.code = code
 
-    def build_command(self, prompt: str, cwd) -> list[str]:
+    def build_command(self, prompt: str, cwd, resume_id=None) -> list[str]:
         return [
             sys.executable, "-c",
             "import sys; sys.stdin.read(); print('boom output'); sys.exit({0})".format(self.code),
@@ -296,7 +296,7 @@ class _ReportRunner(SubprocessAgentRunner):
         super().__init__(poll_interval=0.05)
         self.payload_json = payload_json
 
-    def build_command(self, prompt: str, cwd) -> list[str]:
+    def build_command(self, prompt: str, cwd, resume_id=None) -> list[str]:
         code = (
             "import os,sys;sys.stdin.read();"
             "open(os.environ['SPECSEED_RESULT_FILE'],'w').write({0!r});"
@@ -362,7 +362,7 @@ class SubprocessFailureTailTest(unittest.TestCase):
         platform_log.configure(self._tmp.name)
 
     def _complete_event(self) -> dict:
-        log = Path(self._tmp.name) / "platform.log"
+        log = Path(self._tmp.name) / "logs" / "platform.log"
         events = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
         return [e for e in events if e["event"] == "agent_subprocess_complete"][-1]
 
@@ -426,7 +426,7 @@ class _TwoLineRunner(SubprocessAgentRunner):
     def __init__(self) -> None:
         super().__init__(poll_interval=0.05)
 
-    def build_command(self, prompt, cwd) -> list[str]:
+    def build_command(self, prompt, cwd, resume_id=None) -> list[str]:
         return [sys.executable, "-c", "import sys; sys.stdin.read(); print('line one'); print('line two')"]
 
 
@@ -436,7 +436,7 @@ class _ClaudeStreamEchoRunner(SubprocessAgentRunner):
     def __init__(self) -> None:
         super().__init__(poll_interval=0.05)
 
-    def build_command(self, prompt, cwd) -> list[str]:
+    def build_command(self, prompt, cwd, resume_id=None) -> list[str]:
         events = [
             json.dumps({"type": "assistant", "message": {"content": [
                 {"type": "tool_use", "name": "Read", "input": {"file_path": "a.py"}}]}}),

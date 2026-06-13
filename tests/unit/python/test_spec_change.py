@@ -170,9 +170,12 @@ class EnqueueSpecChangeTest(unittest.TestCase):
 
 class ResolveRemoteTest(unittest.TestCase):
     def _write_config(self, storage: str, config: dict, remote: dict | None = None) -> None:
-        (Path(storage) / "configuration.json").write_text(json.dumps(config), encoding="utf-8")
+        from specseed_runtime.storage_paths import config_file, remote_file
+        cf = config_file(storage)
+        cf.parent.mkdir(parents=True, exist_ok=True)
+        cf.write_text(json.dumps(config), encoding="utf-8")
         if remote is not None:
-            (Path(storage) / "remote.json").write_text(json.dumps(remote), encoding="utf-8")
+            remote_file(storage).write_text(json.dumps(remote), encoding="utf-8")
 
     def test_missing_config_resolves_to_local_stand_in(self) -> None:
         with tempfile.TemporaryDirectory() as storage:

@@ -23,7 +23,13 @@ from specseed_runtime.executing.permissions import (
     AGENT_CATEGORIES,
     Permissions,
 )
-from specseed_runtime.storage_paths import default_specseed_dir
+from specseed_runtime.scheduling.spec_change import spec_change_dir
+from specseed_runtime.storage_paths import (
+    default_specseed_dir,
+    instructions_dir,
+    spec_dir,
+    tracker_dir,
+)
 
 
 def _engine_skill_dir() -> str:
@@ -77,12 +83,12 @@ def _skill_mode(ctx: Any) -> str:
 def _skill_bundle(ctx: Any, route: str, subroute: str | None = None) -> str:
     """The assembled skill prompt for ``route`` (+ optional ``subroute``).
 
-    Prepended to EVERY agent run (runs are stateless ``claude -p``, so the bundle is
-    the agent's only source of the skill). Carries SKILL.md + the route/subroute docs +
-    their mandatory reads + the target instruction-file reads. The runtime prompt that
-    follows adds only per-request execution facts - never re-states the skill."""
+    Prepended to EVERY agent run. Carries SKILL.md + the route/subroute docs + their
+    mandatory reads + the user-owned instruction-file reads (absolute paths under the
+    home ``instructions/`` dir). The runtime prompt that follows adds only per-request
+    execution facts - never re-states the skill."""
     return _prompt_generator().generate_prompt_from_skill(
-        _skill_mode(ctx), route, subroute, specseed_dir=_specseed_dir(ctx)
+        _skill_mode(ctx), route, subroute, instructions_dir=_instructions_dir(ctx)
     )
 
 
@@ -177,14 +183,47 @@ def render_git_policy(ctx: Any) -> str:
     ])
 
 
-def _specseed_dir(ctx: Any) -> str:
-    configured = (getattr(ctx, "config", {}) or {}).get("specseed_dir")
-    if configured:
-        return str(configured).rstrip("/")
-    storage = getattr(ctx, "storage", None)
-    if storage is not None:
-        return Path(storage).parent.name
-    return "<specseed_dir>"
+def _data_root(ctx: Any) -> Path:
+    """The per-repo data root (``ctx.storage``). Absolute; lives in the app home."""
+    return Path(getattr(ctx, "storage", "") or ".").resolve()
+
+
+def _instructions_dir(ctx: Any) -> str:
+    return str(instructions_dir(_data_root(ctx)))
+
+
+def _grant_lines(*pairs: tuple[str, str]) -> str:
+    """Render the route's data-dir grants as absolute paths. Each pair is
+    (absolute path, what it is + access). The target repo (cwd) is always implied."""
+    lines = [
+        "Data dirs you may use this run (ABSOLUTE paths; live in the specseed home, "
+        "OUTSIDE the target repo). Use ONLY these - everything else under the home "
+        "(the work queue, config, token, logs) is off-limits:"
+    ]
+    for path, what in pairs:
+        lines.append("- {0}  ({1})".format(path, what))
+    lines.append(
+        "Your working dir is the TARGET repo itself (build the app there). Read the "
+        "post body + thread from THIS PROMPT - never query a tracker db for messages."
+    )
+    return "\n".join(lines)
+
+
+def _thread_block(entity: Any, conversation: Any) -> str:
+    """The post body + comment thread, injected so the agent needs no db read."""
+    body = str(getattr(entity, "body", "") or "").strip() or "(empty body)"
+    lines = []
+    for comment in conversation or []:
+        author = getattr(comment, "author", None) or "?"
+        ctext = str(getattr(comment, "body", "") or "").strip()
+        lines.append("[{0}] {1}".format(author, ctext))
+    thread = "\n---\n".join(lines) or "(no comments yet)"
+    return (
+        "POST (id {0}, {1!r})\n---\n{2}\n---\nTHREAD (oldest first; the latest human "
+        "comment is the live ask/answer)\n{3}".format(
+            getattr(entity, "post_id", "?"), _title(entity), body, thread
+        )
+    )
 
 
 def render_identity_rule(ctx: Any, intent: str) -> str:
@@ -205,42 +244,59 @@ def render_identity_rule(ctx: Any, intent: str) -> str:
     )
 
 
-def build_spec_change_prompt(subroute: str, request_id: Any, entity: Any, ctx: Any) -> str:
+def build_spec_change_prompt(
+    subroute: str, request_id: Any, entity: Any, ctx: Any, conversation: Any = None
+) -> str:
     """Prompt for the specseed spec-change worker (one subroute, one request).
 
-    The skill bundle (route ``spec`` + ``subroute``, where ``subroute`` is the
-    ``spec-change:<sub>`` label suffix) carries the full plan-first / apply.py /
-    approval contract; this adds only the per-request execution facts.
+    The skill bundle (route ``spec`` + ``subroute``) carries the full plan-first /
+    apply.py / approval contract; this adds the per-request facts + dir grants. The
+    spec route is the one route that may read the local tracker (it plans over the
+    whole entity tree); the post thread is still injected so it needs no db for it.
     """
-    specseed_dir = _specseed_dir(ctx)
-    request_dir = f"{specseed_dir}/storage/spec-change/{request_id}"
+    root = _data_root(ctx)
+    request_dir = spec_change_dir(request_id, root)
+    grants = _grant_lines(
+        (str(spec_dir(root)), "the LIVE spec - read for context; NEVER edit it here"),
+        (str(request_dir), "your spec-change dir - stage spec + write plan.json/apply.py HERE"),
+        (str(tracker_dir(root)), "local tracker db - read the entity tree to plan (resolve_local)"),
+        (str(instructions_dir(root) / "spec"), "user-owned repo context + custom instructions"),
+    )
     return (
         _skill_bundle(ctx, "spec", subroute) + "\n\n"
         + render_identity_rule(ctx, agent_report.SPEC_CHANGE) + "\n\n"
         + render_reply_mode(ctx) + "\n\n"
-        + f"Run the spec '{subroute}' subroute for spec-change request {request_id} "
-        f"(remote post titled {_title(entity)!r}). Read context from the LOCAL tracker only "
-        "(resolve_local / tracking_local.db); never poll the remote to plan. Stage every "
-        f"created/edited spec doc under {request_dir}/spec/ (mirroring its path under spec/), "
-        f"and write plan.json + apply.py into {request_dir}/. Then STOP: do not enqueue, do not "
-        "run apply.py, do not choose whether it needs approval, do not touch git or application "
-        "code. The runtime reads your output and gates it. One request, one run.\n\n"
+        + grants + "\n\n"
+        + _thread_block(entity, conversation) + "\n\n"
+        + f"Run the spec '{subroute}' subroute for spec-change request {request_id}. Read the "
+        "entity tree from the LOCAL tracker (resolve_local on the tracker dir above); never poll "
+        f"the remote to plan. Stage every created/edited spec doc under {request_dir}/spec/ "
+        "(mirroring its path under the live spec/), and write plan.json + apply.py into "
+        f"{request_dir}/. Then STOP: do not enqueue, do not run apply.py, do not choose whether "
+        "it needs approval, do not touch git or application code. The runtime reads your output "
+        "and gates it. One request, one run.\n\n"
         + render_action_gates(ctx) + "\n\n"
         + agent_report.result_instructions(agent_report.SPEC_CHANGE)
     )
 
 
-def build_implement_prompt(entity: Any, ctx: Any) -> str:
-    """Prompt for implementing a ready issue (bundle + execution facts)."""
+def build_implement_prompt(entity: Any, ctx: Any, conversation: Any = None) -> str:
+    """Prompt for implementing a ready issue (bundle + execution facts + thread)."""
+    root = _data_root(ctx)
+    grants = _grant_lines(
+        (str(spec_dir(root)), "the LIVE spec - read for what to build"),
+        (str(instructions_dir(root) / "impl"), "user-owned repo context + custom instructions"),
+    )
     return (
         _skill_bundle(ctx, "impl") + "\n\n"
         + render_identity_rule(ctx, agent_report.IMPLEMENT) + "\n\n"
-        + "Implement specseed work issue, remote post "
-        f"{getattr(entity, 'post_id', '?')} titled {_title(entity)!r}. Read its body and "
-        "comments from the local tracker for context (incl. the latest `Code review` comment, "
-        "if this issue bounced back). Keep edits scoped to what the issue asks; do not change "
-        "workflow labels or approve anything - the scheduler advances state. When finished, "
-        "leave the working tree in a building, test-passing state.\n\n"
+        + grants + "\n\n"
+        + _thread_block(entity, conversation) + "\n\n"
+        + "Implement this work issue in the target repo. The post body + thread above are your "
+        "full context (incl. the latest `Code review` comment, if this issue bounced back). Keep "
+        "edits scoped to what the issue asks; do not change workflow labels or approve anything - "
+        "the scheduler advances state. When finished, leave the working tree in a building, "
+        "test-passing state.\n\n"
         + render_git_policy(ctx)
         + "\n\n"
         + render_action_gates(ctx)
@@ -309,11 +365,13 @@ WHY THIS RUN: {reason}. {_PE_REASON.get(reason, _PE_REASON["new"])}
 FACTS
 - error post: id {post_id}, title {getattr(post, "title", "")!r}
 - origin: task {origin_task} ({origin_action}) about post {origin_post}
-- storage dir (logs live here): {storage}
-  - platform.log = JSON-lines event log. grep the origin task id first.
-  - specseed.db = work queue. recorded errors:
-    sqlite3 "{storage}/specseed.db" "SELECT message FROM task_errors WHERE task_id={origin_task}"
+- data root (the WHOLE repo data dir is yours for diagnosis - logs, queue, config): {storage}
+  - logs/platform.log = JSON-lines event log. grep the origin task id first.
+  - db/specseed.db = work queue. recorded errors:
+    sqlite3 "{storage}/db/specseed.db" "SELECT message FROM task_errors WHERE task_id={origin_task}"
 - engine source (read-only; ONLY when the logs do not explain it): {engine_src}
+- Do NOT rewrite engine state/history (don't mutate the queue/config by hand) - just
+  diagnose, then fix the underlying cause or surface concrete options on the post.
 
 THE POST NOW
 ---
@@ -375,30 +433,43 @@ def build_merge_conflict_prompt(
     )
 
 
-def build_ask_prompt(entity: Any, ctx: Any) -> str:
-    """Prompt for answering a question post (bundle + execution facts). READ-ONLY."""
+def build_ask_prompt(entity: Any, ctx: Any, conversation: Any = None) -> str:
+    """Prompt for answering a question post (bundle + execution facts + thread). READ-ONLY."""
+    root = _data_root(ctx)
+    grants = _grant_lines(
+        (str(spec_dir(root)), "the LIVE spec - read for context"),
+        (str(instructions_dir(root) / "ask"), "user-owned repo context + custom instructions"),
+    )
     return (
         _skill_bundle(ctx, "ask") + "\n\n"
         + render_identity_rule(ctx, agent_report.ASK) + "\n\n"
-        + "Answer the question on specseed request post "
-        f"{getattr(entity, 'post_id', '?')} titled {_title(entity)!r}. Read its body and "
-        "comments from the local tracker (the latest human comment is the live question or "
-        "the answer to your last clarification). Route the question to its source per the ask "
-        "route, read it, and compose the answer. You are READ-ONLY: change nothing - the "
-        "runtime posts your `answer` as a comment on the post.\n\n"
+        + grants + "\n\n"
+        + _thread_block(entity, conversation) + "\n\n"
+        + "Answer the question above (the latest human comment is the live question or the "
+        "answer to your last clarification). Route the question to its source per the ask route, "
+        "read it, and compose the answer. You are READ-ONLY: change nothing - not the target "
+        "repo, not the spec - the runtime posts your `answer` as a comment on the post.\n\n"
         + agent_report.result_instructions(agent_report.ASK)
     )
 
 
-def build_review_prompt(entity: Any, ctx: Any) -> str:
-    """Prompt for reviewing an issue that is in review (bundle + execution facts)."""
+def build_review_prompt(entity: Any, ctx: Any, conversation: Any = None) -> str:
+    """Prompt for reviewing an issue that is in review (bundle + thread + compare target)."""
+    root = _data_root(ctx)
+    primary = (getattr(ctx, "config", {}) or {}).get("specseed_primary_branch") or "main"
+    grants = _grant_lines(
+        (str(spec_dir(root)), "the LIVE spec - read to judge against intent"),
+        (str(instructions_dir(root) / "review"), "user-owned repo context + custom instructions"),
+    )
     return (
         _skill_bundle(ctx, "review") + "\n\n"
         + render_identity_rule(ctx, agent_report.REVIEW) + "\n\n"
-        + "Review completed work for specseed work issue "
-        f"{getattr(entity, 'post_id', '?')} titled {_title(entity)!r}. Read the issue body "
-        "and comments from the local tracker; inspect the change via the git diff against the "
-        "primary branch. Do not merge, change workflow labels, or approve; the scheduler "
-        "resolves the outcome from your verdict and the configured gates.\n\n"
+        + grants + "\n\n"
+        + _thread_block(entity, conversation) + "\n\n"
+        + "Review the completed work for this issue. The runtime has ALREADY checked out the "
+        f"issue's branch for you - inspect the change with `git diff {primary}...HEAD` (compare "
+        f"the work against the primary branch `{primary}`). Do NOT switch branches, merge, change "
+        "workflow labels, or approve - the scheduler resolves the outcome from your verdict and "
+        "the configured gates. Keep it simple: read the diff, judge it, report.\n\n"
         + agent_report.result_instructions(agent_report.REVIEW)
     )

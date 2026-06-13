@@ -51,8 +51,13 @@ from specseed_runtime.executing import inflight
 from specseed_runtime.executing import platform_log
 from specseed_runtime.executing import runner_control
 from specseed_runtime.executing.scheduler import Scheduler
+from specseed_runtime.migrating import relocate
 from specseed_runtime.migrating.migrate import run_migrations
-from specseed_runtime.storage_paths import SPECSEED_STORAGE_ENV, storage_db_path
+from specseed_runtime.storage_paths import (
+    SPECSEED_STORAGE_ENV,
+    seed_marker_file,
+    storage_db_path,
+)
 from specseed_runtime.tracking.populate_defaults import populate_defaults
 from specseed_runtime.tracking.resolve_remote import (
     default_storage_dir,
@@ -80,7 +85,7 @@ def build_scheduler(
     # Git is mandatory + the engine is off-limits: repair a non-git target and
     # refresh the identity guardrails before the loop. Skipped for the engine's
     # own checkout (target == dev repo) so we never rewrite its CLAUDE.md.
-    _ensure_target_ready(Path(repo_root) if repo_root else Path.cwd(), config)
+    _ensure_target_ready(Path(repo_root) if repo_root else Path.cwd(), storage_dir, config)
     platform_log.log_event(
         "scheduler_build",
         storage=str(storage_dir),
@@ -132,8 +137,8 @@ def build_scheduler(
     )
 
 
-def _ensure_target_ready(repo_root: Path, config: dict) -> None:
-    """Best-effort startup repair: git-init + identity guardrails for the target.
+def _ensure_target_ready(repo_root: Path, data_root: Path, config: dict) -> None:
+    """Best-effort startup repair: git-init the target + seed instruction stubs.
 
     Never touches the engine's own checkout (target == dev repo). Failures are
     logged, never fatal - a scaffold hiccup must not stop the runner."""
@@ -147,9 +152,8 @@ def _ensure_target_ready(repo_root: Path, config: dict) -> None:
     try:
         from specseed_runtime.configuring import scaffold
 
-        specseed_dir = config.get("specseed_dir") or ".specseed"
         primary_branch = config.get("specseed_primary_branch") or "main"
-        result = scaffold.scaffold_target(repo_root, specseed_dir, primary_branch)
+        result = scaffold.scaffold_target(repo_root, data_root, primary_branch)
         if result.get("git"):
             platform_log.log_event(
                 "target_git_initialized", repo_root=str(repo_root), actions=result["git"]
@@ -172,7 +176,7 @@ def _backend_kind(remote_state: dict) -> str:
 
 
 def _seed_marker_file(storage: Path) -> Path:
-    return Path(storage) / "seed_state.json"
+    return seed_marker_file(storage)
 
 
 def ensure_remote_seeded(storage: str | Path, remote_state: Optional[dict] = None) -> Optional[dict]:
@@ -230,10 +234,20 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--once", action="store_true", help="run one control+sync+drain pass and exit")
     args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
 
+    # A direct ``python3 -m ...run`` (not via the CLI) may hit a pre-0.21 target
+    # whose data still sits in-tree: relocate it into the home data root first so
+    # the storage path below is real. No-op once relocated. The CLI already did
+    # this in resolve_paths.
+    if args.repo_root:
+        try:
+            relocate.relocate_legacy_data(args.repo_root)
+        except Exception:
+            pass
+
     storage_dir = Path(args.storage) if args.storage else default_storage_dir()
-    # Export the target's storage for every child process: agent runs and
-    # generated apply.py call default_storage_dir() and must land HERE, not in
-    # the engine repo's dev storage.
+    # Export the data root for every child process: agent runs and generated
+    # apply.py call default_storage_dir() and must land HERE, not in the engine
+    # repo's dev storage.
     os.environ[SPECSEED_STORAGE_ENV] = str(storage_dir.resolve())
     platform_log.configure(storage_dir)
     platform_log.log_event(

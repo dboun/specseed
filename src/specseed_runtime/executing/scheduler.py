@@ -364,7 +364,10 @@ class Scheduler:
         if self._control_file is None:
             return
         try:
-            desired = runner_control.read_desired(self._control_file.parent)
+            # control.json lives under the data root's runtime/ subdir, so derive the
+            # desired state from the data root - not the file's parent (which is runtime/).
+            storage = self.storage if self.storage is not None else self._control_file.parent
+            desired = runner_control.read_desired(storage)
         except Exception:  # control plane must never crash the loop
             return
         if desired is None or desired == self._last_desired:
@@ -392,7 +395,10 @@ class Scheduler:
             if final:
                 status["state"] = STOPPED
                 status["alive"] = False
-            runner_control.write_runner_status(self._status_file.parent, status)
+            # runner.json lives under runtime/, so write via the data root, not the
+            # status file's parent (= runtime/).
+            storage = self.storage if self.storage is not None else self._status_file.parent
+            runner_control.write_runner_status(storage, status)
         except Exception:  # heartbeat is best-effort
             pass
 

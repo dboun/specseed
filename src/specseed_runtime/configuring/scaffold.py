@@ -1,4 +1,4 @@
-"""scaffold.py - make a target git-ready and identity-clear.
+"""scaffold.py - make a target git-ready and seed user-owned instructions.
 
 Two environment fixes the run history demanded:
 
@@ -7,18 +7,20 @@ Two environment fixes the run history demanded:
    issues clobbered each other). So we ``git init`` a non-git target and give the
    primary branch a root commit to branch from.
 2. **The engine is off-limits.** Agents kept concluding the "app" was specseed
-   itself and editing the engine. We seed empty per-route instruction stubs into
-   the target's specseed_dir; the skill bundle (``generate_prompt_from_skill``)
-   tells the agent which one to read each run. Nothing is written to the target's
-   repo-root ``CLAUDE.md`` / ``AGENTS.md`` - the only thing specseed adds to a
-   target is ``<specseed_dir>/``.
+   itself and editing the engine. We seed empty per-route instruction stubs (in the
+   home DATA ROOT, not the target); the skill bundle (``generate_prompt_from_skill``)
+   tells the agent which to read each run.
 
-Both are idempotent and best-effort (a git hiccup never aborts configure). Reused
-by ``configuring/configure.py`` (setup) and ``executing/run.py`` (startup repair).
+Nothing else is written into the target - no ``.specseed/``, no repo-root
+CLAUDE.md/AGENTS.md, no .gitignore line. ALL data lives in the home data root, so the
+target stays clean. Both fixes are idempotent and best-effort (a git hiccup never
+aborts configure). Reused by ``configuring/configure.py`` (setup) and
+``executing/run.py`` (startup repair).
 
-The instruction stubs (``AGENTS_INSTRUCTIONS_<ROUTE>.md`` for repo context +
-``CUSTOM_INSTRUCTIONS[_<ROUTE>].md`` for user overrides) are USER-OWNED and empty by
-default: seeded create-if-absent, NEVER overwritten on refresh, so edits survive.
+The instruction stubs (``instructions/<route>/repo.md`` for repo context +
+``instructions/custom.md`` / ``instructions/<route>/custom.md`` for user overrides)
+are USER-OWNED and empty by default: seeded create-if-absent, NEVER overwritten on
+refresh, so edits survive.
 
 Only Python stdlib is used.
 """
@@ -29,14 +31,17 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
-# Per-route repo-context guardrail files. One per skill route that runs in the target
-# (spec / impl / review / ask). Empty by default; the user fills in repo-level structure
-# and quick context. The skill bundle tells the agent which to read.
-_INSTRUCTION_FILES = {
-    "AGENTS_INSTRUCTIONS_IMPL.md": "implementing a work issue",
-    "AGENTS_INSTRUCTIONS_SPEC.md": "running a spec-change",
-    "AGENTS_INSTRUCTIONS_REVIEW.md": "reviewing completed work",
-    "AGENTS_INSTRUCTIONS_ASK.md": "answering a question",
+from specseed_runtime.storage_paths import instructions_dir
+
+# Per-route repo-context, one per skill route that runs in the target
+# (impl / spec / review / ask). Lives at ``instructions/<route>/repo.md`` in the
+# DATA ROOT (home, not the target). Empty by default; the user fills in repo-level
+# structure + quick context. The skill bundle tells the agent which to read.
+_ROUTE_KINDS = {
+    "impl": "implementing a work issue",
+    "spec": "running a spec-change",
+    "review": "reviewing completed work",
+    "ask": "answering a question",
 }
 
 
@@ -90,41 +95,6 @@ def ensure_git_repo(repo_root: str | Path, primary_branch: str = "main") -> list
     return actions
 
 
-def ensure_gitignore_committed(repo_root: str | Path, gitignore_path: str | Path | None) -> list[str]:
-    """Commit only the repo .gitignore when it has staged-relevant changes.
-
-    Runtime state must be ignored on the primary history before issue branches are
-    cut. Stage only ``.gitignore``: unrelated dirty files stay in the worktree.
-    """
-    if gitignore_path is None:
-        return []
-    repo_root = Path(repo_root)
-    path = Path(gitignore_path)
-    try:
-        rel = path.resolve().relative_to(repo_root.resolve()).as_posix()
-    except ValueError:
-        return []
-    if rel != ".gitignore" or not path.exists() or not is_git_repo(repo_root) or not _has_head(repo_root):
-        return []
-    add = _run_git(repo_root, ["add", "--", rel])
-    if add.returncode != 0:
-        return []
-    staged = _run_git(repo_root, ["diff", "--cached", "--quiet", "--", rel])
-    if staged.returncode == 0:
-        return []
-    res = _run_git(
-        repo_root,
-        [
-            "-c", "user.email=specseed@local",
-            "-c", "user.name=specseed",
-            "commit", "-m", "specseed: ignore runtime state",
-        ],
-    )
-    if res.returncode == 0:
-        return ["commit .gitignore"]
-    return []
-
-
 def _instruction_body(kind: str) -> str:
     """An EMPTY repo-context stub. The generic guidance (spec-read order, target/engine
     boundary, git policy) now lives in the skill, injected every run; this file is the
@@ -139,21 +109,22 @@ def _instruction_body(kind: str) -> str:
     )
 
 
-def write_instruction_files(repo_root: str | Path, specseed_dir: str) -> list[Path]:
-    """Seed the per-route repo-context stubs under ``<specseed_dir>/``, create-if-absent.
+def write_instruction_files(data_root: str | Path) -> list[Path]:
+    """Seed the per-route repo-context stubs at ``instructions/<route>/repo.md``.
 
-    USER-OWNED: an existing file (with the human's content) is never overwritten, so a
-    refresh on every startup is safe. Returns the paths newly created.
+    Lives in the DATA ROOT (home), not the target. USER-OWNED: an existing file is
+    never overwritten, so a refresh on every startup is safe. Returns paths newly
+    created.
     """
-    repo_root = Path(repo_root)
-    target_dir = repo_root / specseed_dir
+    base = instructions_dir(data_root)
     written: list[Path] = []
-    try:
-        target_dir.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        return written
-    for fname, kind in _INSTRUCTION_FILES.items():
-        path = target_dir / fname
+    for route, kind in _ROUTE_KINDS.items():
+        route_dir = base / route
+        try:
+            route_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            continue
+        path = route_dir / "repo.md"
         if path.exists():
             continue
         try:
@@ -164,16 +135,11 @@ def write_instruction_files(repo_root: str | Path, specseed_dir: str) -> list[Pa
     return written
 
 
-# User-owned custom-instruction files, keyed by skill route ("" = global, applied to
-# every route). The runtime only seeds an empty stub when absent and NEVER overwrites.
-# The skill bundle tells the agent to read the matching file each run.
-CUSTOM_INSTRUCTION_FILES = {
-    "": "CUSTOM_INSTRUCTIONS.md",
-    "impl": "CUSTOM_INSTRUCTIONS_IMPL.md",
-    "spec": "CUSTOM_INSTRUCTIONS_SPEC.md",
-    "review": "CUSTOM_INSTRUCTIONS_REVIEW.md",
-    "ask": "CUSTOM_INSTRUCTIONS_ASK.md",
-}
+# User-owned custom-instruction routes ("" = global, applied to every route). The
+# runtime only seeds an empty stub when absent and NEVER overwrites. The skill bundle
+# tells the agent to read the matching file each run. Global -> instructions/custom.md;
+# per route -> instructions/<route>/custom.md.
+CUSTOM_INSTRUCTION_ROUTES = ("", "impl", "spec", "review", "ask")
 
 _CUSTOM_STUB_HEADER = (
     "<!-- specseed: user-owned. Safe to edit. The agent reads this file every run for "
@@ -187,23 +153,24 @@ _CUSTOM_STUB_HEADER = (
 )
 
 
-def write_custom_instruction_stubs(repo_root: str | Path, specseed_dir: str) -> list[Path]:
+def custom_instruction_file(data_root: str | Path, scope: str) -> Path:
+    """``instructions/custom.md`` (global) or ``instructions/<route>/custom.md``."""
+    base = instructions_dir(data_root)
+    return (base / "custom.md") if not scope else (base / scope / "custom.md")
+
+
+def write_custom_instruction_stubs(data_root: str | Path) -> list[Path]:
     """Seed empty user-owned custom-instruction files, create-if-absent.
 
-    Never overwrites: an existing file (with the human's content) is left alone.
-    Returns the paths newly created.
+    Never overwrites: an existing file is left alone. Returns paths newly created.
     """
-    target_dir = Path(repo_root) / specseed_dir
     written: list[Path] = []
-    try:
-        target_dir.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        return written
-    for scope, fname in CUSTOM_INSTRUCTION_FILES.items():
-        path = target_dir / fname
+    for scope in CUSTOM_INSTRUCTION_ROUTES:
+        path = custom_instruction_file(data_root, scope)
         if path.exists():
             continue
         try:
+            path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(
                 _CUSTOM_STUB_HEADER.format(scope=scope or "all steps"), encoding="utf-8"
             )
@@ -213,72 +180,22 @@ def write_custom_instruction_stubs(repo_root: str | Path, specseed_dir: str) -> 
     return written
 
 
-def repo_gitignore_file(repo_root: str | Path) -> Path:
-    return Path(repo_root) / ".gitignore"
-
-
-def ensure_repo_gitignored(repo_root: str | Path, specseed_dir: str | Path) -> Path | None:
-    """Append the specseed dir to the repo .gitignore, unless already listed.
-
-    The specseed dir holds storage (dbs, tokens, logs) + the generated spec; none
-    of it belongs in the target's history - tracked storage breaks every checkout
-    the merge gate needs (it never merges). Best-effort and idempotent. Returns the
-    .gitignore path (created if needed), or None when there is nothing in-tree to
-    ignore (dir empty, or absolute and OUTSIDE the repo - already excluded) or it is
-    unwritable.
-    """
-    repo_root = Path(repo_root)
-    p_dir = Path(specseed_dir)
-    if p_dir.is_absolute():
-        try:
-            entry = p_dir.resolve().relative_to(repo_root.resolve()).as_posix().strip("/")
-        except ValueError:
-            return None  # outside the repo - nothing in-tree to ignore
-    else:
-        entry = p_dir.as_posix().strip("/")
-    if not entry or entry == ".":
-        return None
-    entry = f"{entry}/"
-    p = repo_gitignore_file(repo_root)
-    existing = ""
-    try:
-        existing = p.read_text(encoding="utf-8")
-    except OSError:
-        pass
-    normalized = {line.strip().strip("/") for line in existing.splitlines()}
-    if entry.strip("/") in normalized:
-        return p
-    sep = "" if existing == "" or existing.endswith("\n\n") else ("\n" if existing.endswith("\n") else "\n\n")
-    try:
-        with p.open("a", encoding="utf-8") as fh:
-            fh.write(f"{sep}{entry}\n")
-    except OSError:
-        return None
-    return p
-
-
 def scaffold_target(
     repo_root: str | Path,
-    specseed_dir: str,
+    data_root: str | Path,
     primary_branch: str = "main",
 ) -> dict:
-    """Do it all: git, instruction + custom stubs, repo .gitignore. (No target-root
-    CLAUDE.md/AGENTS.md - the skill bundle points the agent at the stubs instead.)
+    """Make a target git-ready and seed the user-owned instruction stubs.
 
-    ALWAYS adds ``<specseed_dir>/`` to the target's .gitignore - no opt-out. The
-    dir holds storage (dbs, tokens, logs); tracking it leaves the tree perpetually
-    dirty and breaks every merge-gate checkout. Runs on EVERY entry path (configure
-    / add / startup repair), so a repo registered without the interactive flow still
-    gets it. ``ensure_repo_gitignored`` no-ops when the dir lives outside the repo
-    (already excluded). Best-effort throughout.
+    The target itself gets ONLY a git repo (init + root commit if needed) - NOTHING
+    else is written into it (no ``.specseed/``, no .gitignore line; all data lives in
+    the home DATA ROOT). The instruction stubs land under ``instructions/<route>/`` in
+    the data root. Runs on EVERY entry path (configure / add / startup repair).
+    Best-effort throughout.
     """
     git_actions = ensure_git_repo(repo_root, primary_branch)
-    gi = ensure_repo_gitignored(repo_root, specseed_dir)
-    gi_commit = ensure_gitignore_committed(repo_root, gi)
     return {
         "git": git_actions,
-        "instructions": [str(p) for p in write_instruction_files(repo_root, specseed_dir)],
-        "custom_instructions": [str(p) for p in write_custom_instruction_stubs(repo_root, specseed_dir)],
-        "gitignore": str(gi) if gi is not None else None,
-        "gitignore_commit": gi_commit,
+        "instructions": [str(p) for p in write_instruction_files(data_root)],
+        "custom_instructions": [str(p) for p in write_custom_instruction_stubs(data_root)],
     }

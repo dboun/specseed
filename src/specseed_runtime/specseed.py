@@ -40,6 +40,8 @@ from specseed_runtime import registry  # noqa: E402
 from specseed_runtime.configuring import configure  # noqa: E402
 from specseed_runtime.executing import run as run_mod  # noqa: E402
 from specseed_runtime.executing import runner_control  # noqa: E402
+from specseed_runtime.migrating import relocate  # noqa: E402
+from specseed_runtime.storage_paths import config_file, remote_file  # noqa: E402
 
 DEFAULT_SPECSEED_DIR = ".specseed"
 DEFAULT_PORT = 5050
@@ -88,20 +90,22 @@ def resolve_paths(
     target_repo: str | Path | None = None,
     specseed_dir: str | Path = DEFAULT_SPECSEED_DIR,
 ) -> tuple[Path, Path]:
-    """Return ``(target repo root, storage dir)``."""
+    """Return ``(target repo root, data root)``.
+
+    The data root lives in the app home (``$SPECSEED_HOME/repos/<slug>``), NEVER in
+    the target. Before resolving, relocate any pre-0.21 in-target data into it.
+    """
     target = (
         Path(target_repo).expanduser().resolve()
         if target_repo is not None
         else find_target_repo()
     )
-    sd = Path(specseed_dir).expanduser()
-    specseed_root = (sd if sd.is_absolute() else target / sd).resolve()
-    return target, specseed_root / "storage"
+    relocate.relocate_legacy_data(target, specseed_dir)
+    return target, registry.data_root_for(target)
 
 
 def repo_is_setup(storage: str | Path) -> bool:
-    storage = Path(storage)
-    return (storage / "configuration.json").is_file() and (storage / "remote.json").is_file()
+    return config_file(storage).is_file() and remote_file(storage).is_file()
 
 
 def _ensure_target(target: Path) -> bool:
@@ -138,6 +142,7 @@ def _resolve_repo(args: argparse.Namespace) -> dict | None:
         "name": target.name,
         "target": str(target),
         "specseed_dir": getattr(args, "specseed_dir", DEFAULT_SPECSEED_DIR),
+        "data_root": str(storage),
         "storage": str(storage),
         "provider": "local",
     }

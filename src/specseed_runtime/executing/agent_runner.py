@@ -238,6 +238,9 @@ class AgentResult:
     # quota signal: a global condition, not a task-local failure.
     quota_exhausted: bool = False
     quota_reset_hint: Optional[str] = None
+    # The provider's conversation/session id for this run (parsed from stream-json),
+    # so a later turn on the same post can ``--resume`` it. None when unavailable.
+    session_id: Optional[str] = None
 
 
 class AgentRunner:
@@ -257,6 +260,7 @@ class AgentRunner:
         on_start: Optional[Callable[[int, str], None]] = None,
         intent: Optional[str] = None,
         live_log: Optional[str | Path] = None,
+        resume_id: Optional[str] = None,
     ) -> AgentResult:
         raise NotImplementedError
 
@@ -277,8 +281,15 @@ class SubprocessAgentRunner(AgentRunner):
         # CLAUDE_CONFIG_DIR / CODEX_HOME from a spec's provider_data_dir).
         self.env_overrides: dict[str, str] = dict(env or {})
 
-    def build_command(self, prompt: str, cwd: str | Path) -> list[str]:
+    def build_command(self, prompt: str, cwd: str | Path, resume_id: Optional[str] = None) -> list[str]:
         raise NotImplementedError
+
+    def parse_session_id(self, stdout: str) -> Optional[str]:
+        """Pull the provider's session/conversation id out of stdout, if present.
+
+        Base: none (providers whose stdout carries one override). Used so a later
+        turn on the same post can resume the conversation instead of re-injecting."""
+        return None
 
     def format_stream_line(self, raw: str) -> str:
         """Turn one raw stdout line into display text for the live feed.
@@ -313,8 +324,9 @@ class SubprocessAgentRunner(AgentRunner):
         on_start: Optional[Callable[[int, str], None]] = None,
         intent: Optional[str] = None,
         live_log: Optional[str | Path] = None,
+        resume_id: Optional[str] = None,
     ) -> AgentResult:
-        argv = self.build_command(prompt, cwd)
+        argv = self.build_command(prompt, cwd, resume_id)
         # Per-run result file the agent writes its JSON outcome to. Pre-created
         # empty so a vanished file is unambiguous; cleaned up after parsing.
         result_fd, result_path = tempfile.mkstemp(prefix="specseed-result-", suffix=".json")
@@ -479,6 +491,7 @@ class SubprocessAgentRunner(AgentRunner):
             duration_s=duration,
             report=report,
             report_error=report_error,
+            session_id=self.parse_session_id(stdout),
         )
 
     def _stop(self, proc: "subprocess.Popen[Any]") -> None:
@@ -519,12 +532,12 @@ class ClaudeAgentRunner(SubprocessAgentRunner):
         self.binary = binary
         self.config_dir = config_dir
 
-    def build_command(self, prompt: str, cwd: str | Path) -> list[str]:
+    def build_command(self, prompt: str, cwd: str | Path, resume_id: Optional[str] = None) -> list[str]:
         # stream-json (requires --verbose) emits one JSON event per line as the
         # agent thinks/acts, so the live feed shows the work in flight instead of
         # just a final dump. The structured result still arrives via
         # $SPECSEED_RESULT_FILE - stdout format is display-only.
-        return [
+        argv = [
             self.binary, "-p",
             "--model", self.model,
             "--permission-mode", self.permission_mode,
@@ -533,6 +546,26 @@ class ClaudeAgentRunner(SubprocessAgentRunner):
             "--verbose",
             "--output-format", "stream-json",
         ]
+        # Continue the same conversation across turns (the runtime keys a session id
+        # per post). The first turn has no id and seeds via the injected thread.
+        if resume_id:
+            argv += ["--resume", str(resume_id)]
+        return argv
+
+    def parse_session_id(self, stdout: str) -> Optional[str]:
+        """Claude stream-json opens with a system/init event carrying session_id."""
+        for line in stdout.splitlines():
+            line = line.strip()
+            if not line or '"session_id"' not in line:
+                continue
+            try:
+                obj = json.loads(line)
+            except (ValueError, TypeError):
+                continue
+            sid = isinstance(obj, dict) and obj.get("session_id")
+            if sid:
+                return str(sid)
+        return None
 
     def format_stream_line(self, raw: str) -> str:
         return format_claude_stream_line(raw)
@@ -566,7 +599,8 @@ class CodexAgentRunner(SubprocessAgentRunner):
         self.binary = binary
         self.config_dir = config_dir
 
-    def build_command(self, prompt: str, cwd: str | Path) -> list[str]:
+    def build_command(self, prompt: str, cwd: str | Path, resume_id: Optional[str] = None) -> list[str]:
+        # resume_id is claude-only; codex continuity falls back to the injected thread.
         # --skip-git-repo-check: a target need not be a git repo (TrackingRemoteLocal
         # stand-in, fresh dirs). Without it codex exec refuses to start and exits 1
         # instantly with "Not inside a trusted directory". claude has no such gate.
@@ -675,6 +709,7 @@ class RunnerChains:
         on_start: Optional[Callable[[int, str], None]] = None,
         intent: Optional[str] = None,
         live_log: Optional[str | Path] = None,
+        resume_id: Optional[str] = None,
     ) -> AgentResult:
         chain = self.chain_for(function)
         last: Optional[AgentResult] = None
@@ -684,9 +719,12 @@ class RunnerChains:
                 platform_log.log_event(
                     "agent_chain_fallback", function=function, spec_index=i
                 )
+            # Only the PRIMARY spec resumes the prior session - a fallback is a
+            # different provider/account, so resuming its (foreign) id is invalid.
             result = runner.run(
                 prompt, cwd=cwd, cancel=cancel, timeout_s=timeout_s,
                 on_start=on_start, intent=intent, live_log=live_log,
+                resume_id=resume_id if i == 0 else None,
             )
             last = result
             if getattr(result, "killed", False):
@@ -770,9 +808,11 @@ class FakeAgentRunner(AgentRunner):
         on_start: Optional[Callable[[int, str], None]] = None,
         intent: Optional[str] = None,
         live_log: Optional[str | Path] = None,
+        resume_id: Optional[str] = None,
     ) -> AgentResult:
         call = {"prompt": prompt, "cwd": str(cwd), "timeout_s": timeout_s, "cancel": cancel,
-                "on_start": on_start, "intent": intent, "live_log": live_log}
+                "on_start": on_start, "intent": intent, "live_log": live_log,
+                "resume_id": resume_id}
         self.calls.append(call)
         if self.side_effect is not None:
             return self.side_effect(call)

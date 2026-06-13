@@ -22,13 +22,15 @@ class RegistryTest(unittest.TestCase):
         self._env.start()
         self.addCleanup(self._env.stop)
 
-    def test_add_creates_record_with_derived_storage(self) -> None:
+    def test_add_creates_record_with_home_data_root(self) -> None:
         record = registry.add_repo(self.target, provider="local")
         self.assertEqual(record["provider"], "local")
         self.assertEqual(Path(record["target"]), self.target.resolve())
-        self.assertEqual(
-            Path(record["storage"]), self.target.resolve() / ".specseed" / "storage"
-        )
+        # data root lives in the home under repos/<slug>, NOT inside the target
+        expected = self.home.resolve() / "repos" / registry._slug(self.target.resolve())
+        self.assertEqual(Path(record["data_root"]), expected)
+        self.assertEqual(Path(record["storage"]), expected)  # back-compat alias
+        self.assertFalse(str(expected).startswith(str(self.target.resolve())))
         self.assertTrue(registry.registry_file().is_file())
 
     def test_add_is_idempotent_on_target(self) -> None:

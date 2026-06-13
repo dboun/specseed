@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from specseed_runtime import storage_paths
 from specseed_runtime.db.database import Database
 from specseed_runtime.migrating import migrate
 from specseed_runtime.tracking.tracking_local import TrackingLocal
@@ -59,22 +60,22 @@ def test_migrates_all_databases_and_deletes_copied_code(tmp_path: Path) -> None:
     # whole chain ran, marker now matches the running engine
     assert "m_0_3_0__0_3_1" in applied
     assert "m_0_3_1__0_4_0" in applied
-    assert (storage / "version.txt").read_text(encoding="utf-8").strip() == migrate.code_version()
+    assert (storage / "config" / "version.txt").read_text(encoding="utf-8").strip() == migrate.code_version()
 
     # copied engine code is gone; storage + config survive
     assert not (specseed_dir / "specseed_runtime").exists()
     assert not (specseed_dir / "skills").exists()
 
-    # data readable through the normal accessors at the flat storage paths
-    remote = TrackingRemoteLocal(db_path=storage / "tracking_remote_local.db")
+    # data readable through the normal accessors at the 0.21 subdir paths
+    remote = TrackingRemoteLocal(db_path=storage_paths.storage_db_path("tracking_remote_local.db", storage))
     assert {e.title for e in remote.list_entries(is_open=None).data} == {"remote ticket"}
-    local = TrackingLocal(db_path=storage / "tracking_local.db")
+    local = TrackingLocal(db_path=storage_paths.storage_db_path("tracking_local.db", storage))
     assert {e.title for e in local.list_entries(is_open=None).data} == {"local mirror entry"}
-    queue = Database(db_path=storage / "specseed.db")
+    queue = Database(db_path=storage_paths.storage_db_path("specseed.db", storage))
     assert queue.pending_count() == 1, "queued task lost in migration"
     assert queue.tasks_for(1)[0]["action"] == "handle_test"
 
-    cfg = json.loads((storage / "configuration.json").read_text(encoding="utf-8"))
+    cfg = json.loads((storage / "config" / "configuration.json").read_text(encoding="utf-8"))
     assert "version" not in cfg
     # 0.12.0 hop renamed dev_branch -> specseed_primary_branch
     assert "dev_branch" not in cfg

@@ -28,7 +28,7 @@ Three modes, two forms. Choose by the tracker provider the runtime handed you:
 |---|---|---|
 | Provider is **local** (specseed's own tracker; the specseed web UI is the only renderer) | **specseed-UI** | **STRUCTURED** JSON envelope |
 | Provider is **github** / **gitlab** (read natively on that platform) | **external** | **NATURAL** prose |
-| **No runtime** (plain Claude chat — no scheduler, no `<specseed_dir>/storage/`) | **chat** | **NATURAL** prose |
+| **No runtime** (plain Claude chat — no scheduler, no data root in the prompt) | **chat** | **NATURAL** prose |
 | **Cannot tell** which | — | **Assume chat** |
 
 Rules:
