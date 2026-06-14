@@ -31,6 +31,7 @@ export function createTracker({ repo, ctx, sub }) {
     seenPostIds: null, // baseline of known post ids; new ids trigger a radar sweep
     seenCommentIds: null, // baseline of comment ids on the open post (radar sweep on new ones)
     fb: {}, // per-feedback-comment answer drafts, keyed by comment id (survives repaints)
+    popupStack: [], // stacked read-only post popups opened from #NN refs (top = last)
   };
 
   async function load() {
@@ -314,7 +315,7 @@ export function createTracker({ repo, ctx, sub }) {
       <div class="drawer">
         ${drawerHead(post)}
         <div class="managed-note">Managed dashboard · read-only</div>
-        <div class="post-body">${renderMarkdown(post.body || "")}</div>
+        <div class="post-body">${renderMarkdown(post.body || "", { postRefs: true })}</div>
         ${commentsBlock(post, false)}
       </div>`;
   }
@@ -353,7 +354,7 @@ export function createTracker({ repo, ctx, sub }) {
   // read view: title lives bold in the drawer head; body renders as markdown
   function postView(post, readOnly) {
     return `
-      <div class="post-body">${renderMarkdown(post.body || "")}</div>
+      <div class="post-body">${renderMarkdown(post.body || "", { postRefs: true })}</div>
       <div class="button-row">
         ${readOnly ? "" : `<button type="button" class="btn btn-ghost" data-edit-post>Edit</button>`}
         <button type="button" class="btn btn-ghost" data-toggle-post>${post.is_open ? "Close" : "Reopen"}</button>
@@ -491,7 +492,7 @@ export function createTracker({ repo, ctx, sub }) {
       .split(WORK_MERGE_GATE_MARKER).join("");
     return `
       <article class="approval-box ${resolved ? "resolved" : ""}" data-comment-id="${escapeHtml(String(comment.id))}">
-        <div class="approval-body">${renderMarkdown(body)}</div>
+        <div class="approval-body">${renderMarkdown(body, { postRefs: true })}</div>
         ${resolved
           ? `<div class="approval-status">${resolved === "approved" ? "✅ Approved" : "🚫 Rejected"}</div>`
           : `<div class="button-row">${approvalButtons(comment)}</div>`}
@@ -518,7 +519,7 @@ export function createTracker({ repo, ctx, sub }) {
     return `
       <article class="comment" data-comment-id="${escapeHtml(String(comment.id))}">
         <div class="comment-meta">${escapeHtml(comment.author || "unknown")} · ${escapeHtml(formatTime(comment.updated_at || comment.created_at))}</div>
-        <div class="comment-body">${renderMarkdown(comment.body || "")}</div>
+        <div class="comment-body">${renderMarkdown(comment.body || "", { postRefs: true })}</div>
         <div class="reaction-strip sm">${reactionButtons(comment.reactions, "comment", comment.id)}</div>
       </article>`;
   }
@@ -650,6 +651,78 @@ export function createTracker({ repo, ctx, sub }) {
     if (String(id) !== String(state.selectedId)) openPost(id, { push: false });
   }
 
+  // -- stacked post popups ---------------------------------------------- #
+  // A #NN ref in any body/comment opens the target post as a read-only popup
+  // OVER the current view (drawer untouched). A #NN inside a popup stacks another
+  // on top; X / Esc / backdrop pops one level. Read + navigate only: no compose,
+  // and a flat comment thread (no reaction/approval/feedback controls, which key
+  // off the DRAWER post and would mis-target if fired from here).
+  function popupComments(post) {
+    const comments = post.comments || [];
+    const body =
+      comments
+        .map(
+          (c) => `
+        <article class="comment">
+          <div class="comment-meta">${escapeHtml(c.author || "unknown")} · ${escapeHtml(formatTime(c.updated_at || c.created_at))}</div>
+          <div class="comment-body">${renderMarkdown(c.body || "", { postRefs: true })}</div>
+        </article>`
+        )
+        .join("") || `<div class="muted">No comments.</div>`;
+    return `<div class="section-title">comments</div>${body}`;
+  }
+
+  function popupCard(post) {
+    return `
+      <div class="drawer popup-drawer">
+        <div class="drawer-top">
+          <span class="tag tag-${post.is_open ? "open" : "closed"}">${post.is_open ? "open" : "closed"}</span>
+          <button class="icon-btn" data-popup-close aria-label="close">✕</button>
+        </div>
+        <h2 class="drawer-title">#${escapeHtml(post.id)} ${escapeHtml(post.title)}</h2>
+        <div class="post-meta">by ${escapeHtml(post.author || "unknown")} · updated ${escapeHtml(formatTime(post.updated_at))}</div>
+        <div class="post-body">${renderMarkdown(post.body || "", { postRefs: true })}</div>
+        ${popupComments(post)}
+      </div>`;
+  }
+
+  function repaintPopups() {
+    document.querySelectorAll("[data-post-popup]").forEach((n) => n.remove());
+    state.popupStack.forEach((post, depth) => {
+      const node = document.createElement("div");
+      node.className = "modal-backdrop post-popup";
+      node.dataset.postPopup = String(depth);
+      node.style.setProperty("--popup-depth", String(depth));
+      node.innerHTML = `<section class="modal-card post-popup-card">${popupCard(post)}</section>`;
+      document.body.append(node);
+    });
+  }
+
+  async function openPopup(id) {
+    try {
+      const post = await api.getPost(repo.id, id);
+      state.popupStack.push(post);
+      repaintPopups();
+    } catch (err) {
+      ctx.onError(err);
+    }
+  }
+
+  function closeTopPopup() {
+    if (!state.popupStack.length) return false;
+    state.popupStack.pop();
+    repaintPopups();
+    return true;
+  }
+
+  function handleKeydown(event) {
+    if (event.key === "Escape" && state.popupStack.length) {
+      event.preventDefault();
+      event.stopPropagation();
+      closeTopPopup();
+    }
+  }
+
   // Unsaved-edit guard: a short reason while a message edit is in flight, else "".
   function isDirty() {
     if (state.selectedId == null) return "";
@@ -774,6 +847,13 @@ export function createTracker({ repo, ctx, sub }) {
   // -- events ----------------------------------------------------------- #
   async function handleClick(event) {
     const t = event.target;
+    // Stacked popups first: close on X / backdrop, open on a #NN ref. These can
+    // land anywhere (drawer, list, or a popup) since the listener is document-wide.
+    if (t.closest("[data-popup-close]")) return closeTopPopup();
+    const backdrop = t.closest("[data-post-popup]");
+    if (backdrop && t === backdrop) return closeTopPopup();
+    const popupRef = t.closest("[data-popup-post]");
+    if (popupRef) return openPopup(popupRef.dataset.popupPost);
     const ao = t.closest("[data-agent-output]");
     if (ao) return openAgentOutput(repo.id, ao.dataset.agentOutput, { autoClose: true });
     const open = t.closest("[data-open-post]");
@@ -1064,6 +1144,7 @@ export function createTracker({ repo, ctx, sub }) {
       refreshQueueDot(); // initial paint; the interval keeps it current
       timer = setInterval(autoRefresh, 5000);
       document.addEventListener("dblclick", handleDblClick);
+      document.addEventListener("keydown", handleKeydown);
     }
   }
 
@@ -1071,6 +1152,9 @@ export function createTracker({ repo, ctx, sub }) {
     if (timer) clearInterval(timer);
     clearTimeout(searchTimer);
     document.removeEventListener("dblclick", handleDblClick);
+    document.removeEventListener("keydown", handleKeydown);
+    state.popupStack = [];
+    repaintPopups(); // tear down any open popups when leaving the tab
   }
 
   return { load, html, afterRender, handleClick, handleSubmit, handleInput, dispose, onSubRoute, isDirty };

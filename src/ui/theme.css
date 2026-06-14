@@ -950,6 +950,17 @@ textarea { resize: vertical; min-height: 70px; }
 .modal-card { background: var(--panel); border: 1px solid var(--line-2); border-radius: 16px; padding: 24px; width: 100%; max-width: 440px; max-height: 90vh; overflow: auto; box-shadow: 0 40px 100px -30px #000; }
 .modal-card.wide { max-width: 560px; }
 
+/* Inline #NN post ref -> opens a stacked read-only popup of that post. */
+.post-ref { color: var(--accent-2); cursor: pointer; font-family: var(--mono); text-decoration: none; border-bottom: 1px dotted currentColor; }
+.post-ref:hover { color: var(--accent); }
+
+/* Stacked post popups (a #NN ref opens one OVER the current view; nesting deeper
+   stacks more). Each is its own backdrop; --popup-depth lifts deeper ones above
+   and nudges them so the stack reads as layered cards on desktop. */
+.post-popup { z-index: calc(110 + var(--popup-depth) * 2); }
+.post-popup-card { max-width: 640px; padding: 0; transform: translate(calc(var(--popup-depth) * 14px), calc(var(--popup-depth) * 14px)); }
+.post-popup-card .popup-drawer { border: 0; border-radius: 16px; }
+
 /* Inline "Agent is working on this…" box in the post comments (our UI only). */
 .agent-working {
   display: flex; align-items: center; gap: 10px; width: 100%;
@@ -1011,6 +1022,10 @@ textarea { resize: vertical; min-height: 70px; }
   .tracker-root.detail .filters,
   .tracker-root.detail .post-list { display: none; }
   .tracker-root.detail .drawer { min-height: calc(100vh - 140px); }
+  /* Post popups become full-screen sheets; no per-depth offset on small screens. */
+  .post-popup { padding: 0; }
+  .post-popup-card { max-width: 100%; max-height: 100vh; height: 100vh; border-radius: 0; transform: none; }
+  .post-popup-card .popup-drawer { border-radius: 0; min-height: 100vh; }
   /* Spec keeps the index visible (it's compact) and just stacks the pane below;
      the spine still reads top-to-bottom. */
   .spec-pane { padding: 18px 16px; }

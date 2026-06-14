@@ -8,6 +8,12 @@
 const ESC = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ESC[c]);
 
+// Opt-in (per renderMarkdown call): linkify bare #NN post refs. Off by default so
+// docs/readmes outside the tracker (where the popup click handler isn't wired)
+// don't grow dead links. Set synchronously around a single render - renderMarkdown
+// is sync, so no reentrancy.
+let LINK_POST_REFS = false;
+
 // inline transforms over an already-escaped line
 function inline(raw) {
   let text = escapeHtml(raw);
@@ -28,6 +34,17 @@ function inline(raw) {
     /(^|[\s(])(https?:\/\/[^\s<)]+)/g,
     `$1<a href="$2" target="_blank" rel="noreferrer">$2</a>`
   );
+  // bare post refs #NN -> in-app popup opener (github/gitlab autolink these
+  // natively; we mirror that on the UI). The [^\w&"] guard skips word-internal
+  // hits, HTML entities (escapeHtml turns ' into &#39, so never match #39 right
+  // after &), and the inside of an emitted href="#frag" (a `#` right after a
+  // quote). Code spans are already slotted out above, so `#12` stays literal.
+  if (LINK_POST_REFS) {
+    text = text.replace(
+      /(^|[^\w&"])#(\d+)\b/g,
+      `$1<a class="post-ref" data-popup-post="$2">#$2</a>`
+    );
+  }
   text = text
     .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
     .replace(/__([^_]+)__/g, "<b>$1</b>")
@@ -149,7 +166,12 @@ function blocks(lines) {
   return html;
 }
 
-export function renderMarkdown(source) {
-  const lines = String(source ?? "").replace(/\r\n?/g, "\n").split("\n");
-  return `<div class="md">${blocks(lines)}</div>`;
+export function renderMarkdown(source, { postRefs = false } = {}) {
+  LINK_POST_REFS = postRefs;
+  try {
+    const lines = String(source ?? "").replace(/\r\n?/g, "\n").split("\n");
+    return `<div class="md">${blocks(lines)}</div>`;
+  } finally {
+    LINK_POST_REFS = false;
+  }
 }

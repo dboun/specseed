@@ -126,8 +126,10 @@ repeats the strategic map; ROADMAP never lists sprints.
 Sprints in execution order, each a `##` section; one line per ticket. `★` marks a
 ticket on the project critical path. Hours are the ticket estimate; `(done/total)`
 counts its LIVE issues (cancelled ones get a `+ N wont_do` note, not a denominator
-slot). Link the ROADMAP post and each ticket post (`[PROJ-0001](#NN)`).
-You write the COMPOSITION (which tickets, order, hours, ★) and seed the counter +
+slot). Reference the ROADMAP post and each ticket post by **bare `#NN`** (e.g.
+`#12 PROJ-0001`) — bare `#NN` autolinks on github, gitlab, AND the UI; a
+`[label](#NN)` markdown link does NOT (it points at a same-page anchor, dead
+everywhere). You write the COMPOSITION (which tickets, order, hours, ★) and seed the counter +
 sprint state at any value; the runtime then keeps `(done/total)` and the trailing
 `(done|ongoing|planned)` live (see below), so don't fret stale numbers.
 
@@ -135,17 +137,17 @@ sprint state at any value; the runtime then keeps `(done/total)` and the trailin
 # SCHEDULE
 
 Sprints in execution order: the tactical schedule. For the strategic map see the
-[ROADMAP](#<roadmap_id>) post. The sprint-planning routes keep this in sync.
+ROADMAP post #<roadmap_id>. The sprint-planning routes keep this in sync.
 
 ★ = on the critical path (the longest dependency chain; it sets minimum delivery time).
 
 ## SPRINT_2026_W23_A — Foundation sprint  (done)
-- [PROJ-0001](#12) Local storage foundation — 4h (2/2) ★
-- [PROJ-0002](#13) Core task commands — 5h (2/2) ★
+- #12 PROJ-0001 Local storage foundation — 4h (2/2) ★
+- #13 PROJ-0002 Core task commands — 5h (2/2) ★
 
 ## SPRINT_2026_W24_A — Workflow sprint  (ongoing)
-- [PROJ-0003](#14) Due dates and tags — 4h (2/2) ★
-- [PROJ-0004](#15) CLI polish and docs — 3h (1/2) ★
+- #14 PROJ-0003 Due dates and tags — 4h (2/2) ★
+- #15 PROJ-0004 CLI polish and docs — 3h (1/2) ★
 ```
 
 Sprint state is one of `done | ongoing | planned`. Until tickets carry hours/CP,
