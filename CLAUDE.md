@@ -265,3 +265,4 @@ tests/integration/python/            # opt-in integration tests (marker: integra
 
 - If the machine you are in is called 'dev' and I tell you to restart something (from 'claude'/'claude-personal', 'codex', 'specseed installed', 'specseed dev') you go in the logs (/workspace/logs/) find the relevant pid. kill -9 that pid. It has to be explicit, not 'I think that's what he wants'.
 - 'Create a local env for me to play with' or wording like that, means running `python3 qa/local_greenfield/prepare.py --option claude-personal-haiku` (default, other options are claude-work-haiku and codex-gpt-5.4-mini)
+- I'm already using port 5050 and serve the repo state at 5051 anyway. If you want to do your own things, use ports 5052-5055.
