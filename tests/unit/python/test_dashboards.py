@@ -90,7 +90,7 @@ class DashboardTest(unittest.TestCase):
     _SCHEDULE_SEED = (
         "# SCHEDULE\n\nintro line\n\n"
         "## SPRINT_2026_W24_A — Foundation sprint  (ongoing)\n"
-        "- [PROJ-0001](#{ticket}) Todo CLI — 2h (0/2) ★\n"
+        "- #{ticket} PROJ-0001 Todo CLI — 2h (0/2) ★\n"
     )
 
     def _seed_schedule(self, ticket_id, done=0, total=2):
@@ -163,6 +163,27 @@ class DashboardTest(unittest.TestCase):
         out = dashboards.refresh_dashboards(self.remote)
         self.assertNotIn("SCHEDULE", out["updated"])
         self.assertEqual(self._body(self._id_of("SCHEDULE")), placeholder)
+
+    def test_schedule_legacy_paren_link_still_refreshes(self) -> None:
+        # Pre-0.22.1 SCHEDULE posts used [PROJ-0001](#NN); the loosened ticket-id
+        # regex must still find the id and refresh the counter/state in place.
+        self._seed_dashboards()
+        t = self._mk("Ship", ["ticket", "ticket:status:done"], "Issues: #5, #6\n")
+        self._mk("A", ["issue", "issue:status:done"], "Ticket: #{0}\n".format(t))
+        self._mk("B", ["issue", "issue:status:done"], "Ticket: #{0}\n".format(t))
+        legacy = (
+            "# SCHEDULE\n\nintro line\n\n"
+            "## SPRINT_2026_W24_A — Foundation sprint  (ongoing)\n"
+            "- [PROJ-0001](#{0}) Todo CLI — 2h (0/2) ★\n".format(t)
+        )
+        self._mk("SCHEDULE", ["management"], legacy)
+
+        out = dashboards.refresh_dashboards(self.remote)
+        self.assertIn("SCHEDULE", out["updated"])
+        schedule = self._body(self._id_of("SCHEDULE"))
+        self.assertIn("(2/2)", schedule)
+        self.assertIn("(done)", schedule)
+        self.assertIn("[PROJ-0001](#{0})".format(t), schedule)  # link form left intact
 
     def test_schedule_refresh_is_idempotent(self) -> None:
         self._seed_dashboards()

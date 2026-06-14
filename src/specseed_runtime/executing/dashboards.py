@@ -208,10 +208,13 @@ def _render_roadmap(nodes: dict) -> str:
 
 # A sprint section header (``## SPRINT_... — name  (state)``) vs the top ``# SCHEDULE``.
 _SPRINT_HEADER_RE = re.compile(r"^##\s+\S")
-# A ticket line carries its post id (``[PROJ-0001](#7)``) and a counter. The counter
-# is ``(done/total)``, optionally with cancelled-issue notes (``(1/2 + 1 wont_do)``);
-# matching the notes too keeps the rewrite idempotent on its own previous output.
-_TICKET_ID_RE = re.compile(r"\(#(\d+)\)")
+# A ticket line carries its post id (bare ``#7``, the format that autolinks on
+# github/gitlab and on the UI) and a counter. The counter is ``(done/total)``,
+# optionally with cancelled-issue notes (``(1/2 + 1 wont_do)``); matching the notes
+# too keeps the rewrite idempotent on its own previous output. The bare ``#(\d+)``
+# also matches the old parenthesized ``(#7)`` form, so pre-existing SCHEDULE posts
+# still refresh without a migration.
+_TICKET_ID_RE = re.compile(r"#(\d+)")
 _COUNTER_RE = re.compile(r"\(\s*\d+\s*/\s*\d+[^)]*\)")
 # Terminal-but-not-done: the issue's code will never land, so it leaves the
 # done/total denominator and is noted separately on the counter.
