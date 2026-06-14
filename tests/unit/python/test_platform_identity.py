@@ -6,6 +6,7 @@ import unittest
 
 from specseed_runtime.platform_identity import (
     COMMENT_PREFIX,
+    agent_assignee,
     human_username,
     infer_owner,
     is_platform_comment,
@@ -13,6 +14,20 @@ from specseed_runtime.platform_identity import (
     platform_comment,
     platform_username,
 )
+
+
+class AgentAssigneeTest(unittest.TestCase):
+    def test_distinct_bot_account_is_the_agent(self) -> None:
+        cfg = {"platform_username": "specseed", "approvals": {"approver_usernames": ["alice"]}}
+        self.assertEqual(agent_assignee(cfg), "specseed")
+
+    def test_falls_back_to_human_when_no_bot_account(self) -> None:
+        # No distinct bot -> the agent IS the human (the approver), so their own name
+        # doubles as the agent marker.
+        self.assertEqual(agent_assignee({"approvals": {"approver_usernames": ["alice"]}}), "alice")
+
+    def test_defaults_to_user_when_nothing_configured(self) -> None:
+        self.assertEqual(agent_assignee({}), "user")
 
 
 class PlatformCommentTest(unittest.TestCase):

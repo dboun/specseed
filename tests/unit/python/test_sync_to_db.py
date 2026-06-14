@@ -105,6 +105,9 @@ class ProviderRemoteStub(TrackingBase):
     def add_entry(self, title, body=None, labels=None, assignees=None):
         return TrackingResult(ok=True, data=TrackingEntryId(id=7))
 
+    def set_entry_assignees(self, entry_id, assignees):
+        return TrackingResult(ok=True, data=TrackingEntryId(id=entry_id))
+
     def add_entry_comment(self, entry_id, body):
         return TrackingResult(ok=True, data=TrackingCommentId(id=70))
 

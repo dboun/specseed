@@ -70,6 +70,16 @@ export function createTracker({ repo, ctx, sub }) {
     return !!pu && post?.author === pu && pu !== state.meta.ui_user;
   };
 
+  // The agent identity that gates work: the platform account, or the human's own
+  // name when there is no distinct bot (then the agent IS the human - assignment
+  // to the agent is moot and the implement approval gate is the real control).
+  const uiUser = () => state.meta.ui_user || "user";
+  const agentName = () => state.meta.platform_username || uiUser();
+  const assignedToAgent = (post) => (post.assignees || []).includes(agentName());
+  // A work issue carries an `issue:status:*` label (the work state machine's tier).
+  const isWorkIssue = (post) =>
+    (post.labels || []).some((l) => String(l.name || "").startsWith("issue:status:"));
+
   // -- filtering + pagination ------------------------------------------- #
   function filtered() {
     const q = state.search.trim().toLowerCase();
@@ -312,8 +322,10 @@ export function createTracker({ repo, ctx, sub }) {
   function editableDrawer(post) {
     const labels = post.labels || [];
     // Platform-authored posts are read-only: no title/body/label edits. Delete,
-    // close/reopen, reactions and comments stay open. Removing the `draft` label
-    // is the one allowed label change (the explicit "process this draft" action).
+    // close/reopen, reactions, comments AND assignee changes stay open - assigning
+    // the agent is how a human starts work on a platform-created issue (auto-assign
+    // off), so it can't be gated by readOnly. Removing the `draft` label is the one
+    // allowed label change (the explicit "process this draft" action).
     const readOnly = isPlatformAuthored(post);
     const isDraft = labels.some((l) => l.name === "draft");
     return `
@@ -332,6 +344,7 @@ export function createTracker({ repo, ctx, sub }) {
             .join("") || `<span class="muted">none</span>`}
         </div>
         ${readOnly ? "" : addLabelDropdown(post)}
+        ${assigneeBlock(post)}
         ${isDraft ? draftBox() : ""}
         ${commentsBlock(post, true)}
       </div>`;
@@ -381,6 +394,35 @@ export function createTracker({ repo, ctx, sub }) {
           ${labelPicker(avail, addChip) || `<span class="muted">no labels left</span>`}
         </div>
       </details>`;
+  }
+
+  // Assignee row: who owns the post, plus quick-assign to the human or the agent.
+  // Assigning the agent is the "go" signal for a work issue - auto-implement / the
+  // implement approval gate only fire once the agent is among the assignees.
+  function assigneeBlock(post) {
+    const me = uiUser();
+    const agent = agentName();
+    const current = post.assignees || [];
+    const chip = (n) => `<span class="chip">${escapeHtml(n)}</span>`;
+    const candidates = [...new Set([me, agent])];
+    const sole = (n) => current.length === 1 && current[0] === n;
+    const label = (n) => (n === agent && n !== me ? `${n} (agent)` : n);
+    const btn = (n) =>
+      sole(n) ? "" : `<button type="button" class="chip" data-assign="${escapeHtml(n)}">${escapeHtml(label(n))}</button>`;
+    const hint =
+      isWorkIssue(post) && !assignedToAgent(post)
+        ? `<div class="muted assignee-hint">Assign to ${escapeHtml(agent)} to implement.</div>`
+        : "";
+    return `
+      <div class="section-title">assignee</div>
+      <div class="chip-row">
+        ${current.map(chip).join("") || `<span class="muted">unassigned</span>`}
+      </div>
+      <div class="chip-row assignee-actions">
+        ${candidates.map(btn).join("")}
+        ${current.length ? `<button type="button" class="chip removable" data-unassign>clear ✕</button>` : ""}
+      </div>
+      ${hint}`;
   }
 
   // The approval request is a comment; surface it as a box with approve/reject.
@@ -763,6 +805,9 @@ export function createTracker({ repo, ctx, sub }) {
     const add = t.closest("[data-add-label]");
     if (add) return mutate(() => api.updateLabel(repo.id, state.selectedId, "add", add.dataset.addLabel));
     if (t.closest("[data-remove-draft]")) return mutate(() => api.updateLabel(repo.id, state.selectedId, "remove", "draft"));
+    const asg = t.closest("[data-assign]");
+    if (asg) return mutate(() => api.setAssignees(repo.id, state.selectedId, asg.dataset.assign));
+    if (t.closest("[data-unassign]")) return mutate(() => api.setAssignees(repo.id, state.selectedId, ""));
     const fb = t.closest("[data-fb-act]");
     if (fb) return handleFeedbackClick(fb);
     const gr = t.closest("[data-gate-react]");

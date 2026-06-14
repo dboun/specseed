@@ -10,7 +10,8 @@ Shape of ``configuration.json`` permissions::
         "git":      {"merge_to_primary": false},
         "remote":   {"post_control": false, "push_branches": false,
                      "push_primary": false},
-        "platform": {"auto_implement_issue": true,
+        "platform": {"auto_assign_agent": true,
+                     "auto_implement_issue": true,
                      "auto_proceed_to_next_sprint_if_available": false},
         "agents":   {"<action-class>": "block"|"surface"|"auto"|"require_human_approval", ...},
     }
@@ -117,6 +118,15 @@ class Permissions:
         return True
 
     # -- platform autos -------------------------------------------------- #
+    def auto_assign_agent(self) -> bool:
+        """Whether a ready issue auto-assigns to the agent so work can start.
+
+        Default True (the pipeline flows like before). When False, an issue waits
+        until a human assigns it to the agent (the implement gate holds silently);
+        only then does it auto-implement / raise the implement approval gate.
+        """
+        return bool(self._platform.get("auto_assign_agent", True))
+
     def auto_implement_issue(self) -> bool:
         """Whether a ready issue may be implemented without per-issue approval.
 

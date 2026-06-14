@@ -18,7 +18,8 @@ marker (config/version.txt). This script runs pending migrations
 (migrating/migrate.py) before it reads or writes anything there.
 
 Remote is the source of truth in this build: the runner polls it on an interval
-(default 45s) and reacts to what changed. So the remote repo + access token live
+(default 5s local, 45s github/gitlab) and reacts to what changed. So the remote
+repo + access token live
 here, and every action the agent could take against git/remote is gated by an
 explicit approval switch the human sets below.
 
@@ -72,7 +73,11 @@ from specseed_runtime.executing.agent_runner import (  # noqa: E402
     model_presets,
 )
 
-DEFAULT_POLL_INTERVAL = 45
+# Local has no API to be gentle with, so it polls fast for a snappy UI; a real
+# remote (github/gitlab) polls slower to stay well clear of rate limits.
+DEFAULT_POLL_INTERVAL_LOCAL = 5
+DEFAULT_POLL_INTERVAL_REMOTE = 45
+DEFAULT_POLL_INTERVAL = DEFAULT_POLL_INTERVAL_LOCAL  # fresh-config default (local)
 DEFAULT_SPECSEED_DIR = ".specseed"
 DEFAULT_PRIMARY_BRANCH = "main"
 
@@ -285,6 +290,10 @@ def default_config():
             },
             # platform-level autos. off = a human approves first.
             "platform": {
+                # auto-assign a ready issue to the agent so work starts. off = the
+                # issue waits until a human assigns it to the agent (the implement
+                # gate holds silently); assigning is the explicit "go" signal.
+                "auto_assign_agent": True,
                 "auto_implement_issue": True,
                 "auto_proceed_to_next_sprint_if_available": False,
             },
@@ -339,14 +348,20 @@ def _coerce_runner(existing):
 
 
 def apply_identity_defaults(cfg, remote):
-    """Fill blank approver/platform usernames from the provider, in place.
+    """Fill blank approver/platform usernames + the poll interval from the provider.
 
     local: human ``user``, platform ``specseed``. github/gitlab: both default to
     the repo owner when inferrable (``github.com/dboun/x`` -> ``dboun``). Never
     overwrites a value the human already set; leaves blanks blank if nothing parses.
+
+    Poll interval is provider-paced: a fresh config carries the local default (fast);
+    enabling a real remote bumps it to the slower remote default, but only when it is
+    still the untouched local default (a value the human picked is left alone).
     """
     approvals = cfg.setdefault("approvals", {})
     if remote.get("enabled"):
+        if cfg.get("poll_interval_seconds") == DEFAULT_POLL_INTERVAL_LOCAL:
+            cfg["poll_interval_seconds"] = DEFAULT_POLL_INTERVAL_REMOTE
         owner = infer_owner(remote.get("repo"))
         if owner:
             if not approvals.get("approver_usernames"):
@@ -713,6 +728,10 @@ def section_remote_permissions(cfg, remote):
 def section_platform(cfg):
     plat = cfg["permissions"].setdefault("platform", {})
     print("\n--- platform autos ---")
+    plat["auto_assign_agent"] = ask_yn(
+        "Auto-assign ready issues to the agent (off = human assigns to start work)?",
+        default=plat.get("auto_assign_agent", True),
+    )
     plat["auto_implement_issue"] = ask_yn(
         "Auto-implement ready issues (off = each needs human approval first)?",
         default=plat.get("auto_implement_issue", True),
@@ -843,7 +862,8 @@ def summary_lines(cfg, remote, token):
     git = cfg["permissions"]["git"]
     L.append(f"git: mandatory — branches=always, merge_to_primary={git.get('merge_to_primary', False)}")
     plat = cfg["permissions"].get("platform", {})
-    L.append(f"platform: auto_implement_issue={plat.get('auto_implement_issue', True)}, "
+    L.append(f"platform: auto_assign_agent={plat.get('auto_assign_agent', True)}, "
+             f"auto_implement_issue={plat.get('auto_implement_issue', True)}, "
              f"auto_proceed_to_next_sprint={plat.get('auto_proceed_to_next_sprint_if_available', False)}")
     if remote.get("enabled"):
         r = cfg["permissions"]["remote"]

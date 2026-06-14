@@ -1467,6 +1467,11 @@ class Handler(BaseHTTPRequestHandler):
             result = tracker.remove_entry_label(post_id, label) if action == "remove" else tracker.add_entry_label(post_id, label)
             self._json({"ok": True, "data": _ok(result)})
             return
+        if sub == ["assignees"] and self.command == "POST":
+            body = self._body()
+            assignees = _csv(body.get("assignees"))
+            self._json({"ok": True, "data": _ok(tracker.set_entry_assignees(post_id, assignees))})
+            return
         if sub == ["comments"] and self.command == "POST":
             body = self._body()
             self._json({"ok": True, "data": _ok(tracker.add_entry_comment(post_id, str(body.get("body") or "")))}, status=201)

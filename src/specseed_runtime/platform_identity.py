@@ -71,6 +71,18 @@ def human_username(config: Optional[dict[str, Any]]) -> str:
     return str(approvers[0]).strip() if approvers else "user"
 
 
+def agent_assignee(config: Optional[dict[str, Any]]) -> str:
+    """The tracker username that marks an issue as the agent's to work.
+
+    A distinct bot account (``platform_username``) is the agent; without one
+    (local stand-in / a personal token where bot and human share a name) the
+    agent IS the human, so the human's own username doubles as the agent marker.
+    An issue is "assigned to the agent" when this name is among its assignees -
+    the precondition for auto-implement / the implement approval gate.
+    """
+    return platform_username(config) or human_username(config)
+
+
 def needs_comment_prefix(config: Optional[dict[str, Any]]) -> bool:
     """Whether platform comments need the ``specseed: `` body prefix to be told apart.
 

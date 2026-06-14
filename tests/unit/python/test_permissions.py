@@ -81,6 +81,13 @@ class PlatformTest(unittest.TestCase):
         p = Permissions(_cfg({"platform": {"auto_implement_issue": False}}))
         self.assertFalse(p.auto_implement_issue())
 
+    def test_auto_assign_defaults_true(self) -> None:
+        self.assertTrue(Permissions({}).auto_assign_agent())
+
+    def test_auto_assign_off(self) -> None:
+        p = Permissions(_cfg({"platform": {"auto_assign_agent": False}}))
+        self.assertFalse(p.auto_assign_agent())
+
     def test_auto_next_sprint_defaults_false(self) -> None:
         self.assertFalse(Permissions({}).auto_proceed_to_next_sprint())
         p = Permissions(_cfg({"platform": {"auto_proceed_to_next_sprint_if_available": True}}))

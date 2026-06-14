@@ -38,6 +38,7 @@ def _local_answers(*, primary_branch="", write=""):
     answers += [
         primary_branch,  # primary branch
         "",          # merge_to_primary off (git is mandatory: no enable prompt)
+        "",          # auto_assign_agent (yes)
         "",          # auto_implement_issue (yes)
         "",          # auto_proceed_to_next_sprint (no)
     ]
@@ -163,9 +164,12 @@ class ConfigurePermissionsShapeTest(unittest.TestCase):
                 "push_primary": False,
             })
             self.assertEqual(perms["platform"], {
+                "auto_assign_agent": True,
                 "auto_implement_issue": True,
                 "auto_proceed_to_next_sprint_if_available": False,
             })
+            # local-only default is the fast poll interval
+            self.assertEqual(cfg["poll_interval_seconds"], configure.DEFAULT_POLL_INTERVAL_LOCAL)
             self.assertEqual(perms["agents"], configure.default_agent_gates())
             self.assertNotIn("require_human_approval", cfg["review"])
 
@@ -357,6 +361,31 @@ class AskModelTest(unittest.TestCase):
         with mock.patch.object(configure, "model_presets", return_value=[]):
             with mock.patch.object(configure, "default_model", return_value=""):
                 self.assertEqual(self._ask("codex", None, ["my-slug"]), "my-slug")
+
+
+class PollIntervalDefaultTest(unittest.TestCase):
+    """Local polls fast (snappy UI); enabling a real remote slows it to stay clear
+    of rate limits - but only the untouched default is bumped."""
+
+    def test_fresh_config_is_local_default(self) -> None:
+        cfg = configure.default_config()
+        self.assertEqual(cfg["poll_interval_seconds"], configure.DEFAULT_POLL_INTERVAL_LOCAL)
+
+    def test_local_stays_fast(self) -> None:
+        cfg = configure.default_config()
+        configure.apply_identity_defaults(cfg, {"enabled": False})
+        self.assertEqual(cfg["poll_interval_seconds"], configure.DEFAULT_POLL_INTERVAL_LOCAL)
+
+    def test_enabling_remote_bumps_untouched_default(self) -> None:
+        cfg = configure.default_config()
+        configure.apply_identity_defaults(cfg, {"enabled": True, "repo": "dboun/x"})
+        self.assertEqual(cfg["poll_interval_seconds"], configure.DEFAULT_POLL_INTERVAL_REMOTE)
+
+    def test_remote_leaves_user_chosen_interval_alone(self) -> None:
+        cfg = configure.default_config()
+        cfg["poll_interval_seconds"] = 12  # the human picked this
+        configure.apply_identity_defaults(cfg, {"enabled": True, "repo": "dboun/x"})
+        self.assertEqual(cfg["poll_interval_seconds"], 12)
 
 
 if __name__ == "__main__":

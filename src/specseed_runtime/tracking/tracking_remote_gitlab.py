@@ -259,6 +259,22 @@ class TrackingRemoteGitLab(TrackingBase):
         except Exception as exc:
             return self._error(exc)
 
+    def set_entry_assignees(
+        self, entry_id: int | str, assignees: list[str]
+    ) -> TrackingResult:
+        # PUT assignee_ids replaces the whole set; [] clears it (GitLab maps an empty
+        # id list to "unassigned"). Usernames are resolved to numeric ids first.
+        try:
+            ids = self._assignee_ids(assignees) if assignees else []
+            issue = self._request(
+                "PUT",
+                f"/projects/{self.project}/issues/{entry_id}",
+                body={"assignee_ids": ids},
+            )
+            return TrackingResult(ok=True, data=TrackingEntryId(id=issue["iid"]))
+        except Exception as exc:
+            return self._error(exc)
+
     def add_entry_comment(self, entry_id: int | str, body: str) -> TrackingResult:
         if not body:
             return TrackingResult(ok=False, error="comment body is required")
