@@ -322,8 +322,10 @@ export function createTracker({ repo, ctx, sub }) {
   function editableDrawer(post) {
     const labels = post.labels || [];
     // Platform-authored posts are read-only: no title/body/label edits. Delete,
-    // close/reopen, reactions and comments stay open. Removing the `draft` label
-    // is the one allowed label change (the explicit "process this draft" action).
+    // close/reopen, reactions, comments AND assignee changes stay open - assigning
+    // the agent is how a human starts work on a platform-created issue (auto-assign
+    // off), so it can't be gated by readOnly. Removing the `draft` label is the one
+    // allowed label change (the explicit "process this draft" action).
     const readOnly = isPlatformAuthored(post);
     const isDraft = labels.some((l) => l.name === "draft");
     return `
@@ -342,7 +344,7 @@ export function createTracker({ repo, ctx, sub }) {
             .join("") || `<span class="muted">none</span>`}
         </div>
         ${readOnly ? "" : addLabelDropdown(post)}
-        ${readOnly ? "" : assigneeBlock(post)}
+        ${assigneeBlock(post)}
         ${isDraft ? draftBox() : ""}
         ${commentsBlock(post, true)}
       </div>`;
