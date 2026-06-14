@@ -267,6 +267,20 @@ class TrackingRemoteGitHub(TrackingBase):
         except Exception as exc:
             return self._error(exc)
 
+    def set_entry_assignees(
+        self, entry_id: int | str, assignees: list[str]
+    ) -> TrackingResult:
+        # PATCH replaces the whole assignee set; an empty list clears it.
+        try:
+            issue = self._request(
+                "PATCH",
+                f"/repos/{self.repo}/issues/{entry_id}",
+                body={"assignees": list(assignees or [])},
+            )
+            return TrackingResult(ok=True, data=TrackingEntryId(id=issue["number"]))
+        except Exception as exc:
+            return self._error(exc)
+
     def add_entry_comment(self, entry_id: int | str, body: str) -> TrackingResult:
         if not body:
             return TrackingResult(ok=False, error="comment body is required")

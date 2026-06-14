@@ -169,6 +169,7 @@ export function createConfiguration({ repo, ctx }) {
       </section>
       <section class="panel">
         <div class="panel-title">Permissions — platform</div>
+        ${toggle("plat_auto_assign", p.platform?.auto_assign_agent, "auto-assign issues to the agent")}
         ${toggle("plat_auto_impl", p.platform?.auto_implement_issue, "auto-implement issues")}
         ${toggle("plat_auto_next", p.platform?.auto_proceed_to_next_sprint_if_available, "auto-proceed to next sprint")}
       </section>
@@ -253,6 +254,7 @@ export function createConfiguration({ repo, ctx }) {
     p.remote.push_branches = on("remote_push_branches");
     p.remote.push_primary = on("remote_push_dev");
     p.platform = p.platform || {};
+    p.platform.auto_assign_agent = on("plat_auto_assign");
     p.platform.auto_implement_issue = on("plat_auto_impl");
     p.platform.auto_proceed_to_next_sprint_if_available = on("plat_auto_next");
 

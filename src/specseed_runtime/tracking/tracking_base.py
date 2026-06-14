@@ -290,6 +290,20 @@ class TrackingBase(ABC):
         """
 
     @abstractmethod
+    def set_entry_assignees(
+        self, entry_id: int | str, assignees: list[str]
+    ) -> TrackingResult:
+        """Replace an entry's assignees with ``assignees`` (the full new set).
+
+        Passing an empty list clears all assignees. This is the seam the platform
+        uses to assign an issue to the agent (auto-assign) and the UI uses to let a
+        human assign/transfer a post. Implementations replace, not merge.
+
+        Expected success payload:
+            TrackingEntryId
+        """
+
+    @abstractmethod
     def add_entry_comment(self, entry_id: int | str, body: str) -> TrackingResult:
         """Add a text comment to an entry and return the comment ID.
 

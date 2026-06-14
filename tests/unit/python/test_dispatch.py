@@ -78,11 +78,14 @@ class DispatchTestBase(unittest.TestCase):
             agent_timeout_s=30.0,
         )
 
-    def _seed_local_entry(self, title, labels):
-        # Put an entry into the LOCAL mirror (load_entity reads local).
+    def _seed_local_entry(self, title, labels, assignees=("alice",)):
+        # Put an entry into the LOCAL mirror (load_entity reads local). Default it
+        # assigned to the agent ("alice" is the approver, so agent_assignee()) - the
+        # normal "ready to work" state once auto-assign or a human has acted, so the
+        # implement gate passes. Tests of the assignment gate pass assignees=().
         for label in labels:
             self.local.create_label(label)
-        return self.local.add_entry(title, labels=labels).data.id
+        return self.local.add_entry(title, labels=labels, assignees=list(assignees)).data.id
 
     # -- two-lane drain helpers ------------------------------------------- #
     # A work-triggering control event now SCHEDULES a work_run instead of running
@@ -924,22 +927,85 @@ from specseed_runtime.executing import git_ops as _git_ops
 _HAS_GIT = shutil.which("git") is not None
 
 
+class AssignmentGateTest(DispatchTestBase):
+    """An issue is only worked once the agent is among its assignees. The agent here
+    is the approver "alice" (no distinct platform_username -> agent IS the human)."""
+
+    def _set_auto_assign(self, on) -> None:
+        self.config["permissions"] = {"platform": {"auto_assign_agent": on}}
+        self.ctx.permissions = Permissions(self.config)
+
+    def test_held_silently_when_unassigned_and_auto_assign_off(self) -> None:
+        self._set_auto_assign(False)
+        eid = self._seed_local_entry("Do it", ["tier:issue", "status:todo"], assignees=())
+        out = dispatch(
+            self.ctx,
+            {"action": "handle_label_added", "post_id": str(eid), "payload": {"label": "status:todo"}},
+        )
+        self.assertTrue(out.success)
+        self.assertFalse(out.requeue)  # silent hold: a later assignee change wakes it
+        self.assertIn("not assigned", out.detail)
+        self.assertEqual(len(self.runner.calls), 0)  # agent never ran
+
+    def test_assigned_to_agent_off_runs(self) -> None:
+        # auto_assign off, but a human already assigned the agent -> work proceeds.
+        self._set_auto_assign(False)
+        self.ctx.runner = FakeAgentRunner(AgentResult(
+            ok=True, returncode=0,
+            report={"status": "done", "summary": "did it", "files_changed": []},
+        ))
+        self.runner = self.ctx.runner
+        eid = self._seed_local_entry("Do it", ["tier:issue", "status:todo"], assignees=("alice",))
+        out = self._dispatch_then_work(
+            self.ctx,
+            {"action": "handle_label_added", "post_id": str(eid), "payload": {"label": "status:todo"}},
+        )
+        self.assertTrue(out.success)
+        self.assertEqual(len(self.runner.calls), 1)
+
+    def test_auto_assign_on_assigns_agent_then_proceeds(self) -> None:
+        self.ctx.runner = FakeAgentRunner(AgentResult(
+            ok=True, returncode=0,
+            report={"status": "done", "summary": "did it", "files_changed": []},
+        ))
+        self.runner = self.ctx.runner
+        # auto_assign defaults on. Seed BOTH (matching ids) so the remote assignee
+        # write lands on a real entry.
+        for label in ("tier:issue", "status:todo"):
+            self.local.create_label(label)
+            self.remote.create_label(label)
+        rid = self.remote.add_entry("Do it", labels=["tier:issue", "status:todo"]).data.id
+        lid = self.local.add_entry("Do it", labels=["tier:issue", "status:todo"]).data.id
+        self.assertEqual(str(rid), str(lid))
+        out = self._dispatch_then_work(
+            self.ctx,
+            {"action": "handle_label_added", "post_id": str(lid), "payload": {"label": "status:todo"}},
+        )
+        self.assertTrue(out.success)
+        self.assertEqual(len(self.runner.calls), 1)  # assigned -> agent ran
+        self.assertIn("alice", self.remote.get_entry(rid).data.assignees)
+
+
 class DependencyGateTest(DispatchTestBase):
     """An issue is held until the issues it depends on are done."""
 
-    def _seed_with_body(self, title, labels, body):
+    def _seed_with_body(self, title, labels, body, assignees=("alice",)):
         for label in labels:
             self.local.create_label(label)
-        return self.local.add_entry(title, body=body, labels=labels).data.id
+        return self.local.add_entry(
+            title, body=body, labels=labels, assignees=list(assignees)
+        ).data.id
 
-    def _seed_both(self, title, labels, body):
+    def _seed_both(self, title, labels, body, assignees=("alice",)):
         """Seed local AND remote in lockstep so ids match - needed when a transition
         (e.g. block-on-cancelled-dep) mutates the remote entry by its (local) id."""
         for label in labels:
             self.local.create_label(label)
             self.remote.create_label(label)
-        eid = self.local.add_entry(title, body=body, labels=labels).data.id
-        self.remote.add_entry(title, body=body, labels=labels)
+        eid = self.local.add_entry(
+            title, body=body, labels=labels, assignees=list(assignees)
+        ).data.id
+        self.remote.add_entry(title, body=body, labels=labels, assignees=list(assignees))
         return eid
 
     def _remote_labels(self, eid):
@@ -1103,8 +1169,9 @@ class RuntimeGitLifecycleTest(DispatchTestBase):
         for label in labels:
             self.local.create_label(label)
             self.remote.create_label(label)
-        rid = self.remote.add_entry(title, labels=labels).data.id
-        lid = self.local.add_entry(title, labels=labels).data.id
+        # Default-assigned to the agent ("alice") so the implement gate passes.
+        rid = self.remote.add_entry(title, labels=labels, assignees=["alice"]).data.id
+        lid = self.local.add_entry(title, labels=labels, assignees=["alice"]).data.id
         self.assertEqual(str(rid), str(lid))
         return lid
 
@@ -1315,6 +1382,7 @@ class RuntimeGitLifecycleTest(DispatchTestBase):
             "FEAT-0001 Build on scaffold",
             body="Depends on: #{0}".format(dep),
             labels=["tier:issue", "status:todo"],
+            assignees=["alice"],  # assigned to the agent so the implement gate passes
         ).data.id
         self.ctx.runner = _FileWritingRunner(
             AgentResult(ok=True, returncode=0,

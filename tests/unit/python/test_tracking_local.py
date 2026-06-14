@@ -156,6 +156,37 @@ class TrackingLocalTest(unittest.TestCase):
         self.assertFalse(local.edit_entry(entry_id, title="  ").ok)  # blank title
         self.assertFalse(local.edit_entry(999, body="x").ok)  # missing entry
 
+    def test_set_entry_assignees_replaces_and_bumps_updated_at(self) -> None:
+        tmp, local = self.make_local()
+        self.addCleanup(tmp.cleanup)
+        entry_id = local.add_entry("Assign me", assignees=["alice"]).data.id
+        before = local.get_entry(entry_id).data.updated_at
+
+        res = local.set_entry_assignees(entry_id, ["specseed"])
+        self.assertTrue(res.ok)
+        details = local.get_entry(entry_id).data
+        self.assertEqual(details.assignees, ["specseed"])  # replaced, not merged
+        self.assertGreaterEqual(details.updated_at, before)  # bumped for sync detection
+
+        cleared = local.set_entry_assignees(entry_id, [])
+        self.assertTrue(cleared.ok)
+        self.assertEqual(local.get_entry(entry_id).data.assignees, [])
+        self.assertFalse(local.set_entry_assignees(999, ["x"]).ok)  # missing entry
+
+    def test_sync_detects_assignee_change(self) -> None:
+        tmp, local = self.make_local()
+        self.addCleanup(tmp.cleanup)
+        _, remote = self.make_local(author="bob")
+        self.addCleanup(_.cleanup)
+        entry_id = remote.add_entry("Mirror me").data.id
+        local.sync_from_remote(remote)
+
+        remote.set_entry_assignees(entry_id, ["specseed"])
+        changes = local.sync_from_remote(remote).data
+        kinds = {(c.resource_type, c.action, c.field) for c in changes}
+        self.assertIn(("entry", "update", "assignees"), kinds)
+        self.assertEqual(local.get_entry(entry_id).data.assignees, ["specseed"])
+
     def test_remove_entry_label_is_idempotent_and_supports_status_swap(self) -> None:
         tmp, local = self.make_local()
         self.addCleanup(tmp.cleanup)

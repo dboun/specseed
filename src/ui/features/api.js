@@ -75,6 +75,8 @@ export const api = {
   deletePost: (id, postId) => request(`${base(id)}/posts/${enc(postId)}`, { method: "DELETE" }),
   togglePost: (id, postId) => post(`${base(id)}/posts/${enc(postId)}/toggle`),
   updateLabel: (id, postId, action, label) => post(`${base(id)}/posts/${enc(postId)}/labels`, { action, label }),
+  setAssignees: (id, postId, assignees) =>
+    post(`${base(id)}/posts/${enc(postId)}/assignees`, { assignees }),
   addComment: (id, postId, body) => post(`${base(id)}/posts/${enc(postId)}/comments`, { body }),
   reactPost: (id, postId, reaction, toggle = true) =>
     post(`${base(id)}/posts/${enc(postId)}/reactions`, { reaction, toggle }),

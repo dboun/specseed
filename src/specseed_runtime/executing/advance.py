@@ -50,6 +50,7 @@ from specseed_runtime.entities.entity_base import (
 from specseed_runtime.executing import platform_log
 from specseed_runtime.executing import relationships
 from specseed_runtime.platform_identity import (
+    agent_assignee,
     is_platform_comment,
     platform_comment,
     platform_username,
@@ -733,6 +734,40 @@ def _draft_adapt_post(ctx: Any, entity: Any, title: str, reason: str, summary: s
     )
     data = getattr(res, "data", None)
     return getattr(data, "id", None) if data is not None else None
+
+
+def assigned_to_agent(ctx: Any, entity: Any) -> bool:
+    """True when the agent is among the entity's assignees.
+
+    The agent identity is ``platform_username`` (a distinct bot account) or, when
+    there is none, the human's own username (the agent IS the human - the toggle is
+    moot, sanity comes from the implement approval gate instead). An issue must be
+    assigned to the agent before it auto-implements or raises the implement gate.
+    """
+    agent = agent_assignee(getattr(ctx, "config", None))
+    return bool(agent) and agent in (getattr(entity, "assignees", []) or [])
+
+
+def auto_assign_to_agent(ctx: Any, entity: Any) -> str:
+    """Add the agent to the entity's assignees so work can start (idempotent).
+
+    Mutates ``entity.assignees`` in place too, so the same run can proceed straight
+    to implement without waiting for the next sync.
+    """
+    agent = agent_assignee(getattr(ctx, "config", None))
+    if not agent:
+        return "no agent identity configured; not assigning"
+    if not _can_write(ctx):
+        return "remote writes not permitted; not assigning"
+    assignees = list(getattr(entity, "assignees", []) or [])
+    if agent in assignees:
+        return "already assigned to agent {0}".format(agent)
+    assignees.append(agent)
+    res = ctx.remote.set_entry_assignees(entity.post_id, assignees)
+    if not getattr(res, "ok", False):
+        return "assign failed: {0}".format(getattr(res, "error", "unknown"))
+    entity.assignees = assignees
+    return "auto-assigned to agent {0}".format(agent)
 
 
 def park_for_implement_approval(ctx: Any, entity: Any) -> str:

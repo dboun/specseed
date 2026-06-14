@@ -71,6 +71,9 @@ def load_entity(ctx: ExecutionContext, post_id: Optional[str]) -> tuple[Optional
     # Attach entry-level reactions so the approval system can read a 👍/👎 on the
     # post itself (state_machines.base.approved_by / rejected_by).
     entity.reactions = list(getattr(details, "reactions", []) or [])
+    # Assignees gate work: an issue is only implemented (auto or via the approval
+    # gate) once the agent is among them. Carry them so dispatch can judge that.
+    entity.assignees = list(getattr(details, "assignees", []) or [])
     # Dependencies + parent are body links (remote-posts.md); parse them so the
     # dispatcher can hold an issue until its own deps AND its parent ticket's
     # dependency-tickets are done.

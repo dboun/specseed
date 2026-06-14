@@ -251,6 +251,22 @@ class TrackingLocal(TrackingBase):
         except Exception as exc:
             return self._error(exc)
 
+    def set_entry_assignees(
+        self, entry_id: int | str, assignees: list[str]
+    ) -> TrackingResult:
+        try:
+            with self._connect() as conn:
+                row = self._entry_row(conn, entry_id)
+                if row is None:
+                    return self._missing_entry(entry_id)
+                conn.execute(
+                    "UPDATE entries SET assignees = ?, updated_at = ? WHERE id = ?",
+                    (_assignees_to_json(assignees), _now(), row["id"]),
+                )
+            return TrackingResult(ok=True, data=TrackingEntryId(id=row["id"]))
+        except Exception as exc:
+            return self._error(exc)
+
     def add_entry(
         self,
         title: str,

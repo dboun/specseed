@@ -1185,6 +1185,26 @@ def _run_work(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
             ),
         )
 
+    # Assignment gate: an issue is only worked once the agent is among its assignees.
+    # auto_assign_agent on -> assign it now and carry on; off -> hold SILENTLY (no
+    # comment, no approval gate) until a human assigns it. A later assignee change
+    # wakes a fresh handle_entry_updated -> IMPLEMENT, so no busy requeue is needed.
+    if intent == AgentIntent.IMPLEMENT and not advance.assigned_to_agent(ctx, entity):
+        if ctx.permissions.auto_assign_agent():
+            detail = advance.auto_assign_to_agent(ctx, entity)
+            platform_log.log_event(
+                "issue_auto_assigned",
+                task_id=task.get("task_id"),
+                post_id=post_id,
+                detail=detail,
+            )
+        if not advance.assigned_to_agent(ctx, entity):
+            detail = "held: not assigned to agent (assign to start work)"
+            platform_log.log_event(
+                "work_held_unassigned", task_id=task.get("task_id"), post_id=post_id
+            )
+            return HandlerOutcome(success=True, detail=detail)
+
     # Platform gate: a ready issue parks for human sign-off unless auto_implement_issue
     # is on, or an approver has already approved it (which moved it back to todo).
     if intent == AgentIntent.IMPLEMENT and not ctx.permissions.auto_implement_issue():
