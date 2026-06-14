@@ -253,3 +253,7 @@ storage/
 
 
 data-dev/
+
+
+.claude/
+.codex/

@@ -241,9 +241,24 @@ tests/integration/python/            # opt-in integration tests (marker: integra
 
 ## Git rules
 
-- Never commit, create branches, or w/e git related on your own.
-- If we are kind of finished with the task and it's interactive mode, you can prompt: Looks finished. Do you want to commit (type `c`) or commit-and-push (type `p`)? Then you can commit/commit-and-push accordingly. Don't waste a bunch of tokens reading and understanding the changes. Just quickly judge based on the file names changed, e.g. 'Impl X.py' or 'Update X', unless you have also context from the chat history.
-- At the beginning of the session, always check if there are uncommited changes. If there are, stop and inform user.
+- Session start: check uncommitted changes. If any, stop + tell user.
+- Switch to `dev` branch or confirm there. `dev` = primary working branch. Never touch main.
+- Worktrees OK (claude? → `.claude/`; codex? → `.codex/`).
+- Each request gets own branch.
+- Whenever changes happen and you must stop: commit + push to your created branch. Don't ask. Commit + push regularly. Don't wait for very end. One commit per logical point. Not spammy (no per-file).
+- Make PR for it. PRs always target `dev`.
+- One request branch per user-initiated session. No multiple branches/PRs same session, even if feels like they should split — unless user asks.
+- After commit + push: fetch, check if `dev` ahead.
+- If `dev` ahead: try bring it in. If clean or minor issues you can confidently fix → fix + surface.
+- If hard: don't bring `dev` in. Put in PR message + surface.
+- PR message stays concise:
+  - Description: 1-5 sentences (scale to work size). Goal, why needed.
+  - Key Changes: 1-5 bullets. Major changes only.
+  - How to test: step-by-step verify instructions, especially from greenfield target-repo view if possible. Concise — not 100 lines. Aim 1-15, flexible higher for big changes.
+  - Screenshots: if applicable.
+  - Risks: what could break? 0-3 bullets typical.
+  - Deployment notes: ~1-4 lines, if needed.
+  - Checklist: high-level 1-10 bullets. Steps done = checked, pending = unchecked.
 
 
 ## dev machine
