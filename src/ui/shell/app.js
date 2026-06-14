@@ -1,5 +1,5 @@
 import { api } from "../features/api.js";
-import { escapeHtml, toast, modal, closeModal } from "../ui/components.js";
+import { escapeHtml, toast, modal, closeModal, confirmDialog } from "../ui/components.js";
 import { createMonitor } from "../features/monitor.js";
 import { createTracker } from "../features/tracker.js";
 import { createSpec } from "../features/spec.js";
@@ -31,6 +31,11 @@ function brandHtml() {
 
 const root = document.querySelector("#app");
 
+// The hash we last wrote/applied. Lets the popstate+hashchange handlers dedupe
+// (our own pushState/replaceState updates fire no events, but back/forward fire
+// BOTH) and lets the unsaved-edit guard bounce a declined back-button.
+let lastHash = location.hash;
+
 function currentRepo() {
   return state.repos.find((r) => r.id === state.currentId) || null;
 }
@@ -53,15 +58,17 @@ const ctx = {
     }
     state.sub = "";
     await refreshRepos();
-    writeHash();
+    writeHash(true);
     render();
   },
-  // A feature owns the subroute after its tab (e.g. the spec file in view). It
-  // sets it as the user navigates so the URL stays copy-pasteable; replaceState
-  // keeps it out of history so back-button stays sane.
-  setSub(sub) {
+  // A feature owns the subroute after its tab (e.g. the spec file / open post).
+  // It sets it as the user navigates so the URL stays copy-pasteable. Default
+  // PUSHES a history entry (opening a file/post is a real navigation the
+  // back-button should retrace); pass {replace:true} for a refinement that
+  // shouldn't grow the stack (initial load, default-ref resolution, a toggle).
+  setSub(sub, { replace = false } = {}) {
     state.sub = sub || "";
-    writeHash();
+    writeHash(!replace);
   },
 };
 
@@ -95,11 +102,18 @@ function applyHash() {
   }
 }
 
-function writeHash() {
+// push=true grows the history stack (a real navigation back/forward should
+// retrace); push=false replaces in place (refinement). Either way we record the
+// hash so the history listeners can tell our own writes from a back/forward.
+function writeHash(push) {
   if (!state.currentId) return;
   let next = `#${encodeURIComponent(state.currentId)}/${state.tab}`;
   if (state.sub) next += "/" + state.sub.split("/").map(encodeURIComponent).join("/");
-  if (location.hash !== next) history.replaceState(null, "", next);
+  if (location.hash !== next) {
+    if (push) history.pushState(null, "", next);
+    else history.replaceState(null, "", next);
+  }
+  lastHash = location.hash;
 }
 
 async function boot() {
@@ -280,25 +294,50 @@ function mountFeature() {
     });
 }
 
-function switchTab(tabId) {
+async function switchTab(tabId) {
+  // Same-tab is the error-state "Retry": re-mount in place, no guard, no new
+  // history entry. A real switch guards unsaved edits and pushes.
+  const same = state.tab === tabId;
+  if (!same && !(await guardLeave())) return;
   state.tab = tabId;
   state.sub = ""; // a fresh tab has no subroute until its feature sets one
   localStorage.setItem("ss.tab", tabId);
-  writeHash();
+  writeHash(!same);
   // re-render tab bar active states without a full reload
   root.querySelectorAll("[data-tab]").forEach((b) => b.classList.toggle("active", b.dataset.tab === tabId));
   mountFeature();
 }
 
 async function pickRepo(id) {
+  if (id === state.currentId) return;
+  if (!(await guardLeave())) return;
   state.currentId = id;
   state.sub = "";
   localStorage.setItem("ss.repo", id);
   await refreshRepos();
   const repo = currentRepo();
   if (repo && !repo.configured) state.tab = "configuration";
-  writeHash();
+  writeHash(true);
   render();
+}
+
+// -- unsaved-edit guard ----------------------------------------------------- #
+// A feature may expose isDirty() -> a short reason string when it holds unsaved
+// edits (e.g. a half-written post/comment). We refuse to navigate away from it
+// without an explicit ok.
+const dirtyReason = () => {
+  try {
+    return state.feature?.isDirty?.() || "";
+  } catch {
+    return "";
+  }
+};
+
+// click-driven leave (tab/repo switch): a nice modal confirm. Returns true to go.
+async function guardLeave() {
+  const reason = dirtyReason();
+  if (!reason) return true;
+  return confirmDialog(`${reason} Leave and lose them?`, { confirmLabel: "Leave", cancelLabel: "Stay" });
 }
 
 // refresh the top bar pill + switcher dots from latest summaries (called by Monitor polling)
@@ -353,13 +392,49 @@ document.addEventListener("input", (event) => {
   state.feature?.handleInput?.(event);
 });
 
-// Back/forward + manual hash edits navigate. replaceState (writeHash) does NOT
-// fire hashchange, so this never loops with our own updates.
-window.addEventListener("hashchange", () => {
+// Reconcile app state to the URL after a back/forward or a manual hash edit.
+// A repo/tab change remounts; a sub-only change hands off to the feature's
+// onSubRoute (in place) when it has one, else remounts.
+function applyRoute() {
   if (!state.repos.length) return;
-  const before = `${state.currentId}/${state.tab}/${state.sub}`;
+  const prevRepo = state.currentId,
+    prevTab = state.tab,
+    prevSub = state.sub;
   applyHash();
-  if (`${state.currentId}/${state.tab}/${state.sub}` !== before) render();
+  lastHash = location.hash;
+  if (state.currentId !== prevRepo || state.tab !== prevTab) {
+    const repo = currentRepo();
+    if (repo && !repo.configured) state.tab = "configuration";
+    render();
+  } else if (state.sub !== prevSub) {
+    if (state.feature?.onSubRoute) state.feature.onSubRoute(state.sub);
+    else mountFeature();
+  }
+}
+
+// popstate (our pushState entries) AND hashchange (manual URL edits) both route
+// here. Back/forward fire BOTH, so we dedupe on lastHash. Our own writeHash
+// updates fire neither but bump lastHash, so they're inert here too. A dirty
+// feature bounces a declined navigation by restoring the previous hash.
+function onHistoryNav() {
+  if (!state.repos.length) return;
+  if (location.hash === lastHash) return;
+  const reason = dirtyReason();
+  if (reason && !window.confirm(`${reason} Leave and lose them?`)) {
+    history.pushState(null, "", lastHash); // bounce back into place
+    return;
+  }
+  applyRoute();
+}
+window.addEventListener("popstate", onHistoryNav);
+window.addEventListener("hashchange", onHistoryNav);
+
+// Native prompt covers tab close / reload / hard URL change — things JS can't veto.
+window.addEventListener("beforeunload", (e) => {
+  if (dirtyReason()) {
+    e.preventDefault();
+    e.returnValue = "";
+  }
 });
 
 // Keep the runner chip live across ALL repos' background processes, even when the

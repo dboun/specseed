@@ -118,7 +118,9 @@ export function createSpec({ repo, ctx, sub }) {
     else state.selected = null;
   }
 
-  async function select(path, { silent = false } = {}) {
+  // write=false when reacting to a back/forward (URL already correct); silent
+  // refinements (initial load / poll re-read) replace rather than push.
+  async function select(path, { silent = false, write = true } = {}) {
     state.selected = path;
     state.missing = false;
     try {
@@ -128,7 +130,18 @@ export function createSpec({ repo, ctx, sub }) {
       state.missing = true;
       if (!silent) ctx.onError(err);
     }
-    ctx.setSub(path); // keep the URL pointing at the open doc
+    if (write) ctx.setSub(path, { replace: silent }); // keep the URL on the open doc
+  }
+
+  // Back/forward landed on a spec subroute (= open doc path).
+  function onSubRoute(next) {
+    const path = next || "";
+    if (path === state.selected || (path && !state.files.some((f) => f.path === path))) return;
+    if (path)
+      select(path, { write: false }).then(() => {
+        repaintIndex();
+        repaintPane();
+      });
   }
 
   // -- render ----------------------------------------------------------- #
@@ -376,5 +389,5 @@ export function createSpec({ repo, ctx, sub }) {
     if (timer) clearInterval(timer);
   }
 
-  return { load, html, afterRender, handleClick, dispose };
+  return { load, html, afterRender, handleClick, dispose, onSubRoute };
 }

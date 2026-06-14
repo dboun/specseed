@@ -1,5 +1,5 @@
 import { api } from "./api.js";
-import { escapeHtml, relativeTime, formatTime, toast } from "../ui/components.js";
+import { escapeHtml, relativeTime, formatTime, toast, modal, closeModal } from "../ui/components.js";
 import { renderMarkdown } from "../ui/markdown.js";
 import { loadPrism, langFor, highlightLines } from "../ui/highlight.js";
 
@@ -50,6 +50,7 @@ export function createCode({ repo, ctx, sub }) {
     moreLoading: false,
     wrap: localStorage.getItem("ss.code.wrap") !== "0", // default: wrap on
     worktree: false, // opt-in: show live on-disk (staged/uncommitted) files. default OFF
+    untracked: false, // opt-in: list straight from disk incl. gitignored files. default OFF
     container: null, // the tab content host, for re-paint on in-tab navigation
     root: null, // the .code-root inside it (re-found after every paint)
   };
@@ -71,21 +72,29 @@ export function createCode({ repo, ctx, sub }) {
   const refIsWorktree = (ref) => !!state.meta?.worktree_branch && ref === state.meta.worktree_branch;
   const canWorktree = () =>
     !!state.meta?.dirty && ["tree", "blob"].includes(state.route.view) && refIsWorktree(refOf());
+  // Untracked browsing reads the live disk, so (unlike working-tree) it's offered
+  // whenever we're on the checked-out branch — gitignored files exist even when
+  // `git status` is clean.
+  const canUntracked = () => ["tree", "blob"].includes(state.route.view) && refIsWorktree(refOf());
 
   async function fetchRoute(r) {
     const ref = r.ref || state.meta?.default_ref;
-    const wt = state.worktree && refIsWorktree(ref);
-    if (r.view === "blob") return { blob: await api.codeBlob(repo.id, ref, r.path, wt) };
+    const onBranch = refIsWorktree(ref);
+    const ut = state.untracked && onBranch;
+    const wt = (state.worktree || ut) && onBranch; // untracked implies live
+    if (r.view === "blob") return { blob: await api.codeBlob(repo.id, ref, r.path, wt, ut) };
     if (r.view === "commits") return { commits: await api.codeCommits(repo.id, ref) };
     if (r.view === "commit") return { commit: await api.codeCommit(repo.id, r.sha) };
     if (r.view === "compare") return { compare: await api.codeCompare(repo.id, r.base, r.head) };
-    return { tree: await api.codeTree(repo.id, ref, r.path, wt) };
+    return { tree: await api.codeTree(repo.id, ref, r.path, wt, ut) };
   }
 
   // The one navigation primitive: set the route, fetch its data, repaint. The
   // server echoes the resolved ref back (default branch -> a concrete name) so
-  // crumbs and links stay stable.
-  async function go(route, { initial = false } = {}) {
+  // crumbs and links stay stable. `push` controls history: true = a real
+  // navigation (grows the back-stack), "replace" = a refinement (initial load,
+  // a toggle), false = reacting to a back/forward (don't touch history).
+  async function go(route, { initial = false, push = true } = {}) {
     state.route = route;
     state.error = null;
     state.loading = true;
@@ -110,11 +119,17 @@ export function createCode({ repo, ctx, sub }) {
     } finally {
       state.loading = false;
     }
-    ctx.setSub(routeToSub(state.route));
+    if (push !== false) ctx.setSub(routeToSub(state.route), { replace: initial || push === "replace" });
     if (!initial) {
       paint();
       state.root?.scrollIntoView?.({ block: "nearest" });
     }
+  }
+
+  // Back/forward landed on a code subroute — re-derive the view in place without
+  // re-writing history (the URL is already correct).
+  function onSubRoute(sub) {
+    return go(parseSub(sub), { push: false });
   }
 
   async function load() {
@@ -143,6 +158,7 @@ export function createCode({ repo, ctx, sub }) {
       <h1>Code</h1>
       <div class="tab-head-actions">
         ${canWorktree() ? worktreeToggleHtml() : ""}
+        ${canUntracked() ? untrackedToggleHtml() : ""}
         ${showRef ? refSwitcherHtml() : ""}
         ${showWrap ? wrapToggleHtml() : ""}
       </div>
@@ -155,6 +171,15 @@ export function createCode({ repo, ctx, sub }) {
     return `<label class="code-wt-toggle" title="show live, uncommitted files on disk for ${escapeHtml(state.meta.worktree_branch)}">
       <input type="checkbox" data-toggle-worktree ${state.worktree ? "checked" : ""} />
       <span>Working tree</span>
+    </label>`;
+  }
+
+  // Opt-in: lists straight from disk, gitignored files included (e.g. an
+  // untracked data dir the committed tree never carries). Checked-out branch only.
+  function untrackedToggleHtml() {
+    return `<label class="code-wt-toggle" title="list everything on disk for ${escapeHtml(state.meta.worktree_branch)}, including gitignored files">
+      <input type="checkbox" data-toggle-untracked ${state.untracked ? "checked" : ""} />
+      <span>Include untracked</span>
     </label>`;
   }
 
@@ -247,16 +272,21 @@ export function createCode({ repo, ctx, sub }) {
       }
     });
     const live = state.data?.tree?.working_tree || state.data?.blob?.working_tree;
+    const ut = state.data?.tree?.untracked || state.data?.blob?.untracked;
     return `<div class="code-bar">
       <div class="code-crumbs">${crumbs.join("")}</div>
       <div class="code-bar-actions">
         <span class="code-ref-pill mono" title="viewing ref">${escapeHtml(ref)}</span>
-        ${live ? `<span class="code-wt-pill" title="live working tree — includes staged &amp; uncommitted files on disk">working tree</span>` : ""}
+        ${live ? `<span class="code-wt-pill" title="${ut ? "live on-disk view — gitignored files included" : "live working tree — includes staged & uncommitted files on disk"}">${ut ? "on-disk · untracked" : "working tree"}</span>` : ""}
+        ${compareBtnHtml()}
         <button class="btn sm btn-ghost" data-history title="commit history for ${escapeHtml(ref)}">History</button>
         <button class="btn sm btn-ghost" data-copy-link title="copy a deep link to this view">Link</button>
       </div>
     </div>`;
   }
+
+  const compareBtnHtml = () =>
+    `<button class="btn sm btn-ghost" data-open-compare title="compare two branches/commits">Compare</button>`;
 
   function treeHtml() {
     const t = state.data?.tree;
@@ -389,6 +419,7 @@ export function createCode({ repo, ctx, sub }) {
         </div>
         <div class="code-bar-actions">
           ${canCompare ? `<button class="btn sm btn-ghost" data-compare="${escapeHtml(cm.sha)}|${escapeHtml(compareHead)}" title="diff this commit against ${escapeHtml(compareHead)}">Compare → ${escapeHtml(compareHead)}</button>` : ""}
+          ${compareBtnHtml()}
           <button class="btn sm btn-ghost" data-copy-link title="copy a deep link to this commit">Link</button>
         </div>
       </div>
@@ -533,8 +564,16 @@ export function createCode({ repo, ctx, sub }) {
     const wtToggle = t.closest("[data-toggle-worktree]");
     if (wtToggle) {
       state.worktree = wtToggle.checked;
-      return go({ ...state.route });
+      return go({ ...state.route }, { push: "replace" });
     }
+
+    const utToggle = t.closest("[data-toggle-untracked]");
+    if (utToggle) {
+      state.untracked = utToggle.checked;
+      return go({ ...state.route }, { push: "replace" });
+    }
+
+    if (t.closest("[data-open-compare]")) return openComparePopup();
 
     const wrapBtn = t.closest("[data-wrap]");
     if (wrapBtn) {
@@ -597,6 +636,104 @@ export function createCode({ repo, ctx, sub }) {
     }
   }
 
+  // -- compare popup ---------------------------------------------------- #
+  // A self-contained mini-picker: two symmetric sides (base/head), each a branch
+  // dropdown + that branch's commit list. Base is prefilled to what we're viewing;
+  // head defaults to the same branch. Picking a commit pins that side to a sha.
+  // "Compare" routes to the existing compare view. Owns its own listeners on the
+  // modal node so it stays out of the global delegation.
+  function openComparePopup() {
+    const branches = state.meta?.branches || [];
+    const refs = [...branches, ...(state.meta?.tags || [])];
+    if (!refs.length) return toast("no branches to compare", "error");
+    const curBranch = branches.includes(refOf()) ? refOf() : state.meta?.default_ref || refs[0];
+    const baseRef = state.route.view === "commit" ? state.route.sha : refOf();
+    const sides = {
+      base: { branch: curBranch, ref: baseRef },
+      head: { branch: curBranch, ref: curBranch },
+    };
+    const node = modal(comparePopHtml(sides, refs), { wide: true });
+    const pickedEl = (w) => node.querySelector(`[data-cmp-picked="${w}"]`);
+    const commitsEl = (w) => node.querySelector(`[data-cmp-commits="${w}"]`);
+
+    function markPicked(which) {
+      pickedEl(which).textContent = sides[which].ref;
+      commitsEl(which)
+        .querySelectorAll("[data-cmp-pick]")
+        .forEach((b) => b.classList.toggle("active", b.dataset.sha === sides[which].ref));
+    }
+    async function loadSide(which) {
+      const host = commitsEl(which);
+      host.innerHTML = `<div class="loading">loading…</div>`;
+      try {
+        const c = await api.codeCommits(repo.id, sides[which].branch);
+        host.innerHTML =
+          (c.items || []).map((cm) => comparePickRow(which, cm)).join("") || `<div class="code-empty-row">no commits</div>`;
+        markPicked(which);
+      } catch (err) {
+        host.innerHTML = `<div class="banner banner-warn">${escapeHtml(err.message || "could not load commits")}</div>`;
+      }
+    }
+
+    node.addEventListener("change", (e) => {
+      const sel = e.target.closest("[data-cmp-branch]");
+      if (!sel) return;
+      const which = sel.dataset.cmpBranch;
+      sides[which].branch = sel.value;
+      sides[which].ref = sel.value; // branch tip until a commit is picked
+      loadSide(which);
+    });
+    node.addEventListener("click", (e) => {
+      if (e.target.closest("[data-close]")) return closeModal();
+      const pick = e.target.closest("[data-cmp-pick]");
+      if (pick) {
+        sides[pick.dataset.cmpPick].ref = pick.dataset.sha;
+        return markPicked(pick.dataset.cmpPick);
+      }
+      if (e.target.closest("[data-cmp-go]")) {
+        closeModal();
+        go({ view: "compare", base: sides.base.ref, head: sides.head.ref });
+      }
+    });
+    loadSide("base");
+    loadSide("head");
+  }
+
+  function comparePopHtml(sides, refs) {
+    return `<h2>Compare</h2>
+      <div class="code-compare-pop">
+        ${compareSideHtml("base", "Base", sides.base, refs)}
+        <span class="compare-arrow">→</span>
+        ${compareSideHtml("head", "Head", sides.head, refs)}
+      </div>
+      <div class="button-row">
+        <button class="btn btn-primary" type="button" data-cmp-go>Compare</button>
+        <button class="btn btn-ghost" type="button" data-close>Cancel</button>
+      </div>`;
+  }
+
+  function compareSideHtml(which, label, side, refs) {
+    const opts = refs
+      .map((r) => `<option value="${escapeHtml(r)}" ${r === side.branch ? "selected" : ""}>${escapeHtml(r)}</option>`)
+      .join("");
+    return `<div class="cmp-side" data-cmp-side="${which}">
+      <div class="cmp-side-head">${escapeHtml(label)}</div>
+      <select class="cmp-branch" data-cmp-branch="${which}" aria-label="${escapeHtml(label)} branch">${opts}</select>
+      <div class="cmp-picked mono" data-cmp-picked="${which}">${escapeHtml(side.ref)}</div>
+      <div class="cmp-commits" data-cmp-commits="${which}"></div>
+    </div>`;
+  }
+
+  function comparePickRow(which, cm) {
+    return `<button type="button" class="commit-row" data-cmp-pick="${which}" data-sha="${escapeHtml(cm.short)}">
+      <span class="commit-sha mono">${escapeHtml(cm.short)}</span>
+      <span class="commit-main">
+        <span class="commit-subject">${escapeHtml(cm.subject)}</span>
+        <span class="commit-sub">${escapeHtml(relativeTime(cm.date))}</span>
+      </span>
+    </button>`;
+  }
+
   // live-filter the ref switcher; hides group labels whose items all vanish
   function handleInput(event) {
     const search = event.target.closest("[data-ref-search]");
@@ -624,5 +761,5 @@ export function createCode({ repo, ctx, sub }) {
     state.root = container.querySelector("[data-code-root]");
   }
 
-  return { load, html, afterRender, handleClick, handleInput };
+  return { load, html, afterRender, handleClick, handleInput, onSubRoute };
 }

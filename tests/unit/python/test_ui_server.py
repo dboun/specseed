@@ -879,6 +879,41 @@ class CodeViewerTest(unittest.TestCase):
         self.assertFalse(b["working_tree"])
         self.assertEqual(b["text"], "print('hello')\n")
 
+    # -- include untracked (raw disk, gitignored included) --------------- #
+    def test_untracked_tree_lists_gitignored_and_hides_git(self) -> None:
+        # secret.txt is gitignored: committed tree AND working-tree omit it,
+        # but the raw-disk untracked view surfaces it. The repo's own .git never shows.
+        committed = [e["name"] for e in server._code_tree(self.record, "main", "")["entries"]]
+        self.assertNotIn("secret.txt", committed)
+        wt = [e["name"] for e in server._code_tree(self.record, "main", "", worktree=True)["entries"]]
+        self.assertNotIn("secret.txt", wt)
+        t = server._code_tree(self.record, "main", "", untracked=True)
+        names = [e["name"] for e in t["entries"]]
+        self.assertIn("secret.txt", names)
+        self.assertNotIn(".git", names)
+        self.assertTrue(t["working_tree"])
+        self.assertTrue(t["untracked"])
+
+    def test_untracked_blob_reads_ignored_file(self) -> None:
+        b = server._code_blob(self.record, "main", "secret.txt", untracked=True)
+        self.assertEqual(b["text"], "do not show me")
+        self.assertTrue(b["untracked"])
+        # plain working-tree still rejects an ignored file
+        with self.assertRaises(RuntimeError):
+            server._code_blob(self.record, "main", "secret.txt", worktree=True)
+
+    def test_untracked_ignored_for_non_checked_out_ref(self) -> None:
+        # untracked is only honored on the checked-out branch; on "feature" it
+        # falls back to the committed tree, where the ignored file doesn't exist.
+        with self.assertRaises(RuntimeError):
+            server._code_blob(self.record, "feature", "secret.txt", untracked=True)
+
+    def test_disk_within_rejects_escape(self) -> None:
+        self.assertEqual(server._disk_within(self.record, ""), self.repo)
+        for bad in ["../outside", "src/../../oops"]:
+            with self.assertRaises(RuntimeError):
+                server._disk_within(self.record, bad)
+
     # -- validation ------------------------------------------------------ #
     def test_check_ref(self) -> None:
         self.assertEqual(server._check_ref(""), "HEAD")

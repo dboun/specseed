@@ -1,6 +1,6 @@
 import { api } from "./api.js";
 import { openAgentOutput } from "./agent_output.js";
-import { closeModal, escapeHtml, formatTime, modal, reactionIcon, toast } from "../ui/components.js";
+import { closeModal, confirmDialog, escapeHtml, formatTime, modal, reactionIcon, toast } from "../ui/components.js";
 import { renderMarkdown } from "../ui/markdown.js";
 import {
   allAnswered,
@@ -14,7 +14,7 @@ import {
 
 const PAGE_SIZE = 8;
 
-export function createTracker({ repo, ctx }) {
+export function createTracker({ repo, ctx, sub }) {
   const state = {
     meta: null,
     external: false,
@@ -43,6 +43,11 @@ export function createTracker({ repo, ctx }) {
     // Baseline the known posts so the very first paint never sweeps everything;
     // only posts that appear AFTER this get the radar treatment.
     state.seenPostIds = new Set(state.posts.map((p) => String(p.id)));
+    // Deep link: the subroute is the open post id. Open it (without growing the
+    // back-stack — it's where we landed), ignoring a stale id quietly.
+    if (sub && [...state.posts, ...state.defaults].some((p) => String(p.id) === String(sub))) {
+      await openPost(sub, { push: "replace" });
+    }
   }
 
   async function reloadPosts() {
@@ -567,7 +572,9 @@ export function createTracker({ repo, ctx }) {
     document.querySelector("[data-tracker-root]")?.classList.toggle("detail", !!state.selected);
   }
 
-  async function openPost(id) {
+  // push: true = user opened it (grow back-stack), "replace" = deep-link landing,
+  // false = reacting to a back/forward (URL already correct).
+  async function openPost(id, { push = true } = {}) {
     try {
       state.selectedId = id;
       state.selected = await api.getPost(repo.id, id);
@@ -576,11 +583,57 @@ export function createTracker({ repo, ctx }) {
       // Baseline existing comments so opening a post doesn't sweep its history;
       // only comments that stream in afterwards ping.
       state.seenCommentIds = new Set((state.selected.comments || []).map((c) => String(c.id)));
+      if (push !== false) ctx.setSub(String(id), { replace: push === "replace" });
       repaintDrawer();
       repaintList();
     } catch (err) {
       ctx.onError(err);
     }
+  }
+
+  function closeDrawer({ push = true } = {}) {
+    state.selectedId = null;
+    state.selected = null;
+    state.editing = false;
+    state.addLabelOpen = false;
+    if (push !== false) ctx.setSub("", { replace: push === "replace" });
+    repaintDrawer();
+    repaintList();
+  }
+
+  // Back/forward landed on a tracker subroute (= open post id, or "" for none).
+  function onSubRoute(next) {
+    const id = next || "";
+    if (!id) return state.selectedId == null ? undefined : closeDrawer({ push: false });
+    if (String(id) !== String(state.selectedId)) openPost(id, { push: false });
+  }
+
+  // Unsaved-edit guard: a short reason while a message edit is in flight, else "".
+  function isDirty() {
+    if (state.selectedId == null) return "";
+    if (state.editing) {
+      const f = document.querySelector("[data-save-post]");
+      const title = f?.querySelector('[name="title"]')?.value;
+      const body = f?.querySelector('[name="body"]')?.value;
+      if (title !== (state.selected?.title || "") || body !== (state.selected?.body || ""))
+        return "This post has unsaved edits.";
+    }
+    const drawer = document.querySelector("[data-drawer]");
+    if (drawer) {
+      const composer = drawer.querySelector("[data-comment-form] textarea");
+      if (composer?.value.trim()) return "You have an unsent comment.";
+      for (const el of drawer.querySelectorAll('[data-fb-act="comment-text"], [data-fb-act="other"]')) {
+        if ((el.value || "").trim()) return "You have an unsent reply.";
+      }
+    }
+    return "";
+  }
+
+  // Confirm before an intra-tracker jump (post→post / close) drops unsaved edits.
+  async function guardIntra() {
+    const reason = isDirty();
+    if (!reason) return true;
+    return confirmDialog(`${reason} Leave and lose them?`, { confirmLabel: "Leave", cancelLabel: "Stay" });
   }
 
   async function mutate(action, { reopen = true } = {}) {
@@ -682,16 +735,15 @@ export function createTracker({ repo, ctx }) {
     const ao = t.closest("[data-agent-output]");
     if (ao) return openAgentOutput(repo.id, ao.dataset.agentOutput, { autoClose: true });
     const open = t.closest("[data-open-post]");
-    if (open) return openPost(open.dataset.openPost);
+    if (open) {
+      if (String(open.dataset.openPost) === String(state.selectedId)) return;
+      if (!(await guardIntra())) return;
+      return openPost(open.dataset.openPost);
+    }
     if (t.closest("[data-new-post]")) return openNewPost();
     if (t.closest("[data-close-drawer]")) {
-      state.selectedId = null;
-      state.selected = null;
-      state.editing = false;
-      state.addLabelOpen = false;
-      repaintDrawer();
-      repaintList();
-      return;
+      if (!(await guardIntra())) return;
+      return closeDrawer();
     }
     if (t.closest("[data-edit-post]")) {
       state.editing = true;
@@ -751,11 +803,7 @@ export function createTracker({ repo, ctx }) {
     if (t.closest("[data-delete-post]")) {
       if (!confirm(`Delete post #${state.selectedId}?`)) return;
       await mutate(() => api.deletePost(repo.id, state.selectedId), { reopen: false });
-      state.selectedId = null;
-      state.selected = null;
-      state.editing = false;
-      state.addLabelOpen = false;
-      repaintDrawer();
+      closeDrawer();
       return;
     }
     const rm = t.closest("[data-remove-label]");
@@ -980,5 +1028,5 @@ export function createTracker({ repo, ctx }) {
     document.removeEventListener("dblclick", handleDblClick);
   }
 
-  return { load, html, afterRender, handleClick, handleSubmit, handleInput, dispose };
+  return { load, html, afterRender, handleClick, handleSubmit, handleInput, dispose, onSubRoute, isDirty };
 }

@@ -922,7 +922,58 @@ def _worktree_blob_bytes(record: dict, path: str) -> tuple[bytes, int]:
     return data, size
 
 
-def _code_tree(record: dict, ref: str, path: str, worktree: bool = False) -> dict:
+def _disk_within(record: dict, path: str) -> Path:
+    """Resolve target/path and confirm it stays inside the target root. The raw-disk
+    (untracked) views read files git would hide, so containment is enforced here
+    rather than leaning on git refusing to traverse out."""
+    root = Path(_git_target(record)).resolve()
+    full = (root / path).resolve()
+    if full != root and root not in full.parents:
+        raise RuntimeError(f"path escapes repo: {path!r}")
+    return full
+
+
+def _disk_ls(record: dict, path: str) -> list[dict]:
+    """Immediate children of `path` straight from DISK - EVERYTHING on disk,
+    gitignored files included (e.g. an untracked data dir). One level, never
+    recursive; the repo's own `.git` is hidden."""
+    base = _disk_within(record, path)
+    if not base.is_dir():
+        raise RuntimeError(f"no such directory: {path or '/'}")
+    entries = []
+    for de in os.scandir(base):
+        if not path and de.name == ".git":
+            continue
+        is_dir = de.is_dir(follow_symlinks=False)
+        size = None
+        if not is_dir:
+            try:
+                size = de.stat(follow_symlinks=False).st_size
+            except OSError:
+                size = None
+        entries.append({
+            "name": de.name,
+            "path": f"{path}/{de.name}" if path else de.name,
+            "type": "tree" if is_dir else "blob",
+            "size": size,
+        })
+    entries.sort(key=lambda e: (e["type"] != "tree", e["name"].lower()))
+    return entries
+
+
+def _disk_blob_bytes(record: dict, path: str) -> tuple[bytes, int]:
+    """(capped bytes, full size) read straight from disk - no gitignore rejection,
+    so untracked/ignored files are readable. Stays inside the repo root."""
+    full = _disk_within(record, path)
+    if not full.is_file():
+        raise RuntimeError(f"not a file: {path}")
+    size = full.stat().st_size
+    with open(full, "rb") as fh:
+        data = fh.read(_CODE_MAX_BYTES)
+    return data, size
+
+
+def _code_tree(record: dict, ref: str, path: str, worktree: bool = False, untracked: bool = False) -> dict:
     """A directory at a ref: its entries plus the rendered README, if any.
 
     The README-per-folder convention every code host follows - we surface the
@@ -931,13 +982,25 @@ def _code_tree(record: dict, ref: str, path: str, worktree: bool = False) -> dic
     for the checked-out branch) so staged/uncommitted work can be inspected."""
     ref = _check_ref(ref)
     path = _check_path(path)
-    live = bool(worktree) and ref in (_worktree_branch(record), "HEAD")
-    entries = _worktree_ls(record, path) if live else _ls_tree(record, ref, path)
-    out = {"ref": ref, "path": path, "entries": entries, "readme": None, "working_tree": live}
+    on_branch = ref in (_worktree_branch(record), "HEAD")
+    disk = bool(untracked) and on_branch  # raw on-disk, gitignored included
+    live = (bool(worktree) or disk) and on_branch
+    if disk:
+        entries = _disk_ls(record, path)
+    elif live:
+        entries = _worktree_ls(record, path)
+    else:
+        entries = _ls_tree(record, ref, path)
+    out = {"ref": ref, "path": path, "entries": entries, "readme": None,
+           "working_tree": live, "untracked": disk}
     readme = next((e for e in entries if e["type"] == "blob" and _README_RE.match(e["name"])), None)
     if readme:
-        data, size = (_worktree_blob_bytes(record, readme["path"]) if live
-                      else _blob_bytes(record, ref, readme["path"]))
+        if disk:
+            data, size = _disk_blob_bytes(record, readme["path"])
+        elif live:
+            data, size = _worktree_blob_bytes(record, readme["path"])
+        else:
+            data, size = _blob_bytes(record, ref, readme["path"])
         out["readme"] = {
             "name": readme["name"],
             "path": readme["path"],
@@ -947,13 +1010,20 @@ def _code_tree(record: dict, ref: str, path: str, worktree: bool = False) -> dic
     return out
 
 
-def _code_blob(record: dict, ref: str, path: str, worktree: bool = False) -> dict:
+def _code_blob(record: dict, ref: str, path: str, worktree: bool = False, untracked: bool = False) -> dict:
     ref = _check_ref(ref)
     path = _check_path(path)
     if not path:
         raise RuntimeError("a file path is required")
-    live = bool(worktree) and ref in (_worktree_branch(record), "HEAD")
-    data, size = (_worktree_blob_bytes(record, path) if live else _blob_bytes(record, ref, path))
+    on_branch = ref in (_worktree_branch(record), "HEAD")
+    disk = bool(untracked) and on_branch
+    live = (bool(worktree) or disk) and on_branch
+    if disk:
+        data, size = _disk_blob_bytes(record, path)
+    elif live:
+        data, size = _worktree_blob_bytes(record, path)
+    else:
+        data, size = _blob_bytes(record, ref, path)
     binary = b"\x00" in data[:8000]
     return {
         "ref": ref, "path": path, "size": size,
@@ -961,7 +1031,7 @@ def _code_blob(record: dict, ref: str, path: str, worktree: bool = False) -> dic
         "truncated": size > _CODE_MAX_BYTES,
         "text": "" if binary else data.decode("utf-8", "replace"),
         "ext": Path(path).suffix.lstrip(".").lower(),
-        "working_tree": live,
+        "working_tree": live, "untracked": disk,
     }
 
 
@@ -1274,11 +1344,12 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": True, "data": _code_meta(record)})
             return
         wt = one("worktree") in ("1", "true")
+        ut = one("untracked") in ("1", "true")
         if sub == ["tree"]:
-            self._json({"ok": True, "data": _code_tree(record, one("ref"), one("path"), wt)})
+            self._json({"ok": True, "data": _code_tree(record, one("ref"), one("path"), wt, ut)})
             return
         if sub == ["blob"]:
-            self._json({"ok": True, "data": _code_blob(record, one("ref"), one("path"), wt)})
+            self._json({"ok": True, "data": _code_blob(record, one("ref"), one("path"), wt, ut)})
             return
         if sub == ["commits"]:
             offset, limit = _page_args(query, "commits", 50)
