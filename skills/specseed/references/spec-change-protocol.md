@@ -16,7 +16,7 @@ produced and handed off. Read it once; the routes only describe their own logic.
 
 | Script | Use |
 |--------|-----|
-| `dependencies_validate.py` | validate `plan.json.creates` links before emitting `apply.py` |
+| `dependencies_validate.py` | validate `plan.json.creates` (parent/dep links AND each create's tier+status `labels`) before emitting `apply.py` — a create with no tier/status label is a hard error, since apply.py builds the post from `labels` alone and a label-less post is never worked |
 
 ## The request
 

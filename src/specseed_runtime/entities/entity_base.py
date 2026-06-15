@@ -124,14 +124,23 @@ class Entity:
 
     @staticmethod
     def tier_from_labels(labels: list[str]) -> Optional[str]:
-        # Prefer the explicit `tier:<tier>` form, then fall back to a bare
-        # `epic`/`ticket`/`issue` label (the form actually seeded on the tracker).
+        # Prefer the explicit `tier:<tier>` form, then a bare `epic`/`ticket`/`issue`
+        # label (the form seeded on the tracker), then the tier embedded in the canonical
+        # `<tier>:status:<status>` label. A post may carry ONLY the combined status label
+        # (status_from_labels already reads it); without this last fallback its tier would
+        # come back None and the dispatcher would treat a real issue as untyped, silently
+        # dropping every event on it.
         for label in labels:
             if label.startswith(TIER_LABEL_PREFIX):
                 return label[len(TIER_LABEL_PREFIX):]
         for label in labels:
             if label in _WORK_TIERS:
                 return label
+        marker = ":" + STATUS_LABEL_PREFIX  # ":status:"
+        for label in labels:
+            idx = label.find(marker)
+            if idx != -1 and label[:idx] in _WORK_TIERS:
+                return label[:idx]
         return None
 
     @staticmethod

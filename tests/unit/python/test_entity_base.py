@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from specseed_runtime.entities.entity_base import parse_depends_on, parse_parent
+from specseed_runtime.entities.entity_base import Entity, parse_depends_on, parse_parent
 
 
 class ParseDependsOnTest(unittest.TestCase):
@@ -57,6 +57,36 @@ class ParseParentTest(unittest.TestCase):
     def test_none_when_absent(self) -> None:
         self.assertIsNone(parse_parent("Depends on: #5\nno parent here"))
         self.assertIsNone(parse_parent(None))
+
+
+class TierStatusFromLabelsTest(unittest.TestCase):
+    """tier/status resolution from a post's labels. The canonical tracker form is a bare
+    tier label PLUS a `<tier>:status:<status>` label, but a post may carry only the combined
+    one - tier must still resolve from it, else the dispatcher drops a real issue as untyped."""
+
+    def test_bare_tier_label(self) -> None:
+        self.assertEqual(Entity.tier_from_labels(["issue", "issue:status:todo"]), "issue")
+
+    def test_explicit_tier_prefix(self) -> None:
+        self.assertEqual(Entity.tier_from_labels(["tier:ticket"]), "ticket")
+
+    def test_tier_from_combined_status_label_only(self) -> None:
+        # The regression: a post whose ONLY tier-bearing label is the combined status one.
+        self.assertEqual(Entity.tier_from_labels(["issue:status:todo"]), "issue")
+        self.assertEqual(Entity.tier_from_labels(["epic:status:in_progress"]), "epic")
+
+    def test_combined_non_work_tier_does_not_resolve(self) -> None:
+        # `spec-change:status:done` is not a work tier - must not be mistaken for one.
+        self.assertIsNone(Entity.tier_from_labels(["spec-change:status:done"]))
+
+    def test_no_tier_label(self) -> None:
+        self.assertIsNone(Entity.tier_from_labels([]))
+        self.assertIsNone(Entity.tier_from_labels(["type:feature", "difficulty:hard"]))
+
+    def test_status_from_combined_and_bare(self) -> None:
+        self.assertEqual(Entity.status_from_labels(["issue:status:todo"]), "todo")
+        self.assertEqual(Entity.status_from_labels(["status:in_review"]), "in_review")
+        self.assertIsNone(Entity.status_from_labels(["issue"]))
 
 
 if __name__ == "__main__":

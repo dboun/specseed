@@ -16,6 +16,12 @@ A create references another create that has no provider id yet by title placehol
 already-existing post uses a literal ``#NN`` / ``#FEAT-001``.
 
 Errors (exit 1, must fix):
+  * unlabeled - a create whose ``labels`` carry no tier (``epic``/``ticket``/``issue``)
+    or no status (``<tier>:status:<status>``, e.g. ``issue:status:todo``) label. ``apply.py``
+    builds each post from ``labels`` ALONE (the ``tier`` field is advisory, never written to
+    the tracker), so without them the runtime can't resolve the post's tier/status:
+    ``decide_intent`` returns NONE and every event on it (assignment, comments, labels) is a
+    silent no-op - the post is created but never worked, with no error to show for it;
   * dangling - a ``#{id:Title}`` dep whose Title matches no created item (apply.py can't
     substitute it, so the link evaporates and the gate never holds);
   * malformed - a ``Depends on:`` line with a bare ``{id:..}`` (no ``#``) or no ref at all
@@ -84,6 +90,43 @@ def _tier_of(item: dict) -> str | None:
     return None
 
 
+def _tier_from_labels(labels: list) -> str | None:
+    """The work tier resolvable from a create's LABELS alone (what ``apply.py`` writes).
+
+    Mirrors ``entities/entity_base.Entity.tier_from_labels``: a ``tier:<t>`` label, a bare
+    ``epic``/``ticket``/``issue`` label, or the tier embedded in the canonical
+    ``<tier>:status:<status>`` label. The ``tier`` *field* is deliberately NOT consulted -
+    apply.py creates the post from ``labels`` only, so only a label makes it workable. Every
+    form is restricted to a real work tier, so a stray ``tier:garbage`` doesn't pass the gate.
+    """
+    for label in labels:
+        name = str(label)
+        if name.startswith("tier:") and name[len("tier:"):] in _WORK_TIERS:
+            return name[len("tier:"):]
+    for label in labels:
+        if str(label) in _WORK_TIERS:
+            return str(label)
+    for label in labels:
+        name = str(label)
+        idx = name.find(":status:")
+        if idx != -1 and name[:idx] in _WORK_TIERS:
+            return name[:idx]
+    return None
+
+
+def _status_from_labels(labels: list) -> str | None:
+    """The status resolvable from a create's LABELS - a bare ``status:<s>`` or the canonical
+    ``<tier>:status:<status>`` form. Mirrors ``entities/entity_base.Entity.status_from_labels``."""
+    for label in labels:
+        name = str(label)
+        if name.startswith("status:"):
+            return name[len("status:"):] or None
+        idx = name.find(":status:")
+        if idx != -1:
+            return name[idx + len(":status:"):] or None
+    return None
+
+
 def _depends_segments(body: str) -> list[str]:
     """Every ``Depends on:`` segment in a body, each trimmed at newline / comment close."""
     out: list[str] = []
@@ -149,14 +192,29 @@ def validate(plan: dict) -> dict:
         if not isinstance(entry, dict):
             warnings.append("skipped a non-object entry in creates")
             continue
+        title = str(entry.get("title") or "").strip()
+        label_list = [str(x) for x in entry.get("labels") or []]
+        who = repr(title) if title else "a create with no title"
+        # apply.py creates each post from `labels` ALONE - the `tier` field never reaches the
+        # tracker. A post lacking a tier or status label is unworkable: the runtime can't
+        # resolve its tier/status, so decide_intent returns NONE and every event on it
+        # (assignment, comments, labels) is a silent no-op. Catch it here, before apply.py runs.
+        if _tier_from_labels(label_list) is None:
+            errors.append(
+                "{0} has no tier label in `labels` (one of `epic`/`ticket`/`issue`, or the "
+                "tier in a `<tier>:status:<status>` label); apply.py builds the post from "
+                "`labels`, so without one the post is unworkable".format(who))
+        if _status_from_labels(label_list) is None:
+            errors.append(
+                "{0} has no status label in `labels` (e.g. `issue:status:todo`); without one "
+                "the runtime can't act on the post".format(who))
         tier = _tier_of(entry)
         if tier is None:
             continue
-        title = str(entry.get("title") or "").strip()
         item = {
             "title": title,
             "tier": tier,
-            "labels": [str(x) for x in entry.get("labels") or []],
+            "labels": label_list,
             "body": str(entry.get("body") or ""),
             "deps": _parse_deps(str(entry.get("body") or "")),
         }

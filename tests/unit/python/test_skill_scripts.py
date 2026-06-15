@@ -353,6 +353,47 @@ class DependenciesValidateTest(unittest.TestCase):
         r = dv.validate(plan)
         self.assertTrue(r["ok"], r["errors"])
 
+    def test_create_with_no_labels_is_error(self):
+        # THE reported bug: apply.py's plan.json had every create with labels:None, so the
+        # posts were born without a tier/status label and the runtime never worked them
+        # (assignment + every other event was a silent no-op). Catch it before apply.py runs.
+        plan = {"creates": [
+            {"tier": "issue", "title": "FEAT-0001 Create HTML structure", "body": ""},
+        ]}
+        r = dv.validate(plan)
+        self.assertFalse(r["ok"])
+        self.assertTrue(any("no tier label" in e for e in r["errors"]), r["errors"])
+        self.assertTrue(any("no status label" in e for e in r["errors"]), r["errors"])
+
+    def test_missing_tier_label_is_error(self):
+        # Has a status label but no tier-bearing one.
+        plan = {"creates": [
+            {"tier": "issue", "title": "FEAT-001 Impl", "labels": ["status:todo"], "body": ""},
+        ]}
+        r = dv.validate(plan)
+        self.assertFalse(r["ok"])
+        self.assertTrue(any("no tier label" in e for e in r["errors"]), r["errors"])
+        self.assertFalse(any("no status label" in e for e in r["errors"]), r["errors"])
+
+    def test_missing_status_label_is_error(self):
+        plan = {"creates": [
+            {"tier": "issue", "title": "FEAT-001 Impl", "labels": ["issue"], "body": ""},
+        ]}
+        r = dv.validate(plan)
+        self.assertFalse(r["ok"])
+        self.assertTrue(any("no status label" in e for e in r["errors"]), r["errors"])
+        self.assertFalse(any("no tier label" in e for e in r["errors"]), r["errors"])
+
+    def test_combined_status_label_satisfies_both(self):
+        # A lone issue whose only label is the combined `issue:status:todo`: the tier and
+        # the status both resolve from it, so the label gate passes (mirrors fix 3 in
+        # entities/entity_base.tier_from_labels).
+        plan = {"creates": [
+            {"tier": "issue", "title": "FEAT-001 Impl", "labels": ["issue:status:todo"], "body": ""},
+        ]}
+        r = dv.validate(plan)
+        self.assertTrue(r["ok"], r["errors"])
+
     def test_main_exit_codes_and_file_input(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
