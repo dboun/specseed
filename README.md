@@ -61,7 +61,7 @@ the work lane serializes expensive agent and git operations. Remote tracker stat
 
 ### A typical run
 
-1. Add `spec-change:adopt` to a tracker post.
+1. For a greenfield project, add `spec-change:adapt` to a tracker post.
 2. The spec worker reads the repository and stages a spec plus work breakdown.
 3. specseed posts the proposal. Nothing changes live before approval.
 4. Approval promotes the spec and creates linked epics, tickets, and issues.
@@ -69,6 +69,8 @@ the work lane serializes expensive agent and git operations. Remote tracker stat
 6. Dependencies hold downstream work until upstream code reaches the primary branch.
 7. Merge gates are prepared against current primary before asking for approval.
 8. Failures retry, surface context, and recover without losing the original thread.
+
+For a non-greenfield project with existing code but no spec, start with `spec-change:adopt` instead.
 
 <p align="center">
   <img src="docs/screenshots/approval-gate.jpg" alt="specseed tracker showing linked work, a running agent, and a merge-ready approval gate bound to APR-0042">
