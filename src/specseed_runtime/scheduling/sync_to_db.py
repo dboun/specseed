@@ -1,0 +1,327 @@
+"""
+sync_to_db.py - turn a remote sync into DB queue operations.
+
+This is the bridge between the tracking layer and the work queue. Given a local
+tracker and a remote (source of truth), it:
+
+  1. calls ``local.sync_from_remote(remote)`` to learn what changed, and
+  2. translates each change into a typed task on the DB queue.
+
+It is deliberately the only "intelligent" piece:
+
+* **Mapping** - each (resource_type, action) maps to a concrete task class in
+  ``../tasks`` (or is ignored). Entry edits coalesce into one task.
+* **Supersession** - before enqueueing a task, any *pending* task about the same
+  remote resource is removed (``resource_key``). So a comment edit cancels the
+  prior comment task, a label add/remove pair cancels out, and duplicate change
+  storms collapse to a single row.
+* **Teardown** - when an entry is closed or deleted, every pending task for that
+  entry is dropped. If a task for it was *in progress*, we enqueue a CleanupTask
+  and interrupt the running work via the cancellation registry - we never edit
+  the in-progress row.
+
+Ordering is inherited from ``sync_from_remote`` (tier-sorted creates,
+leaf-first deletes), so tasks land in a sane order without extra work here.
+
+Only Python stdlib is used.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Optional
+
+from specseed_runtime.db.database import Database
+from specseed_runtime.executing import platform_log
+from specseed_runtime.executing import priorities
+from specseed_runtime.platform_identity import is_platform_comment, platform_username
+from specseed_runtime.tasks.cleanup_task import CleanupTask
+from specseed_runtime.tasks.handle_comment_added import HandleCommentAdded
+from specseed_runtime.tasks.handle_comment_updated import HandleCommentUpdated
+from specseed_runtime.tasks.handle_entry_created import HandleEntryCreated
+from specseed_runtime.tasks.handle_entry_reaction_added import HandleEntryReactionAdded
+from specseed_runtime.tasks.handle_entry_reaction_removed import HandleEntryReactionRemoved
+from specseed_runtime.tasks.handle_entry_reopened import HandleEntryReopened
+from specseed_runtime.tasks.handle_entry_updated import HandleEntryUpdated
+from specseed_runtime.tasks.handle_label_added import HandleLabelAdded
+from specseed_runtime.tasks.handle_label_removed import HandleLabelRemoved
+from specseed_runtime.tasks.handle_reaction_added import HandleReactionAdded
+from specseed_runtime.tasks.handle_reaction_removed import HandleReactionRemoved
+from specseed_runtime.tasks.task_base import resource_key
+
+# Tasks whose ``post_id`` is a COMMENT id (a reaction's parent in the change
+# stream is the comment). Comment ids share the integer space with entry ids,
+# so a teardown sweep over a comment-id key must only touch these actions or it
+# can sweep an unrelated entry's tasks that happen to share the number.
+_COMMENT_KEYED_ACTIONS = {HandleReactionAdded.ACTION, HandleReactionRemoved.ACTION}
+
+
+def sync_to_db(
+    local: Any,
+    remote: Any,
+    db: Optional[Database] = None,
+    config: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Sync ``remote`` into ``local`` and apply the resulting changes to the queue.
+
+    ``config`` supplies ``platform_username`` so the platform's own comments
+    never become work (self-retrigger loop guard).
+    Returns a summary dict; on a failed sync, ``{"ok": False, "error": ...}``.
+    """
+    db = db or Database.instance()
+    bot_name = platform_username(config)
+    platform_log.log_event(
+        "sync_to_db_start",
+        local=type(local).__name__,
+        remote=type(remote).__name__,
+        db_path=str(getattr(db, "db_path", "")),
+    )
+    result = local.sync_from_remote(remote)
+    if not result.ok:
+        platform_log.log_event("sync_to_db_failed", error=result.error)
+        return {"ok": False, "error": result.error}
+
+    summary = {
+        "ok": True,
+        "changes": len(result.data),
+        "enqueued": 0,
+        "superseded": 0,
+        "coalesced": 0,
+        "cleanups": 0,
+        "interrupts_todo": 0,
+        "ignored": 0,
+    }
+    seen_keys: set[tuple] = set()  # within-run coalescing for entry edits
+
+    for change in result.data:
+        platform_log.log_event(
+            "sync_change",
+            resource_type=getattr(change, "resource_type", None),
+            resource_id=getattr(change, "resource_id", None),
+            action=getattr(change, "action", None),
+            field=getattr(change, "field", None),
+        )
+        if _is_entry_teardown(change):
+            _teardown_post(db, str(change.resource_id), change.action, summary, local=local)
+            continue
+
+        if _is_platform_comment_change(change, bot_name):
+            summary["ignored"] += 1
+            platform_log.log_event(
+                "sync_change_ignored",
+                reason="platform_own_comment",
+                resource_type=getattr(change, "resource_type", None),
+                resource_id=getattr(change, "resource_id", None),
+                action=getattr(change, "action", None),
+            )
+            continue
+
+        task = _build_task(change)
+        if task is None:
+            summary["ignored"] += 1
+            platform_log.log_event(
+                "sync_change_ignored",
+                resource_type=getattr(change, "resource_type", None),
+                resource_id=getattr(change, "resource_id", None),
+                action=getattr(change, "action", None),
+            )
+            continue
+
+        key = task.resource_key()
+        if task.ACTION == HandleEntryUpdated.ACTION:
+            if key in seen_keys:
+                summary["coalesced"] += 1
+                platform_log.log_event("sync_change_coalesced", action=task.ACTION, resource_key=key)
+                continue
+            seen_keys.add(key)
+
+        summary["superseded"] += _supersede(db, task)
+        task_id = task.enqueue(db)
+        summary["enqueued"] += 1
+        platform_log.log_event(
+            "task_enqueued",
+            task_id=task_id,
+            action=task.ACTION,
+            post_id=task.post_id,
+            resource_key=key,
+        )
+
+    platform_log.log_event("sync_to_db_complete", summary=summary)
+    return summary
+
+
+def _is_platform_comment_change(change: Any, bot_name: Optional[str]) -> bool:
+    """A comment the platform itself wrote must never become work."""
+    if getattr(change, "resource_type", None) != "comment":
+        return False
+    if getattr(change, "action", None) not in ("create", "update"):
+        return False
+    row = change.new if isinstance(change.new, dict) else {}
+    return is_platform_comment(
+        author=row.get("author"), body=row.get("body"), username=bot_name
+    )
+
+
+def _build_task(change: Any):
+    rt, action = change.resource_type, change.action
+    if rt == "entry":
+        if action == "create":
+            return HandleEntryCreated.from_change(change)
+        if action == "update":
+            if change.field == "updated_at":
+                return None
+            return HandleEntryUpdated.from_change(change)
+        if action == "state" and change.field == "is_open" and _is_open(change.new):
+            return HandleEntryReopened.from_change(change)
+        return None  # closes/deletes handled by teardown; other state fields ignored
+    if rt == "entry_label":
+        if action == "create":
+            return HandleLabelAdded.from_change(change)
+        if action == "delete":
+            return HandleLabelRemoved.from_change(change)
+        return None
+    if rt == "comment":
+        if action == "create":
+            return HandleCommentAdded.from_change(change)
+        if action == "update":
+            return HandleCommentUpdated.from_change(change)
+        return None
+    if rt == "reaction":
+        if action == "create":
+            return HandleReactionAdded.from_change(change)
+        if action == "delete":
+            return HandleReactionRemoved.from_change(change)
+        return None
+    if rt == "entry_reaction":
+        if action == "create":
+            return HandleEntryReactionAdded.from_change(change)
+        if action == "delete":
+            return HandleEntryReactionRemoved.from_change(change)
+        return None
+    # repo-level labels and pins imply no agent work.
+    return None
+
+
+def _is_entry_teardown(change: Any) -> bool:
+    if change.resource_type != "entry":
+        return False
+    if change.action == "delete":
+        return True
+    return change.action == "state" and change.field == "is_open" and not _is_open(change.new)
+
+
+def _is_open(value: Any) -> bool:
+    # is_open is stored as 0/1; tolerate strings/bools/None too.
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return value.strip().lower() not in ("0", "false", "")
+    return bool(value)
+
+
+def _supersede(db: Database, task: Any) -> int:
+    """Remove pending tasks about the same resource as ``task``. Returns count."""
+    if task.post_id is None:
+        return 0
+    key = task.resource_key()
+    removed = 0
+    for row in db.tasks_for(task.post_id):
+        if row["status"] != "pending":
+            continue
+        if resource_key(row["action"], row["post_id"], row["payload"]) == key:
+            db.remove(row["task_id"])
+            removed += 1
+            platform_log.log_event(
+                "task_superseded",
+                removed_task_id=row["task_id"],
+                new_action=task.ACTION,
+                post_id=task.post_id,
+                resource_key=key,
+            )
+    return removed
+
+
+def _teardown_post(
+    db: Database,
+    post_id: str,
+    action: str,
+    summary: dict[str, Any],
+    local: Any = None,
+) -> None:
+    platform_log.log_event("entry_teardown_start", post_id=post_id, action=action)
+    in_progress: list[dict[str, Any]] = []
+    task_rows: list[dict[str, Any]] = []
+    seen_task_ids: set[int] = set()
+    # The entry key sweeps everything; a comment-id key sweeps ONLY comment-keyed
+    # (reaction) actions - the id may collide with an unrelated entry's id.
+    keys: list[tuple[str, Any]] = [(post_id, None)]
+    keys += [(cid, _COMMENT_KEYED_ACTIONS) for cid in _comment_ids_for_post(local, post_id)]
+    for key, allowed_actions in keys:
+        for row in db.tasks_for(key):
+            if allowed_actions is not None and row["action"] not in allowed_actions:
+                continue
+            task_id = int(row["task_id"])
+            if task_id in seen_task_ids:
+                continue
+            seen_task_ids.add(task_id)
+            task_rows.append(row)
+
+    for row in task_rows:
+        if row["status"] == "pending":
+            db.remove(row["task_id"])
+            summary["superseded"] += 1
+            platform_log.log_event(
+                "task_removed_for_teardown",
+                task_id=row["task_id"],
+                post_id=post_id,
+                action=row["action"],
+            )
+        elif row["status"] == "in_progress":
+            in_progress.append(row)
+
+    for row in in_progress:
+        _request_interrupt(row)  # cancel the running task via the cancellation registry
+        summary["interrupts_todo"] += 1
+        # The interrupted task may be a heavy WORK job (a long agent run); the cancel
+        # above tears it down on the work thread. The cleanup is a control item run
+        # high-priority so teardown bookkeeping is not stuck behind a control burst.
+        CleanupTask.for_post(
+            post_id, reason=f"entry_{action}", interrupted_task_id=row["task_id"]
+        ).enqueue(db, priority=priorities.CONTROL_CLEANUP)
+        summary["cleanups"] += 1
+        platform_log.log_event(
+            "cleanup_enqueued_for_teardown",
+            post_id=post_id,
+            interrupted_task_id=row["task_id"],
+            reason=f"entry_{action}",
+        )
+
+
+def _comment_ids_for_post(local: Any, post_id: str) -> list[str]:
+    if local is None:
+        return []
+    try:
+        result = local.get_entry(post_id)
+    except Exception:
+        return []
+    if not getattr(result, "ok", False) or getattr(result, "data", None) is None:
+        return []
+    return [str(getattr(comment, "id")) for comment in getattr(result.data, "comments", []) or []]
+
+
+def _request_interrupt(row: dict[str, Any]) -> None:
+    """Signal the runner to abort an in-progress task.
+
+    We must never edit the in-progress row directly; instead we set the task's
+    cancel Event in the process-wide cancellation registry. The agent worker
+    thread polls that Event and tears its agent/subprocess down, so the freshly
+    enqueued CleanupTask runs against torn-down work. If no runner has registered
+    the task (e.g. nothing is actually executing), the registry pre-arms the
+    Event so a racing claim still observes the cancellation.
+
+    Imported lazily to keep ``scheduling`` free of an import-time dependency on
+    ``executing`` (which imports ``scheduling``).
+    """
+    from specseed_runtime.executing import cancellation
+
+    cancellation.cancel(int(row["task_id"]))
+    platform_log.log_event("task_interrupt_requested", task_id=row["task_id"], action=row["action"])

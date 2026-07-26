@@ -1,0 +1,164 @@
+"""populate_defaults.py - default label/post seeding for tracking backends."""
+
+from __future__ import annotations
+
+import sqlite3
+import tempfile
+import unittest
+from pathlib import Path
+
+from specseed_runtime.tracking.populate_defaults import (
+    DEFAULT_POSTS,
+    DESIRED_LABELS,
+    FIRST_ADAPT_DRAFT_TITLE,
+    populate_defaults,
+)
+from specseed_runtime.tracking.tracking_remote_local import TrackingRemoteLocal
+
+
+class PopulateDefaultsTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.remote = TrackingRemoteLocal(
+            db_path=Path(self.tmp.name) / "tracking_remote_local.db",
+            author="alice",
+        )
+
+    def label_names(self) -> set[str]:
+        return {label.name for label in self.remote.list_labels().data.labels}
+
+    def entry(self, title: str):
+        entries = self.remote.list_entries().data
+        return next(entry for entry in entries if entry.title == title)
+
+    def test_populates_labels_default_posts_and_drafts_unlabeled_entries(self) -> None:
+        self.remote.create_label("duplicate")
+        self.remote.create_label("enhancement")
+        unlabelled_id = self.remote.add_entry("Inbox question").data.id
+        old_labelled_id = self.remote.add_entry("Old labelled", labels=["duplicate"]).data.id
+        existing_roadmap_id = self.remote.add_entry(
+            "ROADMAP",
+            body="Keep this body",
+            labels=["duplicate"],
+        ).data.id
+
+        summary = populate_defaults("remote_local", tracker=self.remote)
+
+        self.assertEqual(set(summary["deleted_labels"]), {"duplicate", "enhancement"})
+        self.assertEqual(self.label_names(), DESIRED_LABELS)
+
+        titles = {entry.title for entry in self.remote.list_entries().data}
+        self.assertTrue({title for title, *_ in DEFAULT_POSTS}.issubset(titles))
+
+        roadmap = self.remote.get_entry(existing_roadmap_id).data
+        self.assertEqual(roadmap.body, "Keep this body")
+        self.assertIn("management", [label.name for label in roadmap.labels])
+
+        current_sprint = self.entry("CURRENT SPRINT")
+        self.assertEqual(
+            {label.name for label in current_sprint.labels},
+            {"current_sprint", "management"},
+        )
+
+        first_adapt = self.entry(FIRST_ADAPT_DRAFT_TITLE)
+        self.assertEqual(
+            {label.name for label in first_adapt.labels},
+            {"draft", "spec-change:adapt", "spec-change:status:open"},
+        )
+        self.assertIn("remove the `draft` label", self.remote.get_entry(first_adapt.id).data.body)
+
+        drafted_ids = set(summary["drafted_entries"])
+        self.assertIn(unlabelled_id, drafted_ids)
+        self.assertIn(old_labelled_id, drafted_ids)
+
+        with sqlite3.connect(self.remote.db_path) as conn:
+            pinned = {row[0] for row in conn.execute("SELECT entry_id FROM pinned_entries")}
+        self.assertEqual(
+            pinned,
+            {
+                self.entry("SCHEDULE").id,
+                existing_roadmap_id,
+                self.entry("CONTROL").id,
+            },
+        )
+
+    def test_seeds_type_and_difficulty_labels(self) -> None:
+        populate_defaults("remote_local", tracker=self.remote)
+        names = self.label_names()
+        for kind in ("feature", "bug", "chore", "spike", "qa"):
+            self.assertIn(f"type:{kind}", names)
+        for level in ("easy", "hard"):
+            self.assertIn(f"difficulty:{level}", names)
+
+    def test_ask_label_seeded_not_question(self) -> None:
+        populate_defaults("remote_local", tracker=self.remote)
+        names = self.label_names()
+        self.assertIn("ask", names)            # the read-only Q&A route's label
+        self.assertNotIn("question", names)    # renamed
+        self.assertIn("ask", DESIRED_LABELS)
+        self.assertNotIn("question", DESIRED_LABELS)
+
+    def test_seeded_labels_align_with_supported_vocab(self) -> None:
+        # populate_defaults and supported_values must not drift apart.
+        from specseed_runtime.tracking.supported_values import (
+            DIFFICULTY_LABELS,
+            WORK_TYPE_LABELS,
+        )
+
+        self.assertTrue((WORK_TYPE_LABELS | DIFFICULTY_LABELS).issubset(DESIRED_LABELS))
+
+    def test_legacy_current_sprint_renamed_not_duplicated(self) -> None:
+        # An old tracker seeded "Current sprint"; the seed renames it in place.
+        legacy_id = self.remote.add_entry(
+            "Current sprint", labels=["management", "current_sprint"]
+        ).data.id
+        populate_defaults("remote_local", tracker=self.remote)
+        titles = [entry.title for entry in self.remote.list_entries().data]
+        self.assertIn("CURRENT SPRINT", titles)
+        self.assertNotIn("Current sprint", titles)
+        self.assertEqual(self.entry("CURRENT SPRINT").id, legacy_id)  # same post, renamed
+
+    def test_legacy_draft_post_renamed_not_duplicated(self) -> None:
+        from specseed_runtime.tracking.populate_defaults import LEGACY_BODY_REFRESH
+
+        old_body = LEGACY_BODY_REFRESH[FIRST_ADAPT_DRAFT_TITLE][0]
+        legacy_id = self.remote.add_entry(
+            "Draft: describe what you want specseed to do",
+            body=old_body,
+            labels=["draft", "spec-change:adapt", "spec-change:status:open"],
+        ).data.id
+        populate_defaults("remote_local", tracker=self.remote)
+        titles = [entry.title for entry in self.remote.list_entries().data]
+        self.assertIn(FIRST_ADAPT_DRAFT_TITLE, titles)
+        self.assertNotIn("Draft: describe what you want specseed to do", titles)
+        self.assertEqual(self.entry(FIRST_ADAPT_DRAFT_TITLE).id, legacy_id)  # same post, renamed
+        # old default body swapped for the current one
+        body = self.remote.get_entry(legacy_id).data.body
+        self.assertIn("Describe in a comment", body)
+        self.assertNotIn("Draft adapt request", body)
+
+    def test_legacy_draft_post_custom_body_preserved(self) -> None:
+        legacy_id = self.remote.add_entry(
+            "Draft: describe what you want specseed to do",
+            body="my own words",
+            labels=["draft", "spec-change:adapt", "spec-change:status:open"],
+        ).data.id
+        populate_defaults("remote_local", tracker=self.remote)
+        self.assertEqual(self.remote.get_entry(legacy_id).data.body, "my own words")
+
+    def test_second_run_is_idempotent(self) -> None:
+        first = populate_defaults("remote_local", tracker=self.remote)
+        second = populate_defaults("remote_local", tracker=self.remote)
+
+        self.assertEqual(second["deleted_labels"], [])
+        self.assertEqual(second["drafted_entries"], [])
+        self.assertTrue(all(not item["created"] for item in second["default_posts"].values()))
+        self.assertEqual(
+            len(self.remote.list_entries().data),
+            len(first["default_posts"]),
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

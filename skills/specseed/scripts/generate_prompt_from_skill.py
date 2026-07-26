@@ -1,0 +1,286 @@
+"""generate_prompt_from_skill.py - assemble a self-contained invocation prompt for one
+specseed skill route (stdlib only).
+
+WHY: at invocation an agent would otherwise jump around the skill tree (SKILL.md -> the
+route -> each `## Mandatory skill reads` -> their reads -> the script preambles). This
+walks that graph ONCE and returns every doc the route needs, in reading order, so the
+prompt already contains everything.
+
+PUBLIC API: `generate_prompt_from_skill(mode, route, subroute=None, instructions_dir=None)
+-> str` returns the assembled prompt as a string (raises ValueError on a bad mode /
+missing route or subroute file). The CLI just prints it. Every other function is private
+(`__`-prefixed).
+
+WHAT IT PRODUCES:
+  1. a header line: `Specseed skill (v<version>) instructions. ... Mode/Route[/Subroute]`
+     (version read from `version.txt`);
+  2. `SKILL.md`;
+  3. the route file `routes/<route>.md` (and, if given, `spec_subroutes/<subroute>.md`);
+  4. then a depth-first walk of each file's `## Mandatory skill reads` then
+     `## Mandatory skill script preamble reads`: a read is inlined verbatim and recursed
+     into; a script is inlined as its PREAMBLE ONLY (the text between the first pair of
+     triple-double-quotes), never the full code;
+  5. a trailing `===== END OF SPECSEED SKILL FILES ... =====` marker;
+  6. when ``instructions_dir`` is given AND the route owns per-route instruction files
+     (spec / impl / review / ask) AND the mode is not ``chat``: an `INSTRUCTION FILES`
+     block telling the agent to MANDATORILY read the ABSOLUTE (home, not target)
+     `<instructions_dir>/<route>/repo.md`, `<instructions_dir>/<route>/custom.md`, and the
+     global `<instructions_dir>/custom.md` (a spec subroute inherits its parent `spec`);
+  7. a trailing `===== PROMPT FOLLOWS ... =====` marker.
+Each file appears at most once (the walk dedupes), so cyclic reads cannot loop forever.
+
+If `route` is `spec` and NO subroute is named, EVERY `spec_subroutes/*.md` is included
+(full info for all subroutes).
+
+The two table sections are parsed strictly: `| Read | Why |` and `| Script | Use |`,
+first column only. A read cell is a skill-relative path in backticks (`references/x.md`,
+or a directory like `templates/spec_doc_templates/` -> every FILE inside it, `.md`/`.csv`
+verbatim and `.py` as preamble). A script cell is a bare filename, resolved under
+`scripts/`. Only those two sections drive the walk; any other table (e.g. a route's
+Subroutes table) is ignored. A missing path is emitted as a `(NOT FOUND)` stub, not a
+crash.
+
+INPUT (argv): `<mode> [route] [subroute] [--specseed-dir=<dir>]`
+  mode    one of: chat | specseed-ui | github | gitlab  (echoed in the header only)
+  route   OPTIONAL route name -> `routes/<route>.md` (e.g. spec, impl, review, ask,
+          operate). OMIT for the WHOLE skill (every route).
+  subroute  optional -> `spec_subroutes/<subroute>.md` (e.g. adopt, adapt, tweak). Only
+          valid WITH a route.
+  --specseed-dir=<dir>  optional target specseed dir; drives the TARGET INSTRUCTION FILES
+          block (skipped in chat mode or when omitted).
+
+OUTPUT: the assembled prompt on stdout. Exit 0 ok; 2 on bad usage / unknown mode /
+missing route (or subroute) file.
+
+CLI: `python3 generate_prompt_from_skill.py specseed-ui spec adapt --specseed-dir=.specseed`
+     `python3 generate_prompt_from_skill.py specseed-ui`            # whole skill
+"""
+
+from __future__ import annotations
+
+import re
+import sys
+from pathlib import Path
+
+MODES = ("chat", "specseed-ui", "github", "gitlab")
+
+# Routes that own per-route guardrail + custom instruction files in the target's
+# specseed dir. A subroute inherits its parent route, so only top-level routes appear.
+INSTRUCTION_ROUTES = ("spec", "impl", "review", "ask")
+
+SKILL_DIR = Path(__file__).resolve().parent.parent  # .../skills/specseed
+
+_BACKTICK_RE = re.compile(r"`([^`]+)`")
+
+
+def generate_prompt_from_skill(
+    mode: str,
+    route: str | None = None,
+    subroute: str | None = None,
+    instructions_dir: str | None = None,
+) -> str:
+    """Assemble and return the invocation prompt.
+
+    ``route`` optional: omit it for the WHOLE skill (every route, each recursed). With a
+    ``route``, that route only; with a ``subroute`` too, that subroute. A subroute without
+    a route is invalid. ``instructions_dir`` (runner modes only) is the ABSOLUTE path to
+    the home ``instructions/`` dir; it drives the trailing INSTRUCTION FILES block. Raises
+    ValueError on an unknown ``mode`` or a missing route / subroute file (or a subroute
+    given with no route).
+    """
+    if mode not in MODES:
+        raise ValueError(f"mode must be one of {', '.join(MODES)}")
+    if subroute is not None and route is None:
+        raise ValueError("cannot specify a subroute without a route")
+
+    route_rel = None
+    sub_rel = None
+    if route is not None:
+        route_rel = f"routes/{route}.md"
+        if not (SKILL_DIR / route_rel).exists():
+            raise ValueError(f"route file not found: {route_rel}")
+        if subroute is not None:
+            sub_rel = f"spec_subroutes/{subroute}.md"
+            if not (SKILL_DIR / sub_rel).exists():
+                raise ValueError(f"subroute file not found: {sub_rel}")
+
+    vfile = SKILL_DIR / "version.txt"
+    version = vfile.read_text(encoding="utf-8").strip() if vfile.exists() else "?"
+    header = (
+        f"Specseed skill (v{version}) instructions. Skill root dir: {SKILL_DIR}. "
+        f"Mode: {mode}. Route: {route if route is not None else '(all)'}."
+    )
+    if subroute is not None:
+        header += f" Subroute: {subroute}."
+
+    parts: list[str] = [header, ""]
+    emitted: set[str] = set()
+    __emit("SKILL.md", emitted, parts)
+    if route_rel is None:
+        # whole skill: every route, then every subroute, each recursed.
+        for f in sorted((SKILL_DIR / "routes").glob("*.md")):
+            __emit(f.relative_to(SKILL_DIR).as_posix(), emitted, parts)
+        for f in sorted((SKILL_DIR / "spec_subroutes").glob("*.md")):
+            __emit(f.relative_to(SKILL_DIR).as_posix(), emitted, parts)
+    else:
+        __emit(route_rel, emitted, parts)
+        if sub_rel is not None:
+            __emit(sub_rel, emitted, parts)
+        elif route == "spec":
+            # spec with no subroute named -> include every subroute (full info).
+            for f in sorted((SKILL_DIR / "spec_subroutes").glob("*.md")):
+                __emit(f.relative_to(SKILL_DIR).as_posix(), emitted, parts)
+    parts.append("===== END OF SPECSEED SKILL FILES. NO REASON TO LOOK AROUND SKILL OR READ SCRIPTS. YOU SHOULD KNOW EVERYTHING NEEDED. =====")
+    instr = __instruction_reads(mode, route, instructions_dir)
+    if instr:
+        parts.append(instr)
+    parts.append("===== PROMPT FOLLOWS (IF EMPTY STOP AND WAIT) =====")
+    return "\n".join(parts)
+
+
+def __instruction_reads(mode: str, route: str | None, instructions_dir: str | None) -> str:
+    """The INSTRUCTION FILES block, or '' when it does not apply.
+
+    Emitted only for a real route that owns instruction files, in a runner mode (not
+    chat), with ``instructions_dir`` given (the ABSOLUTE home ``instructions/`` path).
+    The files live OUTSIDE the target repo, so the paths are absolute.
+    """
+    if mode == "chat" or not instructions_dir or route not in INSTRUCTION_ROUTES:
+        return ""
+    base = str(instructions_dir).rstrip("/")
+    return (
+        "===== INSTRUCTION FILES (MANDATORY READ BEFORE THE WORK) =====\n"
+        "Read these ABSOLUTE files (user-owned; they live in the specseed home, NOT the "
+        "target repo). They hold repo-level context and user overrides; honor them. A "
+        "missing or empty file means nothing to honor, so skip it.\n"
+        f"- {base}/{route}/repo.md  (repo-level structure + quick context)\n"
+        f"- {base}/{route}/custom.md  (user custom instructions for this route)\n"
+        f"- {base}/custom.md  (user custom instructions for every route)"
+    )
+
+
+def __first_cells(text: str, heading: str) -> list[str]:
+    """First-column cells of the table under ``heading`` (header + separator dropped)."""
+    lines = text.splitlines()
+    out: list[str] = []
+    i = 0
+    while i < len(lines) and lines[i].strip() != heading:
+        i += 1
+    i += 1  # past the heading (or past end -> loop below does nothing)
+    while i < len(lines) and not lines[i].startswith("## "):
+        s = lines[i].strip()
+        if s.startswith("|"):
+            cell = s.strip("|").split("|")[0].strip()
+            low = cell.lower()
+            is_sep = cell != "" and set(cell) <= set("-: ")
+            if low not in ("read", "script") and not is_sep:
+                out.append(cell)
+        i += 1
+    return out
+
+
+def __cell_path(cell: str) -> str | None:
+    """The skill-relative path a table cell points at, or None."""
+    m = _BACKTICK_RE.search(cell)
+    return m.group(1).strip() if m else None
+
+
+def __preamble(text: str) -> str:
+    """The module docstring: text between the first pair of triple-double-quotes."""
+    i = text.find('"""')
+    if i == -1:
+        return "(no module docstring)"
+    j = text.find('"""', i + 3)
+    if j == -1:
+        return "(unterminated module docstring)"
+    return text[i + 3:j].strip()
+
+
+def __emit(relpath: str, emitted: set[str], parts: list[str]) -> None:
+    """Append ``relpath`` (deduped) to ``parts`` and recurse into its read/script tables.
+
+    A directory expands to its files (no recursion). A ``.py`` file contributes its
+    preamble only. A ``.md`` (or other text) file is verbatim, then its two table
+    sections are walked.
+    """
+    relpath = relpath.rstrip()
+    full = SKILL_DIR / relpath
+
+    if relpath.endswith("/") or full.is_dir():
+        dir_key = relpath.rstrip("/") + "/"
+        if dir_key in emitted:
+            return
+        emitted.add(dir_key)
+        if not full.is_dir():
+            __block(parts, relpath, "(NOT FOUND)")
+            return
+        for child in sorted(full.iterdir()):
+            if child.is_file():
+                __emit(child.relative_to(SKILL_DIR).as_posix(), emitted, parts)
+        return
+
+    if relpath in emitted:
+        return
+    emitted.add(relpath)
+
+    if not full.exists():
+        __block(parts, relpath, "(NOT FOUND)")
+        return
+
+    text = full.read_text(encoding="utf-8")
+
+    if relpath.endswith(".py"):
+        __block(parts, relpath + " (preamble)", __preamble(text))
+        return
+
+    __block(parts, relpath, text)
+    for cell in __first_cells(text, "## Mandatory skill reads"):
+        p = __cell_path(cell)
+        if p:
+            __emit(p, emitted, parts)
+    for cell in __first_cells(text, "## Mandatory skill script preamble reads"):
+        p = __cell_path(cell)
+        if p:
+            if "/" not in p:
+                p = "scripts/" + p
+            __emit(p, emitted, parts)
+
+
+def __block(parts: list[str], label: str, content: str) -> None:
+    parts.append(f"===== {label} =====")
+    parts.append(content.rstrip("\n"))
+    parts.append("")
+
+
+def __main(argv: list[str]) -> int:
+    instructions_dir = None
+    pos: list[str] = []
+    for a in argv:
+        if a.startswith("--instructions-dir="):
+            instructions_dir = a.split("=", 1)[1]
+        else:
+            pos.append(a)
+    if not (1 <= len(pos) <= 3):
+        print(
+            "Usage: generate_prompt_from_skill.py <mode> [route] [subroute] [--instructions-dir=<dir>]",
+            file=sys.stderr,
+        )
+        return 2
+    mode = pos[0]
+    route = pos[1] if len(pos) >= 2 else None
+    subroute = pos[2] if len(pos) == 3 else None
+    try:
+        out = generate_prompt_from_skill(mode, route, subroute, instructions_dir=instructions_dir)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    print(out)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(__main(sys.argv[1:]))
+    except BrokenPipeError:
+        # Output was piped to a reader that closed early (e.g. `| head`); not an error.
+        raise SystemExit(0)

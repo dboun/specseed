@@ -1,0 +1,3 @@
+Decision,Justification
+"<the decision, e.g. Use SQLite for persistence>","<why, terse: the forces and the tradeoff accepted>"
+"Retire <feature> <ISO date>","<why it was retired>"

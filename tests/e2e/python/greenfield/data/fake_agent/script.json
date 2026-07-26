@@ -1,0 +1,132 @@
+{
+  "adapt": {
+    "questions": [
+      "**Round 1 — scope**\n\n**1. Storage backend**\n\nThe request asks for a tiny todo CLI.\n- **A)** One JSON file in the user home\n- **B)** SQLite database\n\nConfidence: A 70% / B 30%\nSuggestion: **A**. One file, zero deps, fits a tiny CLI.\n\n**How to respond examples:**\n- `OK` -> take all suggestions as locked\n- `1. B` -> override question 1 with that option\n- Free text any time; the worker resumes on the next poll",
+      "**Round 2 — interface**\n\n**1. Command style**\n- **A)** Subcommands (task add, task list)\n- **B)** Flags only (task -a, task -l)\n\nConfidence: A 80% / B 20%\nSuggestion: **A**. Subcommands read better and extend cleanly.\n\nReply `OK` to lock all suggestions."
+    ],
+    "spec_docs": {
+      "vision.md": "# Vision: taskling\n\nA tiny todo CLI. One JSON file, a handful of subcommands, no daemon, no deps.\n\nUsers: people who live in a terminal and want task capture cheaper than opening an app.\n\nNon-goals: sync, multi-user, calendars.\n",
+      "srs.md": "# SRS: taskling\n\n| id | requirement |\n|----|-------------|\n| R1 | Tasks persist in one JSON file under the user home. |\n| R2 | task add / list / done / remove cover the core loop. |\n| R3 | Tasks carry optional due date and tags; list filters on both. |\n| R4 | Errors are one line, actionable, with nonzero exit codes. |\n"
+    },
+    "settle_docs": ["spec/vision.md", "spec/srs.md"],
+    "apr_summary": "Sprint 1 breakdown for taskling: 2 epics, 4 tickets, 4 sprint-1 issues (storage + core commands).",
+    "schedule_body": "# SCHEDULE\n\nSprints in execution order: the tactical schedule. For the strategic map see the ROADMAP post. Do not hand-edit; plan with a `spec-change:plan-next-sprint` post.\n\n## SPRINT_1 - Core sprint  (ongoing)\n- @T1@ Task storage (0/2)\n- @T2@ Task commands (0/2)\n\n## SPRINT_2 - Workflow sprint  (planned)\n- @T3@ Due dates and tags\n- @T4@ CLI polish\n"
+  },
+  "plan-next-sprint": {
+    "apr_summary": "Sprint 2 breakdown for taskling: 4 issues under the workflow tickets (due dates, tags, polish, docs).",
+    "schedule_body": "# SCHEDULE\n\nSprints in execution order: the tactical schedule. For the strategic map see the ROADMAP post. Do not hand-edit; plan with a `spec-change:plan-next-sprint` post.\n\n## SPRINT_1 - Core sprint  (done)\n- @T1@ Task storage (2/2)\n- @T2@ Task commands (2/2)\n\n## SPRINT_2 - Workflow sprint  (ongoing)\n- @T3@ Due dates and tags (0/2)\n- @T4@ CLI polish (0/2)\n"
+  },
+  "epics": [
+    {
+      "key": "E1",
+      "title": "Epic: task core",
+      "body": "Goal: a task list that persists and is editable from the shell.\n\nTickets: @T1@, @T2@"
+    },
+    {
+      "key": "E2",
+      "title": "Epic: task workflow",
+      "body": "Goal: tasks carry workflow metadata and the CLI feels finished.\n\nTickets: @T3@, @T4@"
+    }
+  ],
+  "tickets": [
+    {
+      "key": "T1",
+      "epic": "E1",
+      "sprint": 1,
+      "title": "Ticket: task storage",
+      "body": "Epic: @E1@\nIssues: @I1@, @I2@\n\nStore tasks in one JSON file under the user home. Satisfies R1."
+    },
+    {
+      "key": "T2",
+      "epic": "E1",
+      "sprint": 1,
+      "title": "Ticket: task commands",
+      "body": "Epic: @E1@\nIssues: @I3@, @I4@\n\nCore add, list, done and remove subcommands. Satisfies R2."
+    },
+    {
+      "key": "T3",
+      "epic": "E2",
+      "sprint": 2,
+      "title": "Ticket: due dates and tags",
+      "body": "Epic: @E2@\n\nDue dates, tags and filtered listing. Satisfies R3."
+    },
+    {
+      "key": "T4",
+      "epic": "E2",
+      "sprint": 2,
+      "title": "Ticket: CLI polish",
+      "body": "Epic: @E2@\n\nHelp text, error messages, exit codes and docs. Satisfies R4."
+    }
+  ],
+  "issues": [
+    {
+      "key": "I1",
+      "ticket": "T1",
+      "sprint": 1,
+      "title": "Define the task file format",
+      "labels_extra": ["type:feature", "difficulty:easy"],
+      "body": "Ticket: @T1@\n\nDecide the JSON shape for one task and the file as a whole. No gated actions expected."
+    },
+    {
+      "key": "I2",
+      "ticket": "T1",
+      "sprint": 1,
+      "title": "Implement storage read and write",
+      "labels_extra": ["type:feature"],
+      "body": "Ticket: @T1@\nDepends on: @I1@\n\nLoad and save the task file atomically. No gated actions expected."
+    },
+    {
+      "key": "I3",
+      "ticket": "T2",
+      "sprint": 1,
+      "title": "Add the add and list commands",
+      "labels_extra": ["type:feature"],
+      "body": "Ticket: @T2@\nDepends on: @I2@\n\nCapture a task and print the list. No gated actions expected."
+    },
+    {
+      "key": "I4",
+      "ticket": "T2",
+      "sprint": 1,
+      "title": "Add the done and remove commands",
+      "labels_extra": ["type:feature"],
+      "body": "Ticket: @T2@\nDepends on: @I3@\n\nComplete and delete tasks by id. No gated actions expected."
+    },
+    {
+      "key": "I5",
+      "ticket": "T3",
+      "sprint": 2,
+      "title": "Add due dates",
+      "labels_extra": ["type:feature"],
+      "body": "Ticket: @T3@\n\nOptional due date per task; list sorts on it. No gated actions expected."
+    },
+    {
+      "key": "I6",
+      "ticket": "T3",
+      "sprint": 2,
+      "title": "Add tags and filtering",
+      "labels_extra": ["type:feature"],
+      "body": "Ticket: @T3@\nDepends on: @I5@\n\nFree-form tags; list filters by tag and due window. No gated actions expected."
+    },
+    {
+      "key": "I7",
+      "ticket": "T4",
+      "sprint": 2,
+      "title": "Polish help and errors",
+      "labels_extra": ["type:chore"],
+      "body": "Ticket: @T4@\n\nOne-line errors, helpful usage text, nonzero exit codes. No gated actions expected."
+    },
+    {
+      "key": "I8",
+      "ticket": "T4",
+      "sprint": 2,
+      "title": "Write user docs",
+      "labels_extra": ["type:chore"],
+      "body": "Ticket: @T4@\nDepends on: @I7@\n\nREADME walkthrough of the core loop. No gated actions expected."
+    }
+  ],
+  "review": {
+    "flaky_title": "Define the task file format",
+    "changes_summary": "The format doc misses the empty-file case and does not pin the schema version. Requesting changes.",
+    "approve_summary": "Work matches the issue acceptance criteria. Scope is tight, nothing out of bounds."
+  }
+}
