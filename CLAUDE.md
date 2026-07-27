@@ -6,6 +6,10 @@ the skill *emits* (vision/SAD/SDD/entity bodies/ADR) ALSO gets the humanizer pas
 `references_ext/humanizer.md`. Tell spawned agents the same. This rule saves tokens on every edit.
 Memory: when asking for feedback/clarifications, use `skills/specseed/references/reply-protocol-base.md`.
 
+Planning memory: use top-level `PLANNING.md` for user ideas, active work, backlog, and repo
+status notes. Add/update planning entries on `dev` first, then return to the active branch and
+merge/rebase `dev` back when useful.
+
 ## What this repo is
 
 **specseed**: a headless, remote-driven spec+work engine. Two halves:
