@@ -12,9 +12,10 @@ Living planning ledger for specseed. Keep terse. Update on `dev` first.
 
 ## Current Work
 
+- Active: spec-change rejection safety. Status: implemented JSON plan executor 2026-07-28; tests passed.
 - Repo restart audit. Status: done 2026-07-27. Unit tests passed on `dev`.
 - Branch cleanup decision. Status: pending. Need decide whether local `dev` stays private, gets pushed, or tracks rewritten `origin/main`.
-- Next likely work: verify spec-change rejection safety and session id continuity.
+- Next likely work: session id continuity audit.
 
 ## Repo Status Snapshot
 
@@ -51,6 +52,13 @@ Likely direction:
 - This would reduce code-exec surface and duplicate-script risk, but needs migration path and tests over local/GitHub/GitLab tracker semantics.
 
 ### Plan-First Safety
+
+Planning decisions:
+
+- Pre-approval safety target: no mutation outside the request post. Locked 2026-07-28.
+- Apply model: fixed JSON executor for normal ops, generated script escape hatch. Locked 2026-07-28.
+- Done bar: unit tests plus local lifecycle integration. Locked 2026-07-28.
+- Clarification path: runtime posts clarification from JSON; avoid generated code. Locked 2026-07-28.
 
 Current state looks mostly fixed:
 

@@ -176,13 +176,12 @@ is the source of truth from now on. Never set up ongoing sync.
 **Before stopping, validate the dependency graph:** run `dependencies_validate.py` and
 clear every error + warning per **Issue dependencies** in `work-breakdown.md`.
 
-Per the protocol: stage the spec, write `plan.json` (with `plan_summary` + `apr`) +
-`apply.py`, then stop. The runtime gates it. Write a `plan_summary` summarizing the
+Per the protocol: stage the spec, write `plan.json` (with `plan_summary` + `apr`), then stop. The runtime gates it. Write a `plan_summary` summarizing the
 breakdown (overall + every epic/ticket/issue title with a one-line blurb, plus the risk
 picture); the runtime posts it + the `APR-NNNN` request and parks the request
 `spec-change:status:awaiting_approval`. Nothing is created or promoted until a human
 approves; on approval the runtime promotes the staged spec into live `spec/` and runs
-`apply.py`, which creates the posts. Already-built `:status:done` posts (mapped from
+`plan.json`, which creates the posts. Already-built `:status:done` posts (mapped from
 existing code) carry no new work — a run that only maps existing code and stages docs
 with nothing to create still gates as a proposal (the staged spec is enough; the approval
 is the settle). Use async clarification for any material behavior you could not determine

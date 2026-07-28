@@ -920,9 +920,9 @@ class SpecChangeRequestSettleTest(_Base):
         self.assertIn("settled: true", (self._live_spec(ctx) / "api-srs.md").read_text(encoding="utf-8"))
         self.assertFalse(self._remote_details(rid).is_open)  # request closed on approval
 
-    def test_approval_enqueues_apply_when_work_present(self) -> None:
-        # Plan-first: with a deferred apply.py + work to create, approval queues the
-        # apply run and leaves the request OPEN (apply.py finalizes/closes it).
+    def test_approval_enqueues_plan_apply_when_work_present(self) -> None:
+        # Plan-first: with work to create, approval queues the runtime JSON plan
+        # executor and leaves the request OPEN (plan apply finalizes/closes it).
         ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
         rid, entity = self._request_entity()
         self._write_doc(ctx, "api-srs.md")
@@ -936,18 +936,17 @@ class SpecChangeRequestSettleTest(_Base):
             }),
             encoding="utf-8",
         )
-        (d / "apply.py").write_text("print('noop')\n", encoding="utf-8")
         detail = advance.resolve_spec_change_request(ctx, entity, _SR2(approved_by=["alice"]))
         self.assertIn("apply enqueued", detail)
         self.assertIn("spec-change:status:done", self._remote_labels(rid))
         self.assertTrue(self._remote_details(rid).is_open)  # the runtime closes it after apply
-        apply_task = next(t for t in self.db.tasks_for(rid) if t["action"] == "run_spec_change_script")
+        apply_task = next(t for t in self.db.tasks_for(rid) if t["action"] == "apply_spec_change_plan")
         # the approval-path apply is tagged so the executor closes the request on success
         self.assertTrue(apply_task["payload"].get("close_request"))
 
     def test_double_approval_does_not_enqueue_apply_twice(self) -> None:
         # Two stale approval events (👍 + comment in one drain) must not duplicate
-        # the creating apply.py run. The second call sees the remote already 'done'.
+        # the creating plan apply run. The second call sees the remote already 'done'.
         ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
         rid, entity = self._request_entity()
         d = spec_change_dir(rid, ctx.storage)
@@ -957,13 +956,30 @@ class SpecChangeRequestSettleTest(_Base):
                         "creates": [{"tier": "issue", "title": "FEAT-0001", "labels": ["issue", "issue:status:todo"]}]}),
             encoding="utf-8",
         )
-        (d / "apply.py").write_text("print('noop')\n", encoding="utf-8")
         advance.resolve_spec_change_request(ctx, entity, _SR2(approved_by=["alice"]))
         # entity is the STALE local snapshot (still awaiting_approval); resolve again
         again = advance.resolve_spec_change_request(ctx, entity, _SR2(approved_by=["alice"]))
         self.assertIn("stale", again)
-        apply_tasks = [t for t in self.db.tasks_for(rid) if t["action"] == "run_spec_change_script"]
+        apply_tasks = [t for t in self.db.tasks_for(rid) if t["action"] == "apply_spec_change_plan"]
         self.assertEqual(len(apply_tasks), 1)
+
+    def test_approval_enqueues_script_escape_hatch_when_requested(self) -> None:
+        ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
+        rid, entity = self._request_entity()
+        d = spec_change_dir(rid, ctx.storage)
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "plan.json").write_text(
+            json.dumps({
+                "request_id": rid, "route": "adapt", "executor": "script",
+                "creates": [{"tier": "issue", "title": "FEAT-0001", "labels": ["issue", "issue:status:todo"]}],
+            }),
+            encoding="utf-8",
+        )
+        (d / "apply.py").write_text("print('noop')\n", encoding="utf-8")
+        detail = advance.resolve_spec_change_request(ctx, entity, _SR2(approved_by=["alice"]))
+        self.assertIn("apply enqueued", detail)
+        apply_task = next(t for t in self.db.tasks_for(rid) if t["action"] == "run_spec_change_script")
+        self.assertTrue(apply_task["payload"].get("close_request"))
 
     def test_rejection_marks_rejected_and_does_not_settle(self) -> None:
         ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))

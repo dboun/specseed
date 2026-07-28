@@ -16,7 +16,9 @@ from specseed_runtime.db.database import Database
 from specseed_runtime.scheduling.spec_change import (
     DEFAULT_SCRIPT_NAME,
     SPEC_CHANGE_ACTION,
+    SPEC_CHANGE_PLAN_ACTION,
     SPEC_CHANGE_PROPOSE_ACTION,
+    enqueue_spec_change_plan,
     enqueue_spec_change_propose,
     enqueue_spec_change_run,
     spec_change_dir,
@@ -102,6 +104,16 @@ class EnqueueSpecChangeTest(unittest.TestCase):
         script.parent.mkdir(parents=True)
         script.write_text("# apply\n", encoding="utf-8")
         return script
+
+    def test_enqueue_plan_uses_request_payload(self) -> None:
+        db = self._db()
+        task_id = enqueue_spec_change_plan("9", route="adapt", db=db, close_request=True)
+        task = db.get_task(task_id)
+        self.assertEqual(task["action"], SPEC_CHANGE_PLAN_ACTION)
+        self.assertEqual(task["post_id"], "9")
+        self.assertEqual(task["payload"], {
+            "request_id": "9", "route": "adapt", "close_request": True,
+        })
 
     def test_enqueue_relative_script_resolves_against_request_dir(self) -> None:
         db = self._db()

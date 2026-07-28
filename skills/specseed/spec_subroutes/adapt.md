@@ -164,7 +164,7 @@ A spec doc becomes `settled: true` **when the human approves this change**, not 
 moment you write it. So:
 - Record every spec doc this run created or reopened in `plan.json.settle_docs` (a list
   of paths under `spec/`, the same relative paths you staged).
-- Write `apr` + `plan_summary` in `plan.json`, write `apply.py`, then stop. A staged
+- Write `apr` + `plan_summary` in `plan.json`, then stop. A staged
   spec file alone makes the runtime gate this as a proposal (any run that touches the
   spec needs sign-off, even a spec-only one); it posts the summary + `APR-NNNN` request
   and parks the request `spec-change:status:awaiting_approval`. On approval the
@@ -210,10 +210,9 @@ When the request retires an entire feature, not one req:
 `dependencies_validate.py` and clear every error + warning per **Issue dependencies** in
 `work-breakdown.md`.
 
-Per the protocol: stage the spec, write `plan.json` (with `plan_summary` + `apr`) +
-`apply.py`, then stop. The runtime gates it: any run that plans issues OR touches the
+Per the protocol: stage the spec, write `plan.json` (with `plan_summary` + `apr`), then stop. The runtime gates it: any run that plans issues OR touches the
 spec is a proposal. It posts the summary + `APR-NNNN`, parks
 `spec-change:status:awaiting_approval`, and on approval promotes the staged spec into
-live `spec/`, stamps `settled`, and runs `apply.py` (which creates the posts). Nothing is
+live `spec/`, stamps `settled`, and applies `plan.json` (which creates the posts). Nothing is
 created or promoted before approval. If this adapt resolved a draft-adapt concern post,
 unblock its originating issue (swap to `:status:todo`) in the plan.

@@ -60,7 +60,7 @@ When the request asks for help, or when there is no un-specced roadmap tail left
   user to edit it into the change they want, and remind them to remove the
   `draft` label when done.
 - Move the `plan-next-sprint` request itself toward `done`.
-- Write `plan.json` + `apply.py` and stop. (The draft post is a `creates`, so the
+- Write `plan.json` and stop. (The draft post is a `creates`, so the
   runtime gates this as a proposal.)
 
 ## 2. Extend the spec (append only, staged)
@@ -104,11 +104,10 @@ to adapt** for that change (note it in `plan.json`), then resume.
 **Before stopping, validate the dependency graph:** run `dependencies_validate.py` and
 clear every error + warning per **Issue dependencies** in `work-breakdown.md`.
 
-Per the protocol: stage the spec, write `plan.json` (with `plan_summary` + `apr`) +
-`apply.py`, then stop. The runtime gates it as a proposal (staged spec + `creates`): it
+Per the protocol: stage the spec, write `plan.json` (with `plan_summary` + `apr`), then stop. The runtime gates it as a proposal (staged spec + `creates`): it
 posts the `plan_summary` + `APR-NNNN` and parks the request
 `spec-change:status:awaiting_approval`; on approval it promotes the staged spec into live
-`spec/` and runs `apply.py`, which creates the sprint's posts. Nothing is created or
+`spec/` and applies `plan.json`, which creates the sprint's posts. Nothing is created or
 promoted before then.
 
 ## Boundary

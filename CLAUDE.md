@@ -26,7 +26,7 @@ needed) - no `.specseed/`, no gitignore line. ALL per-repo data lives in the app
 single-purpose-split DATA ROOT (`$SPECSEED_HOME/repos/<slug>/`, `registry.data_root_for`), beside the
 registry. Subdirs: `db/` (work queue) `tracker/` (local tracker cache) `config/` (configuration.json,
 remote.json, token, version marker) `runtime/` (control/runner/seed/sessions) `logs/` (platform.log,
-agent-output) `spec/` (live spec) `spec-change/<id>/` (staged spec + plan.json + apply.py)
+agent-output) `spec/` (live spec) `spec-change/<id>/` (staged spec + plan.json + optional apply.py escape hatch)
 `instructions/<route>/` (user stubs). `storage_paths.py` is the single seam mapping each file to its
 subdir; the data root is the one dir passed everywhere (registry record `data_root`, `storage` is a
 back-compat alias). Pre-0.21 in-target `.specseed/` is auto-relocated into the home on first resolve
@@ -68,8 +68,9 @@ remote (TrackingRemoteGitHub/GitLab/Local)  --sync_from_remote-->  TrackingLocal
                                   dispatch: judge state+perms in code, run agent
 ```
 
-The **skill worker** is the other direction: edits local `spec/`, emits an `apply.py` that mutates
-remote posts, enqueues it. Never runs it itself, never touches git/code.
+The **skill worker** is the other direction: stages spec edits and emits `plan.json`. The runtime
+applies normal remote post mutations from JSON; generated `apply.py` is only an explicit escape
+hatch. The worker never enqueues, never runs apply, never touches git/code.
 
 ## Layout
 
@@ -112,8 +113,9 @@ tests/integration/python/            # opt-in integration tests (marker: integra
 - **executing/scheduler.py** - daemon-thread poll->sync->drain loop. RUNNING/PAUSED/STOPPED, driven by
   operator commands on the CONTROL post. Each task runs on a worker thread w/ wall-clock backstop +
   cooperative cancel (`cancellation` registry).
-- **executing/dispatch.py** - switches on `task["action"]`: `run_spec_change_script` (gated subprocess
-  runs `apply.py`) vs work handlers (read entity, judge state+perms in code, build prompt, run agent).
+- **executing/dispatch.py** - switches on `task["action"]`: `apply_spec_change_plan` (runtime JSON
+  executor), `run_spec_change_script` (escape-hatch subprocess), vs work handlers (read entity,
+  judge state+perms in code, build prompt, run agent).
 - **db/database.py** - NOT a mirror; a queue of work derived from sync diffs. WAL + `BEGIN IMMEDIATE`
   claim so two workers never grab one task. Pure accessors, no policy.
 - **agent context model** (`executing/prompts.py` + `executing/agent_sessions.py`) - INFO CONTROL by
@@ -141,7 +143,7 @@ tests/integration/python/            # opt-in integration tests (marker: integra
 - **plan-first approval / settle-on-approval** (`executing/dispatch.propose_spec_change` +
   `advance.resolve_spec_change_request`, wired in `dispatch._run_work`) - NOTHING is created on the tracker
   before approval, and the GATE DECISION IS CODE-OWNED, not the agent's (0.17.0). The worker writes
-  `plan.json` + `apply.py` + STAGED spec, then STOPS - it never enqueues and never picks whether the run
+  `plan.json` + STAGED spec (and optional escape-hatch `apply.py`), then STOPS - it never enqueues and never picks whether the run
   gates. After the run `dispatch._classify_spec_change`/`_enqueue_spec_change_followup` read the OUTPUT and
   decide: a run that creates work or touches spec (staged spec file, `plan.json` creates/settle_docs/closes/
   deletes, or an edit/label/comment aimed at another post) PROPOSES; only a pure clarification round (touches
@@ -150,9 +152,10 @@ tests/integration/python/            # opt-in integration tests (marker: integra
   `spec-change:status:awaiting_approval` (creates no posts, live spec untouched). On 👍/`approve` the runtime
   PROMOTES the staged spec (`advance._promote_staged_spec`: copies `storage/spec-change/<id>/spec/` into live
   `spec/`) THEN stamps `settled: true`+`settled_at` on `plan.json.settle_docs`, moves the request to `done`,
-  and ENQUEUES the worker's deferred `apply.py` (`run_spec_change_script`, tagged `close_request`) which now
-  creates the epics/tickets/issues (issues born `todo`); the RUNTIME closes the request in code after that
-  apply succeeds (`dispatch._close_finalized_request`), NOT the agent's `plan.json.closes` (that list is only
+  and ENQUEUES the runtime JSON executor (`apply_spec_change_plan`, tagged `close_request`) which now
+  creates the epics/tickets/issues (issues born `todo`); `run_spec_change_script` is only for plans with
+  `executor: "script"`. The RUNTIME closes the request in code after apply succeeds
+  (`dispatch._close_finalized_request`), NOT the agent's `plan.json.closes` (that list is only
   for OTHER posts a change retires). A spec-only run with nothing to apply closes in resolve.
   Reject -> closed, nothing promoted or created. Deterministic, no agent. The skill never writes `settled`;
   adapt is the only route that reopens a settled doc. **Spec is STAGED, never edited live** - an unapproved or

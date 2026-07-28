@@ -57,6 +57,7 @@ from specseed_runtime.platform_identity import (
 )
 from specseed_runtime.scheduling.spec_change import (
     DEFAULT_SCRIPT_NAME,
+    enqueue_spec_change_plan,
     enqueue_spec_change_run,
     spec_change_dir,
     spec_change_spec_dir,
@@ -1147,21 +1148,19 @@ def _plan_route(ctx: Any, request_id: Any) -> Optional[str]:
 
 
 def _enqueue_apply_on_approval(ctx: Any, request_id: Any, route: Optional[str]) -> bool:
-    """On approval, queue the request's deferred ``apply.py`` (the doer).
+    """On approval, queue the request's remote mutation executor.
 
-    Plan-first: ``apply.py`` is NOT run before approval - the propose step only
-    posted the plan summary. Now that a human approved, run it so the epics /
-    tickets / issues get created on the remote. Returns True if a run was queued
-    (the script exists AND the plan has remote mutations to make), so the caller
-    can decide whether to close the request here (nothing to apply) or leave it
-    open for ``apply.py`` to finalize.
+    Plan-first: no remote work posts are created before approval. Normal plans are
+    applied by the runtime JSON executor. Generated ``apply.py`` is an explicit
+    escape hatch only when ``plan.executor == "script"``. Returns True if a run
+    was queued, so the caller leaves the request open for the executor to close on
+    success; spec-only runs close here.
     """
-    script = spec_change_dir(str(request_id), ctx.storage) / DEFAULT_SCRIPT_NAME
-    if not script.exists():
-        return False
     plan_path = spec_change_dir(str(request_id), ctx.storage) / "plan.json"
     try:
         plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        if not isinstance(plan, dict):
+            plan = {}
     except (OSError, ValueError):
         plan = {}
     if not any(plan.get(key) for key in _APPLY_KEYS):
@@ -1172,10 +1171,19 @@ def _enqueue_apply_on_approval(ctx: Any, request_id: Any, route: Optional[str]) 
     # the executor closes the request post on success - we don't trust the agent's
     # plan.json.closes to list it. resolve_spec_change_request's remote-truth guard
     # ensures only the first approval ever reaches here, so only ONE apply is tagged.
-    enqueue_spec_change_run(
-        script, request_id=request_id, route=route, db=ctx.db, close_request=True
-    )
-    platform_log.log_event("spec_change_apply_enqueued", post_id=request_id, route=route)
+    if str(plan.get("executor") or "").strip().lower() == "script":
+        script = spec_change_dir(str(request_id), ctx.storage) / DEFAULT_SCRIPT_NAME
+        if not script.exists():
+            return False
+        enqueue_spec_change_run(
+            script, request_id=request_id, route=route, db=ctx.db, close_request=True
+        )
+        platform_log.log_event("spec_change_script_enqueued", post_id=request_id, route=route)
+    else:
+        enqueue_spec_change_plan(
+            request_id=request_id, route=route, db=ctx.db, close_request=True
+        )
+        platform_log.log_event("spec_change_plan_enqueued", post_id=request_id, route=route)
     return True
 
 

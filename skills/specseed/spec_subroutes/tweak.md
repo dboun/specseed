@@ -50,9 +50,9 @@ follow `spec_subroutes/adapt.md` for this request. Note the bump in `plan.json`.
    (plan-first: nothing is created until approval).
 4. **Finish.** A tweak that plans an issue OR edits the spec (even a doc-only fix, which
    now STAGES the change) is a **proposal**: write the staged spec + `plan.json` (with
-   `plan_summary` + `apr`) + `apply.py`, then stop. The runtime gates it: posts the
+   `plan_summary` + `apr`) + `plan.json`, then stop. The runtime gates it: posts the
    summary + `APR-NNNN`, parks `awaiting_approval`, and on approval promotes the spec and
-   runs `apply.py`. The ONLY direct (ungated) path is a **clarification round** that
+   applies `plan.json`. The ONLY direct (ungated) path is a **clarification round** that
    touches only the request post (a comment + `awaiting_input`); the runtime runs that
    straight away. There is no "label swap + close" direct path any more.
 

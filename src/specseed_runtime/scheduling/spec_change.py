@@ -1,5 +1,5 @@
 """
-spec_change.py - queue a generated spec-change script for execution.
+spec_change.py - queue spec-change plan/script application.
 
 When the specseed skill finishes a spec-change route (adopt / adapt / tweak /
 inject / plan-next-sprint) it has produced two things:
@@ -53,7 +53,13 @@ SPEC_CHANGE_ACTION = "run_spec_change_script"
 # is created on the tracker before the plan is approved.
 SPEC_CHANGE_PROPOSE_ACTION = "propose_spec_change"
 
-# Default script filename the skill writes into each spec-change dir.
+# The queue action for applying normal ``plan.json`` remote mutations in code.
+# Generated ``apply.py`` remains an explicit escape hatch; ordinary creates / edits /
+# labels / comments / closes / deletes should use this action instead.
+SPEC_CHANGE_PLAN_ACTION = "apply_spec_change_plan"
+
+# Default script filename the skill may write into each spec-change dir for an
+# escape-hatch executor. Normal runs do not need this file.
 DEFAULT_SCRIPT_NAME = "apply.py"
 
 
@@ -163,6 +169,31 @@ def enqueue_spec_change_run(
         SPEC_CHANGE_ACTION,
         post_id=request_id,
         payload=payload,
+    )
+
+
+def enqueue_spec_change_plan(
+    request_id: str | int,
+    route: Optional[str] = None,
+    db: Optional[Database] = None,
+    close_request: bool = False,
+) -> int:
+    """Enqueue the runtime JSON executor for ``plan.json``.
+
+    This is the normal spec-change apply path. The executor reads
+    ``storage/spec-change/<request_id>/plan.json`` and applies its supported
+    remote mutations through the tracking contract. ``close_request`` marks the
+    approval-path apply that should close the request after success.
+    """
+    db = db or Database.instance()
+    return db.enqueue(
+        SPEC_CHANGE_PLAN_ACTION,
+        post_id=request_id,
+        payload={
+            "request_id": str(request_id),
+            "route": route,
+            "close_request": bool(close_request),
+        },
     )
 
 

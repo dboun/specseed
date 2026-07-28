@@ -250,7 +250,7 @@ def build_spec_change_prompt(
     """Prompt for the specseed spec-change worker (one subroute, one request).
 
     The skill bundle (route ``spec`` + ``subroute``) carries the full plan-first /
-    apply.py / approval contract; this adds the per-request facts + dir grants. The
+    JSON plan / approval contract; this adds the per-request facts + dir grants. The
     spec route is the one route that may read the local tracker (it plans over the
     whole entity tree); the post thread is still injected so it needs no db for it.
     """
@@ -258,7 +258,7 @@ def build_spec_change_prompt(
     request_dir = spec_change_dir(request_id, root)
     grants = _grant_lines(
         (str(spec_dir(root)), "the LIVE spec - read for context; NEVER edit it here"),
-        (str(request_dir), "your spec-change dir - stage spec + write plan.json/apply.py HERE"),
+        (str(request_dir), "your spec-change dir - stage spec + write plan.json HERE"),
         (str(tracker_dir(root)), "local tracker db - read the entity tree to plan (resolve_local)"),
         (str(instructions_dir(root) / "spec"), "user-owned repo context + custom instructions"),
     )
@@ -271,8 +271,8 @@ def build_spec_change_prompt(
         + f"Run the spec '{subroute}' subroute for spec-change request {request_id}. Read the "
         "entity tree from the LOCAL tracker (resolve_local on the tracker dir above); never poll "
         f"the remote to plan. Stage every created/edited spec doc under {request_dir}/spec/ "
-        "(mirroring its path under the live spec/), and write plan.json + apply.py into "
-        f"{request_dir}/. Then STOP: do not enqueue, do not run apply.py, do not choose whether "
+        "(mirroring its path under the live spec/), and write plan.json into "
+        f"{request_dir}/. Then STOP: do not enqueue, do not run generated code, do not choose whether "
         "it needs approval, do not touch git or application code. The runtime reads your output "
         "and gates it. One request, one run.\n\n"
         + render_action_gates(ctx) + "\n\n"

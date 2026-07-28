@@ -305,7 +305,7 @@ class DispatchRoutingTest(DispatchTestBase):
         from specseed_runtime.storage_paths import default_specseed_dir
         skill_dir = str(default_specseed_dir() / "skills" / "specseed")
         self.assertIn(f"Skill root dir: {skill_dir}", self.runner.calls[0]["prompt"])
-        # staging + apply.py live under the data root's spec-change dir (absolute path)
+        # staging + plan.json live under the data root's spec-change dir (absolute path)
         self.assertIn(str(self.root / "storage" / "spec-change"), self.runner.calls[0]["prompt"])
 
     def test_inject_label_runs_inject_route_prompt(self) -> None:
@@ -359,17 +359,13 @@ class DispatchRoutingTest(DispatchTestBase):
         self.assertTrue(out.success)
         self.assertEqual(self.runner.calls, [])
 
-    def test_spec_change_skipped_when_apply_already_queued(self) -> None:
-        # A prior run already wrote+enqueued apply.py; a second trigger for the
-        # same request must not re-run the (expensive) worker.
-        from specseed_runtime.scheduling.spec_change import (
-            enqueue_spec_change_run,
-        )
+    def test_spec_change_skipped_when_plan_apply_already_queued(self) -> None:
+        # A prior run already enqueued a plan apply; a second trigger for the same
+        # request must not re-run the (expensive) worker.
+        from specseed_runtime.scheduling.spec_change import enqueue_spec_change_plan
 
         eid = self._seed_local_entry("Adapt request", ["spec-change:adapt"])
-        script = self.root / "apply.py"
-        script.write_text("print('noop')\n", encoding="utf-8")
-        enqueue_spec_change_run(script, request_id=str(eid), route="adapt", db=self.db)
+        enqueue_spec_change_plan(request_id=str(eid), route="adapt", db=self.db)
 
         out = dispatch(
             self.ctx,
@@ -474,7 +470,6 @@ class SpecChangeGateDecisionTest(DispatchTestBase):
         d = self._spec_dir(rid)
         plan.setdefault("request_id", str(rid))
         (d / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
-        (d / "apply.py").write_text("print('noop')\n", encoding="utf-8")
 
     def _stage_spec(self, rid, rel="sad.md"):
         from specseed_runtime.scheduling.spec_change import spec_change_spec_dir
@@ -487,7 +482,7 @@ class SpecChangeGateDecisionTest(DispatchTestBase):
         # process_work_result AFTER the spec worker runs on the work lane. Dispatch
         # the control event, run the scheduled spec work_run, then the
         # process_work_result it enqueues - whose outcome carries the follow-up
-        # detail. Stop there (do NOT run the enqueued apply.py).
+        # detail. Stop there (do NOT run the enqueued plan apply).
         from specseed_runtime.db.database import LANE_CONTROL, LANE_WORK
 
         self.ctx.runner = FakeAgentRunner(AgentResult(ok=True, returncode=0))
@@ -595,9 +590,10 @@ class SpecChangeGateDecisionTest(DispatchTestBase):
         })
         out = self._run(rid)
         self.assertTrue(out.success)
-        self.assertIn("direct apply", out.detail)
+        self.assertIn("plan apply", out.detail)
         actions = self._actions(rid)
-        self.assertIn("run_spec_change_script", actions)
+        self.assertIn("apply_spec_change_plan", actions)
+        self.assertNotIn("run_spec_change_script", actions)
         self.assertNotIn("propose_spec_change", actions)
 
     def test_classify_clarification_status_request_scoped_is_direct(self) -> None:
@@ -864,6 +860,72 @@ class RetryGateTest(DispatchTestBase):
         # gate passed; the handler itself then rejects the empty payload
         self.assertFalse(out.success)
         self.assertIn("payload missing", out.error)
+
+
+class ApplySpecChangePlanTest(DispatchTestBase):
+    def _plan_dir(self, rid, plan):
+        from specseed_runtime.scheduling.spec_change import spec_change_dir
+        d = spec_change_dir(str(rid), self.ctx.storage)
+        d.mkdir(parents=True, exist_ok=True)
+        plan.setdefault("request_id", str(rid))
+        (d / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
+        return d
+
+    def _task(self, rid, close_request=True):
+        return {
+            "task_id": 1,
+            "action": "apply_spec_change_plan",
+            "post_id": str(rid),
+            "payload": {"request_id": str(rid), "route": "adapt", "close_request": close_request},
+        }
+
+    def test_finalizing_plan_creates_posts_and_closes_request(self) -> None:
+        rid = self.remote.add_entry("adapt request", labels=[]).data.id
+        self._plan_dir(rid, {
+            "creates": [
+                {"title": "EPIC-0001", "body": "root", "labels": ["epic"]},
+                {"title": "FEAT-0001", "body": "Epic: #{id:EPIC-0001}", "labels": ["issue"]},
+            ],
+            "comments": [{"post": str(rid), "body": "created"}],
+        })
+        out = dispatch_mod.apply_spec_change_plan(self.ctx, self._task(rid, True))
+        self.assertTrue(out.success)
+        entries = self.remote.list_entries().data
+        titles = {e.title for e in entries}
+        self.assertIn("EPIC-0001", titles)
+        feat = next(e for e in entries if e.title == "FEAT-0001")
+        self.assertIn("Epic: #", self.remote.get_entry(feat.id).data.body)
+        self.assertFalse(self.remote.get_entry(rid).data.is_open)
+
+    def test_plan_retry_skips_created_and_comment_ledgers(self) -> None:
+        rid = self.remote.add_entry("adapt request", labels=[]).data.id
+        self._plan_dir(rid, {
+            "creates": [{"title": "FEAT-0001", "labels": ["issue"]}],
+            "comments": [{"post_id": str(rid), "body": "once"}],
+        })
+        out = dispatch_mod.apply_spec_change_plan(self.ctx, self._task(rid, True))
+        self.assertTrue(out.success)
+        again = dispatch_mod.apply_spec_change_plan(self.ctx, self._task(rid, True))
+        self.assertTrue(again.success)
+        titles = [e.title for e in self.remote.list_entries().data]
+        self.assertEqual(titles.count("FEAT-0001"), 1)
+        comments = self.remote.get_entry(rid).data.comments
+        self.assertEqual(sum(1 for c in comments if "once" in c.body), 1)
+
+    def test_direct_plan_rejects_non_request_mutation(self) -> None:
+        rid = self.remote.add_entry("adapt request", labels=[]).data.id
+        other = self.remote.add_entry("other", labels=[]).data.id
+        self._plan_dir(rid, {"comments": [{"post": str(other), "body": "no"}]})
+        out = dispatch_mod.apply_spec_change_plan(self.ctx, self._task(rid, False))
+        self.assertFalse(out.success)
+        self.assertIn("only touch the request", out.error)
+
+    def test_script_executor_plan_rejected_by_json_executor(self) -> None:
+        rid = self.remote.add_entry("adapt request", labels=[]).data.id
+        self._plan_dir(rid, {"executor": "script", "comments": [{"post": str(rid), "body": "q"}]})
+        out = dispatch_mod.apply_spec_change_plan(self.ctx, self._task(rid, False))
+        self.assertFalse(out.success)
+        self.assertIn("script executor", out.error)
 
 
 class RunSpecChangeScriptFinalizeTest(DispatchTestBase):

@@ -101,7 +101,7 @@ tree and the dependency DAG over `plan.json.creates` (see `work-breakdown.md`).
 every issue that needs another issue's code/interface/output (tests -> the code they test,
 a consumer -> its producer); an undeclared dep is a race, not a soft order. The `#` is
 mandatory. For an item created in the same plan use the title placeholder
-`Depends on: #{id:<exact title>}` (apply.py substitutes the real id); for an existing post
+`Depends on: #{id:<exact title>}` (plan.json substitutes the real id); for an existing post
 use `#NN`. Validate with `scripts/dependencies_validate.py` (see `work-breakdown.md` ->
 Issue dependencies).
 
@@ -185,7 +185,7 @@ approved, done, rejected`. The worker never enqueues; the runtime owns the statu
 reads `plan.json` + the staging dir after the run: a run that stages spec or plans
 work / settles docs / touches any post but the request is a **proposal**, so the runtime
 moves the request to `awaiting_approval` (posting the plan summary + `APR-NNNN`) and, on
-approval, to `done` (promoting the staged spec, then running the deferred `apply.py` that
+approval, to `done` (promoting the staged spec, then running the deferred `plan.json` that
 creates the posts). You set a status yourself only for a clarification round (the one
 ungated run, touching only the request post): `awaiting_input`, never
 `awaiting_approval`. Record intent in `plan.json`. Replies to the request go on this post
@@ -203,7 +203,7 @@ This backs the **approval gate** — which is **plan-first**: a work-creating ru
 NOTHING to the tracker. The runtime posts the `plan_summary` + an `APR-NNNN` request on
 the spec-change request and parks it `awaiting_approval`. A human approves the token
 (`approve APR-NNNN` comment **or** 👍 on the request) or rejects it (`reject APR-NNNN` /
-👎). On approval the runtime settles the docs and runs `apply.py`, which creates the
+👎). On approval the runtime settles the docs and applies `plan.json`, which creates the
 epics/tickets/issues — issues born `issue:status:todo`, immediately claimable. Nothing
 exists before approval; rejection creates nothing. Contract + helpers:
 `spec-change-protocol.md` ("Approval gate (APR-NNNN)").
@@ -215,7 +215,7 @@ Do not treat `draft` posts as work. `question` marks clarification threads.
 
 ## What the worker may write
 
-Only through the `apply.py` reconcile script, and only what the route plans:
+Only through the `plan.json` reconcile script, and only what the route plans:
 create work posts, edit bodies (incl. the SCHEDULE dashboard — but NOT ROADMAP or
 CURRENT SPRINT, which the runtime scheduler owns), swap status labels, comment,
 close/delete retired posts. Never write the local cache directly; the remote is

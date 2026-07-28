@@ -62,7 +62,7 @@ All manual work created by this route becomes the **current sprint**.
 - Plan the requested epic/ticket AND any **issue** at **`:status:todo`** in
   `plan.json.creates` — but create nothing yet (plan-first, per the protocol's approval
   gate). Even injected/urgent items are proposed first: a human approves the plan before
-  anything is created, then `apply.py` creates them claimable.
+  anything is created, then the runtime JSON executor creates them claimable.
 - If the injected item is a ticket and needs execution work, create one or more
   child issues. A simple manual ticket may get one issue with matching scope.
 - If the injected item is an issue and no parent ticket is clear, create a
@@ -75,7 +75,7 @@ All manual work created by this route becomes the **current sprint**.
   `type:` (`feature`/`bug`/`chore`/`spike`) and an optional `difficulty:`.
 - Body-link relationships both ways as much as possible (`Epic: #12`,
   `Ticket: #41`, `Issues: ...`, `Depends on: ...`). For posts created in the
-  same plan, use stable temporary refs in `plan.json` and have `apply.py`
+  same plan, use stable temporary refs in `plan.json` and have `plan.json`
   resolve them to created ids before writing final bodies.
 
 Do not invent new SRS ids. If the item maps to existing requirements, include
@@ -120,10 +120,10 @@ approval).
 **Before stopping, validate the dependency graph:** run `dependencies_validate.py` and
 clear every error + warning per **Issue dependencies** in `work-breakdown.md`.
 
-Per the protocol: write `plan.json` (with `plan_summary` + `apr`) + `apply.py`, then
+Per the protocol: write `plan.json` (with `plan_summary` + `apr`), then
 stop. The runtime gates it: a run that plans any work is a proposal, so it posts the
 `plan_summary` + `APR-NNNN` and parks the request `spec-change:status:awaiting_approval`;
-`apply.py` creates the posts only on approval. (Inject stages no spec; the gate trips on
+the runtime JSON executor creates the posts only on approval. (Inject stages no spec; the gate trips on
 the `creates` in `plan.json`.)
 
 ## Boundary

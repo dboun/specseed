@@ -45,7 +45,7 @@ class SkillBundleWiringTest(unittest.TestCase):
         self.assertIn("spec-change request 42", out)
         self.assertLess(out.index(_BUNDLE_END), out.index("spec-change request 42"))
         # contract unchanged: still plan-first / staged / stop
-        self.assertIn("plan.json + apply.py", out)
+        self.assertIn("write plan.json", out)
         # the resolved render mode is stated outright (local -> structured envelope), so
         # the worker never infers the form from an absent provider and drops to chat.
         self.assertIn("Reply render mode:", out)
