@@ -66,8 +66,6 @@ path the prompt names):
 2. **plan.json** in the request dir. Use
    `scheduling/spec_change.py:spec_change_dir(request_id)` to resolve the dir; create
    it if missing.
-3. **apply.py** only for escape hatches. If JSON cannot express the remote mutation, set
-   `"executor": "script"` in `plan.json` and write `apply.py`; otherwise do not write it.
 
 ## plan.json
 
@@ -133,19 +131,6 @@ gate). It is a proposal needing approval if a staged spec file exists, or `creat
 `settle_docs` / `closes` / `deletes` is non-empty, or any `edits` / `labels` /
 `comments` entry targets a post OTHER than the request post itself. So write `plan.json`
 honestly; the runtime reads it to decide whether a human must sign off.
-
-## apply.py escape hatch
-
-Do not generate `apply.py` for normal creates/edits/labels/comments/closes/deletes.
-The runtime JSON executor owns those. Use a generated script only when the plan needs a
-remote mutation JSON cannot express yet. Then:
-
-- Set `"executor": "script"` in `plan.json`.
-- Keep every intended mutation still described in `plan.json` for review.
-- Make `apply.py` self-contained and idempotent.
-- Use only `resolve_remote()` and the tracking contract below.
-- Check every `TrackingResult.ok` and fail loud on first error.
-- Never promote staged spec or close the request yourself; runtime owns both.
 
 ## The tracking contract (what runtime/script may call)
 
@@ -273,8 +258,7 @@ under a real runner), then bundle the working dir into one downloadable zip and 
 A spec-change may be re-triggered (the human comments again, a poll repeats), and a
 CRASHED plan application is retried by the runtime. The JSON executor keeps
 `created.json`/`comments.json` ledgers, skips already-created titles/comments, and relies
-on idempotent label/status operations. If you use the script escape hatch, make it at
-least as safe. When unsure, comment rather than duplicate.
+on idempotent label/status operations. When unsure, comment rather than duplicate.
 
 **A re-trigger REWRITES the request dir.** The staged spec + `plan.json`
 you find there are a previous run's output - usually the clarification round the human

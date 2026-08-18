@@ -23,7 +23,7 @@ external effect, so the per-switch gates are treated as allowed. The switches on
 once a real provider (github/gitlab) is wired up.
 
 Posting issues/tickets/epics is NOT a switch: the work tracker lives on the remote and
-there is no opt-out, so issue posts (and the spec-change ``apply.py`` that mutates them)
+there is no opt-out, so issue posts (and spec-change plan application)
 are always permitted.
 
 Only Python stdlib is used.
@@ -113,7 +113,7 @@ class Permissions:
 
     # -- derived gates --------------------------------------------------- #
     def can_run_spec_change(self) -> bool:
-        """A spec-change ``apply.py`` mutates remote posts. Always permitted: the
+        """A spec-change plan mutates remote posts. Always permitted: the
         work tracker lives on the remote and there is no opt-out."""
         return True
 

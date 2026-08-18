@@ -149,7 +149,7 @@ def test_spec_change_adapt_runs_spec_bundle_and_classifies_as_proposal() -> None
     def side_effect(call):
         p = call["prompt"]
         assert "Route: spec. Subroute: adapt." in p, "spec suffix not translated to subroute"
-        # The agent writes plan.json + apply.py into the request's spec-change dir,
+        # The agent writes plan.json into the request's spec-change dir,
         # then STOPS. A `creates` plan must classify as a proposal (gated), not a
         # direct apply. The dir is keyed on the request post id - which the test
         # already knows (no need to scrape it back out of the prompt).
@@ -160,7 +160,6 @@ def test_spec_change_adapt_runs_spec_bundle_and_classifies_as_proposal() -> None
             "apr": {"id": apr_id, "summary": "Approve the caching epic?"},
             "creates": [{"title": "Caching epic", "body": "Speed up reads."}],
         }), encoding="utf-8")
-        (d / "apply.py").write_text("# deferred; runs only on approval\n", encoding="utf-8")
         return AgentResult(ok=True, returncode=0)
 
     with tempfile.TemporaryDirectory() as tmp:

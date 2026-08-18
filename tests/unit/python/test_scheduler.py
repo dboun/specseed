@@ -5,8 +5,7 @@ mirror, an injected Database queue, and a FakeAgentRunner, so nothing touches a
 real provider, a real agent, or the network. Covers:
 
 * a spec-change post on the remote flows poll -> enqueue -> drain -> agent run;
-* an enqueued spec-change script runs through the worker thread and mutates the
-  filesystem;
+* an enqueued spec-change plan runs through the worker thread and mutates the tracker;
 * CONTROL commands (pause / start / stop) map to scheduler state;
 * a hard stop cancels the in-flight task and the loop thread joins cleanly.
 
@@ -39,7 +38,7 @@ from specseed_runtime.executing.scheduler import (
     STOPPED,
     Scheduler,
 )
-from specseed_runtime.scheduling.spec_change import SPEC_CHANGE_ACTION
+from specseed_runtime.scheduling.spec_change import SPEC_CHANGE_PLAN_ACTION, spec_change_dir
 from specseed_runtime.tracking.tracking_local import TrackingLocal
 from specseed_runtime.tracking.tracking_remote_local import (
     TrackingRemoteLocal,
@@ -132,47 +131,28 @@ class SchedulerTest(unittest.TestCase):
         self.assertIn("task_enqueued", events)
         self.assertIn("task_complete", events)
 
-    def test_run_once_runs_spec_change_script_through_worker(self) -> None:
-        marker = self.root / "applied.txt"
-        script_dir = self.root / "storage" / "spec-change" / "req1"
-        script_dir.mkdir(parents=True, exist_ok=True)
-        (script_dir / "apply.py").write_text(
-            "from pathlib import Path\n"
-            "Path(r'{0}').write_text('applied')\n".format(marker)
+    def test_run_once_runs_spec_change_plan_through_worker(self) -> None:
+        rid = self.remote.add_entry("Adapt request", labels=[]).data.id
+        request_dir = spec_change_dir(str(rid), self.root / "storage")
+        request_dir.mkdir(parents=True, exist_ok=True)
+        (request_dir / "plan.json").write_text(
+            json.dumps({
+                "request_id": str(rid),
+                "comments": [{"post_id": str(rid), "body": "planned"}],
+            }),
+            encoding="utf-8",
         )
         self.db.enqueue(
-            SPEC_CHANGE_ACTION,
-            post_id="req1",
-            payload={"dir": str(script_dir), "script": "apply.py", "request_id": "req1"},
+            SPEC_CHANGE_PLAN_ACTION,
+            post_id=str(rid),
+            payload={"request_id": str(rid), "route": "adapt", "close_request": False},
         )
 
         sched = self._scheduler()
         sched.run_once()
 
-        self.assertTrue(marker.exists())
-        self.assertEqual(marker.read_text(), "applied")
-
-    def test_spec_change_script_gets_target_storage_env(self) -> None:
-        # apply.py resolves trackers via default_storage_dir(): the subprocess
-        # must see SPECSEED_STORAGE = the target's storage, not the engine's.
-        marker = self.root / "seen_env.txt"
-        script_dir = self.root / "storage" / "spec-change" / "req-env"
-        script_dir.mkdir(parents=True, exist_ok=True)
-        (script_dir / "apply.py").write_text(
-            "import os\n"
-            "from pathlib import Path\n"
-            "Path(r'{0}').write_text(os.environ.get('SPECSEED_STORAGE', ''))\n".format(marker)
-        )
-        self.db.enqueue(
-            SPEC_CHANGE_ACTION,
-            post_id="req-env",
-            payload={"dir": str(script_dir), "script": "apply.py", "request_id": "req-env"},
-        )
-
-        sched = self._scheduler()
-        sched.run_once()
-
-        self.assertEqual(marker.read_text(), str((self.root / "storage").resolve()))
+        comments = self.remote.get_entry(rid).data.comments
+        self.assertTrue(any("planned" in c.body for c in comments))
 
     def test_idle_post_is_a_no_op(self) -> None:
         # An entry with no actionable status/route just gets bookkeeping success.

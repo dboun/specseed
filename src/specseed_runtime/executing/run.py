@@ -246,7 +246,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     storage_dir = Path(args.storage) if args.storage else default_storage_dir()
     # Export the data root for every child process: agent runs and generated
-    # apply.py call default_storage_dir() and must land HERE, not in the engine
+    # plan executors call default_storage_dir() and must land HERE, not in the engine
     # repo's dev storage.
     os.environ[SPECSEED_STORAGE_ENV] = str(storage_dir.resolve())
     platform_log.configure(storage_dir)

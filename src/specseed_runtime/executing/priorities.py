@@ -27,7 +27,7 @@ CONTROL_CLEANUP = 85
 CONTROL_APPROVAL = 70
 # Ordinary remote-change events.
 CONTROL_DEFAULT = 50
-# apply.py subprocess: no agent/git, but the slowest control item - let faster
+# spec-change plan apply: no agent/git, but may touch many tracker posts - let faster
 # items pass it within a drain.
 CONTROL_SPEC_CHANGE_APPLY = 40
 

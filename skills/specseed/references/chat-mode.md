@@ -9,7 +9,7 @@ input source and the handoff differ.
 
 | Read | Why |
 |------|-----|
-| `references/spec-change-protocol.md` | what you produce (staged spec + `plan.json` + `apply.py`) is identical to runner mode |
+| `references/spec-change-protocol.md` | what you produce (staged spec + `plan.json`) is identical to runner mode |
 | `references/reply-protocol-base.md` | clarify live (chat is the no-park delivery mode) |
 
 ## Mandatory skill script preamble reads
@@ -41,15 +41,13 @@ to live `spec/`), same as runner mode:
 ```
 spec-change/<id>/spec/...     # STAGED spec edits, mirroring the live spec/ tree
 spec-change/<id>/plan.json    # the work-breakdown delta (incl. settle_docs)
-spec-change/<id>/apply.py     # the reconcile script (inert here)
 ```
 
-Produce `apply.py` exactly as the protocol's header says; it does not run here (no
-remote, no executor) but ships so the human can run it later under a real runner. Keep
-the approval gate intact in `plan.json` (issues planned `:status:todo`, the `APR-NNNN`
-intent recorded) so the runtime gates it when wired in. Do not "approve" in chat.
+Produce only staged spec and `plan.json`. Keep the approval gate intact in `plan.json`
+(issues planned `:status:todo`, the `APR-NNNN` intent recorded) so the runtime gates it
+when wired in. Do not "approve" in chat.
 
 **Handoff: one zip.** Bundle the working dir into a single `.zip` and offer it for
 download. Don't paste spec / plan / script contents into the chat — the file is the
 deliverable; the chat gets a short summary + the download. Nothing to enqueue anyway (the
-no-enqueue rule is universal), no `apply.py` run, no git.
+no-enqueue rule is universal), no generated-code run, no git.

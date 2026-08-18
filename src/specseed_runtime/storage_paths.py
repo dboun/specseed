@@ -14,14 +14,14 @@ it needs (info control - agents never see the work queue, token, or logs):
                    apr_counter.txt, sessions.json
       logs/        platform.log, agent-output/<task>.log
       spec/        the live project spec
-      spec-change/<id>/  plan.json, apply.py, spec/  (staged)
+      spec-change/<id>/  plan.json, spec/  (staged)
       instructions/  custom.md + <route>/repo.md|custom.md
 
 The data root is NEVER inside the target repo - a run reads/writes only the data
 root, and the agent's working dir (the target) stays clean. Modules derive their
 default paths from here; the data root is passed in explicitly (``--storage`` /
 ``$SPECSEED_STORAGE``), which the runner exports so subprocesses (agents, generated
-apply.py) resolve the SAME data root.
+plan executors) resolve the SAME data root.
 
 Only Python stdlib is used.
 """

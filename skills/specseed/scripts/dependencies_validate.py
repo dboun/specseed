@@ -2,7 +2,7 @@
 
 A skill helper, sibling to ``requirements_analyze.py`` but one tier down: it checks the
 body links the breakdown writes into the work items in ``plan.json.creates``, BEFORE
-``apply.py`` creates anything. The runtime (``executing/dispatch.py`` for the dependency
+the runtime JSON executor creates anything. The runtime (``executing/dispatch.py`` for the dependency
 gate, ``entities/entity_base`` for the tree) only acts on a link it can PARSE from the
 post body, so a typo'd, cyclic, or simply-missing link silently lets a dependent run too
 early OR drops a post into the orphan bucket. This catches both mechanically instead of
@@ -12,17 +12,17 @@ trusting the agent to have gotten it right. Two link kinds are checked:
 
 Deps live in body text, not a structured field (see ``references/spec-change-protocol.md``).
 A create references another create that has no provider id yet by title placeholder
-``#{id:<exact title>}``; ``apply.py`` substitutes the real id at create time. A dep on an
+``#{id:<exact title>}``; the runtime substitutes the real id at create time. A dep on an
 already-existing post uses a literal ``#NN`` / ``#FEAT-001``.
 
 Errors (exit 1, must fix):
   * unlabeled - a create whose ``labels`` carry no tier (``epic``/``ticket``/``issue``)
-    or no status (``<tier>:status:<status>``, e.g. ``issue:status:todo``) label. ``apply.py``
+    or no status (``<tier>:status:<status>``, e.g. ``issue:status:todo``) label. the runtime JSON executor
     builds each post from ``labels`` ALONE (the ``tier`` field is advisory, never written to
     the tracker), so without them the runtime can't resolve the post's tier/status:
     ``decide_intent`` returns NONE and every event on it (assignment, comments, labels) is a
     silent no-op - the post is created but never worked, with no error to show for it;
-  * dangling - a ``#{id:Title}`` dep whose Title matches no created item (apply.py can't
+  * dangling - a ``#{id:Title}`` dep whose Title matches no created item (the runtime JSON executor can't
     substitute it, so the link evaporates and the gate never holds);
   * malformed - a ``Depends on:`` line with a bare ``{id:..}`` (no ``#``) or no ref at all
     (the body parser needs the ``#``; bare refs are dropped);
@@ -72,7 +72,7 @@ _TESTS_RE = re.compile(r"\btest(s|ing|ed)?\b", re.IGNORECASE)
 # Parent link in a body. Mirrors the runtime parser (entities/entity_base._PARENT_RE):
 # an issue links its ticket, a ticket its epic, via `Ticket:`/`Epic:`/`Parent:`. In a
 # plan the target may not have an id yet, so the ref is a `#{id:Title}` placeholder
-# (apply.py substitutes it) OR a literal `#NN` to an already-existing post.
+# (the runtime JSON executor substitutes it) OR a literal `#NN` to an already-existing post.
 _PARENT_PLACEHOLDER_RE = re.compile(r"\b(?:Ticket|Epic|Parent)\s*:\s*#\{id:([^}]+)\}", re.IGNORECASE)
 _PARENT_LITERAL_RE = re.compile(r"\b(?:Ticket|Epic|Parent)\s*:\s*#\s*([0-9]+|[A-Za-z]+-[0-9]+)", re.IGNORECASE)
 
@@ -91,12 +91,12 @@ def _tier_of(item: dict) -> str | None:
 
 
 def _tier_from_labels(labels: list) -> str | None:
-    """The work tier resolvable from a create's LABELS alone (what ``apply.py`` writes).
+    """The work tier resolvable from a create's LABELS alone (what the runtime JSON executor writes).
 
     Mirrors ``entities/entity_base.Entity.tier_from_labels``: a ``tier:<t>`` label, a bare
     ``epic``/``ticket``/``issue`` label, or the tier embedded in the canonical
     ``<tier>:status:<status>`` label. The ``tier`` *field* is deliberately NOT consulted -
-    apply.py creates the post from ``labels`` only, so only a label makes it workable. Every
+    the runtime JSON executor creates the post from ``labels`` only, so only a label makes it workable. Every
     form is restricted to a real work tier, so a stray ``tier:garbage`` doesn't pass the gate.
     """
     for label in labels:
@@ -184,7 +184,7 @@ def validate(plan: dict) -> dict:
     warnings: list[str] = []
 
     creates = plan.get("creates") or []
-    # Title -> tier for resolving placeholders. Titles are the substitution key apply.py
+    # Title -> tier for resolving placeholders. Titles are the substitution key the runtime JSON executor
     # uses, so a dep placeholder must match a created title EXACTLY.
     by_title: dict[str, str] = {}
     items: list[dict] = []
@@ -195,14 +195,14 @@ def validate(plan: dict) -> dict:
         title = str(entry.get("title") or "").strip()
         label_list = [str(x) for x in entry.get("labels") or []]
         who = repr(title) if title else "a create with no title"
-        # apply.py creates each post from `labels` ALONE - the `tier` field never reaches the
+        # the runtime JSON executor creates each post from `labels` ALONE - the `tier` field never reaches the
         # tracker. A post lacking a tier or status label is unworkable: the runtime can't
         # resolve its tier/status, so decide_intent returns NONE and every event on it
-        # (assignment, comments, labels) is a silent no-op. Catch it here, before apply.py runs.
+        # (assignment, comments, labels) is a silent no-op. Catch it here, before the runtime JSON executor runs.
         if _tier_from_labels(label_list) is None:
             errors.append(
                 "{0} has no tier label in `labels` (one of `epic`/`ticket`/`issue`, or the "
-                "tier in a `<tier>:status:<status>` label); apply.py builds the post from "
+                "tier in a `<tier>:status:<status>` label); the runtime JSON executor builds the post from "
                 "`labels`, so without one the post is unworkable".format(who))
         if _status_from_labels(label_list) is None:
             errors.append(
@@ -238,7 +238,7 @@ def validate(plan: dict) -> dict:
             else:
                 errors.append(
                     "{0!r} depends on #{{id:{1}}} but no created item has that title "
-                    "(apply.py can't resolve it; the dep would vanish)".format(title, dep_title)
+                    "(the runtime JSON executor can't resolve it; the dep would vanish)".format(title, dep_title)
                 )
         for bad in deps["bare"]:
             errors.append(
@@ -277,7 +277,7 @@ def validate(plan: dict) -> dict:
             if ptier is None:
                 errors.append(
                     "{0!r} links parent #{{id:{1}}} but no created item has that title "
-                    "(apply.py can't resolve it; the post would orphan)".format(title, parent["placeholder"])
+                    "(the runtime JSON executor can't resolve it; the post would orphan)".format(title, parent["placeholder"])
                 )
             elif ptier != kind:
                 errors.append(

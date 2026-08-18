@@ -59,7 +59,6 @@ In addition to the SKILL-level rules:
   after a human approves the `APR-NNNN` plan. Issues are then born `:status:todo`.
   The one ungated run is a request-scoped clarification round.
 - **Remote mutations live in `plan.json`.** Use creates/edits/labels/comments/closes/
-  deletes. The runtime applies them through the tracking contract. Generated `apply.py`
-  is only an escape hatch with `"executor": "script"`.
+  deletes. The runtime applies them through the tracking contract. No generated remote-mutation code.
 - **Settled docs are soft-frozen.** Only adapt may reopen one (and re-settles on
   approval). The skill never writes `settled` itself; the runtime stamps it on approval.

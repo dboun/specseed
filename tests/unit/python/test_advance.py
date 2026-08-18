@@ -963,24 +963,6 @@ class SpecChangeRequestSettleTest(_Base):
         apply_tasks = [t for t in self.db.tasks_for(rid) if t["action"] == "apply_spec_change_plan"]
         self.assertEqual(len(apply_tasks), 1)
 
-    def test_approval_enqueues_script_escape_hatch_when_requested(self) -> None:
-        ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
-        rid, entity = self._request_entity()
-        d = spec_change_dir(rid, ctx.storage)
-        d.mkdir(parents=True, exist_ok=True)
-        (d / "plan.json").write_text(
-            json.dumps({
-                "request_id": rid, "route": "adapt", "executor": "script",
-                "creates": [{"tier": "issue", "title": "FEAT-0001", "labels": ["issue", "issue:status:todo"]}],
-            }),
-            encoding="utf-8",
-        )
-        (d / "apply.py").write_text("print('noop')\n", encoding="utf-8")
-        detail = advance.resolve_spec_change_request(ctx, entity, _SR2(approved_by=["alice"]))
-        self.assertIn("apply enqueued", detail)
-        apply_task = next(t for t in self.db.tasks_for(rid) if t["action"] == "run_spec_change_script")
-        self.assertTrue(apply_task["payload"].get("close_request"))
-
     def test_rejection_marks_rejected_and_does_not_settle(self) -> None:
         ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
         rid, entity = self._request_entity()

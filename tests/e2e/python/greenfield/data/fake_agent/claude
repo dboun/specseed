@@ -10,8 +10,8 @@ Plays all three agent jobs by sniffing the prompt:
 * spec change - acts as the spec-change worker per the skill contract: question
   rounds first (parked awaiting_input, woken by the human's answer), then the
   scripted breakdown. Stages spec docs under the request's spec/ dir and writes
-  plan.json + apply.py, then STOPS. It never enqueues and never runs apply.py: the
-  runtime reads the output and gates it (proposal vs clarification).
+  plan.json, then STOPS. It never enqueues or runs generated code: the runtime
+  reads the output and gates it (proposal vs clarification).
 * implement   - no-op (the e2e writes no application code).
 * review      - emits the SPECSEED_REVIEW verdict line. One scripted issue
   (script.json review.flaky_title) fails its first review to exercise the
@@ -95,102 +95,16 @@ def _is_human_message(comment) -> bool:
 
 
 # --------------------------------------------------------------------------- #
-# apply.py - one static reconcile script; all variability lives in plan.json.
-# plan.json extensions over the protocol shape: creates carry a symbolic "key",
-# "id_map" maps keys to known ids, and "@KEY@" in bodies/comments resolves to
-# "#<id>" after creation (second pass rewrites bodies so links wire up).
+# plan.json is the only handoff. The runtime JSON executor applies creates, edits,
+# labels, comments, closes, id_map, key, and @KEY@ substitutions.
 # --------------------------------------------------------------------------- #
-APPLY_SOURCE = '''#!/usr/bin/env python3
-"""Reconcile remote posts for one spec-change request (e2e fake agent output)."""
-import json
-import pathlib
-import re
-import sys
-
-_HERE = pathlib.Path(__file__).resolve()
-for _root in _HERE.parents:
-    if (_root / "src" / "specseed_runtime").is_dir():
-        sys.path.insert(0, str(_root / "src"))
-        break
-
-from specseed_runtime.tracking.resolve_remote import resolve_remote
-
-_STORAGE = _HERE.parents[2]  # .../storage/spec-change/<id>/apply.py
-
-
-def _ok(result, what):
-    if not result.ok:
-        raise SystemExit("FAILED {0}: {1}".format(what, result.error))
-    return result.data
-
-
-def main():
-    plan = json.loads((_HERE.parent / "plan.json").read_text(encoding="utf-8"))
-    remote = resolve_remote(storage=_STORAGE)
-    ids = {str(k): v for k, v in (plan.get("id_map") or {}).items()}
-
-    def resolve(post):
-        return ids.get(str(post), post)
-
-    def subst(text):
-        title_to_id = {spec["title"]: ids[str(spec["key"])] for spec in plan.get("creates", []) if str(spec.get("key")) in ids}
-        text = re.sub(
-            r"\{id:([^}]+)\}",
-            lambda m: str(title_to_id[m.group(1)]),
-            text or "",
-        )
-        return re.sub(
-            r"@([A-Za-z0-9_]+)@",
-            lambda m: "#{0}".format(ids[m.group(1)]),
-            text,
-        )
-
-    for spec in plan.get("creates", []):
-        data = _ok(
-            remote.add_entry(spec["title"], body=spec.get("body"), labels=spec.get("labels")),
-            "create {0!r}".format(spec["title"]),
-        )
-        ids[str(spec["key"])] = data.id
-    # Second pass: bodies may reference ids created above; rewrite them resolved.
-    for spec in plan.get("creates", []):
-        final = subst(spec.get("body"))
-        if final != (spec.get("body") or ""):
-            _ok(
-                remote.edit_entry(ids[str(spec["key"])], body=final),
-                "wire links on {0!r}".format(spec["title"]),
-            )
-    for edit in plan.get("edits", []):
-        _ok(
-            remote.edit_entry(resolve(edit["post"]), title=edit.get("title"), body=subst(edit.get("body"))),
-            "edit {0}".format(edit["post"]),
-        )
-    for change in plan.get("labels", []):
-        for label in change.get("remove", []):
-            _ok(remote.remove_entry_label(resolve(change["post"]), label),
-                "-label {0} on {1}".format(label, change["post"]))
-        for label in change.get("add", []):
-            _ok(remote.add_entry_label(resolve(change["post"]), label),
-                "+label {0} on {1}".format(label, change["post"]))
-    for comment in plan.get("comments", []):
-        _ok(remote.add_entry_comment(resolve(comment["post"]), subst(comment["body"])),
-            "comment {0}".format(comment["post"]))
-    for post_id in plan.get("closes", []):
-        _ok(remote.set_entry_closed(resolve(post_id)), "close {0}".format(post_id))
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
-'''
-
 
 def _emit(storage: Path, request_id: str, route: str, plan: dict) -> None:
-    """Write plan.json + apply.py into the request dir, then STOP.
+    """Write plan.json into the request dir, then STOP.
 
     Code-enforced gate: the worker NEVER enqueues and NEVER picks whether the run
-    needs approval. It writes its output (plan.json + apply.py + any staged spec) and
-    stops. The runtime reads that output and decides: a proposal (work / staged spec)
-    parks the request awaiting approval; a clarification round runs apply.py directly.
+    needs approval. It writes its JSON output (+ any staged spec) and stops. The
+    runtime reads that output and decides: proposal or request-scoped clarification.
     """
     request_dir = storage / "spec-change" / str(request_id)
     request_dir.mkdir(parents=True, exist_ok=True)
@@ -199,7 +113,6 @@ def _emit(storage: Path, request_id: str, route: str, plan: dict) -> None:
     (request_dir / "plan.json").write_text(
         json.dumps(plan, indent=2) + "\n", encoding="utf-8"
     )
-    (request_dir / "apply.py").write_text(APPLY_SOURCE, encoding="utf-8")
 
 
 def _park_labels(request_id: str, status: str = "awaiting_approval") -> list[dict]:
@@ -380,7 +293,7 @@ def run_spec_change(prompt: str) -> int:
 
     # Plan-first: NO comments/labels touch the request here. The runtime's propose
     # step posts the plan summary + APR and parks the request awaiting_approval; the
-    # creates/edits below run from apply.py only after a human approves.
+    # creates/edits below run from JSON only after a human approves.
     plan.update(
         creates=creates,
         edits=edits,

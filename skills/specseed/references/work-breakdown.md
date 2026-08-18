@@ -2,7 +2,7 @@
 
 How a spec becomes epics -> tickets -> issues. In this build the breakdown lives as
 **remote posts** (`references/remote-posts.md`), planned into `plan.json` and applied
-by `apply.py`. There is no local folder tree. Deterministic structure (reqs from SRS,
+by the runtime JSON executor. There is no local folder tree. Deterministic structure (reqs from SRS,
 dependency cycles, critical path, sprint packing) is computed by the **skill scripts**
 under `skills/specseed/scripts/` (run them; do not hand-compute what a script owns).
 
@@ -163,7 +163,7 @@ Drop to an issue->issue cross-ticket dep only when one specific issue in B needs
 specific issue in A and waiting for all of A would stall B needlessly.
 
 Write deps in the body as `Depends on: #{id:<exact title>}` for an item this plan creates
-(the `#` is mandatory; `apply.py` substitutes the real id), or `Depends on: #NN` for an
+(the `#` is mandatory; the runtime substitutes the real id), or `Depends on: #NN` for an
 already-existing post. See `references/remote-posts.md`.
 
 **Validate before you emit.** Run `scripts/dependencies_validate.py <plan.json>`. It

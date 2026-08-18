@@ -1,7 +1,6 @@
 """spec_change.py + resolve_remote.py - the spec-change worker's seams.
 
-Covers the enqueue helper the skill calls after writing a reconcile script, and
-the config-driven remote resolver the generated script imports. No GitHub/GitLab
+Covers the enqueue helpers and config-driven tracker resolvers. No GitHub/GitLab
 is contacted: the local stand-in is the resolved remote here.
 """
 
@@ -14,13 +13,10 @@ from pathlib import Path
 
 from specseed_runtime.db.database import Database
 from specseed_runtime.scheduling.spec_change import (
-    DEFAULT_SCRIPT_NAME,
-    SPEC_CHANGE_ACTION,
     SPEC_CHANGE_PLAN_ACTION,
     SPEC_CHANGE_PROPOSE_ACTION,
     enqueue_spec_change_plan,
     enqueue_spec_change_propose,
-    enqueue_spec_change_run,
     spec_change_dir,
     spec_change_root,
     spec_change_spec_dir,
@@ -65,46 +61,6 @@ class EnqueueSpecChangeTest(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         return Database(db_path=Path(tmp.name) / "queue.db")
 
-    def test_enqueue_absolute_script_records_action_and_payload(self) -> None:
-        db = self._db()
-        with tempfile.TemporaryDirectory() as storage:
-            script = spec_change_dir("7", storage) / DEFAULT_SCRIPT_NAME
-            script.parent.mkdir(parents=True)
-            script.write_text("# apply\n", encoding="utf-8")
-
-            task_id = enqueue_spec_change_run(
-                script, request_id="7", route="adapt", db=db, storage=storage
-            )
-
-            task = db.get_task(task_id)
-            self.assertEqual(task["action"], SPEC_CHANGE_ACTION)
-            self.assertEqual(task["post_id"], "7")
-            self.assertEqual(task["payload"]["script"], DEFAULT_SCRIPT_NAME)
-            self.assertEqual(task["payload"]["dir"], str(script.parent.resolve()))
-            self.assertEqual(task["payload"]["route"], "adapt")
-            self.assertEqual(task["payload"]["request_id"], "7")
-            self.assertFalse(task["payload"]["close_request"])  # off by default
-            self.assertEqual(db.pending_count(), 1)
-
-    def test_enqueue_close_request_flag_is_recorded(self) -> None:
-        # The approval-path apply is tagged so the executor closes the request post.
-        db = self._db()
-        with tempfile.TemporaryDirectory() as storage:
-            script = spec_change_dir("8", storage) / DEFAULT_SCRIPT_NAME
-            script.parent.mkdir(parents=True)
-            script.write_text("# apply\n", encoding="utf-8")
-            task_id = enqueue_spec_change_run(
-                script, request_id="8", route="adapt", db=db, storage=storage,
-                close_request=True,
-            )
-            self.assertTrue(db.get_task(task_id)["payload"]["close_request"])
-
-    def _write_script(self, storage: str, request_id: str) -> Path:
-        script = spec_change_dir(request_id, storage) / DEFAULT_SCRIPT_NAME
-        script.parent.mkdir(parents=True)
-        script.write_text("# apply\n", encoding="utf-8")
-        return script
-
     def test_enqueue_plan_uses_request_payload(self) -> None:
         db = self._db()
         task_id = enqueue_spec_change_plan("9", route="adapt", db=db, close_request=True)
@@ -114,60 +70,6 @@ class EnqueueSpecChangeTest(unittest.TestCase):
         self.assertEqual(task["payload"], {
             "request_id": "9", "route": "adapt", "close_request": True,
         })
-
-    def test_enqueue_relative_script_resolves_against_request_dir(self) -> None:
-        db = self._db()
-        with tempfile.TemporaryDirectory() as storage:
-            self._write_script(storage, "9")
-            task_id = enqueue_spec_change_run(
-                DEFAULT_SCRIPT_NAME, request_id="9", route="tweak", db=db, storage=storage
-            )
-            expected = spec_change_dir("9", storage).resolve()
-            self.assertEqual(db.get_task(task_id)["payload"]["dir"], str(expected))
-
-    def test_relative_script_without_request_id_is_rejected(self) -> None:
-        db = self._db()
-        with self.assertRaises(ValueError):
-            enqueue_spec_change_run(DEFAULT_SCRIPT_NAME, db=db)
-
-    def test_repo_root_relative_script_snaps_to_request_dir(self) -> None:
-        # Agents pass ".specseed/storage/spec-change/<id>/apply.py" (relative to
-        # repo root). Joined naively under the spec-change dir the prefix doubles;
-        # enqueue must snap to <dir>/<basename>.
-        db = self._db()
-        with tempfile.TemporaryDirectory() as storage:
-            self._write_script(storage, "16")
-            doubled = Path(".specseed/storage/spec-change/16") / DEFAULT_SCRIPT_NAME
-            task_id = enqueue_spec_change_run(
-                doubled, request_id="16", route="adapt", db=db, storage=storage
-            )
-            payload = db.get_task(task_id)["payload"]
-            self.assertEqual(payload["dir"], str(spec_change_dir("16", storage).resolve()))
-            self.assertEqual(payload["script"], DEFAULT_SCRIPT_NAME)
-
-    def test_wrong_absolute_script_snaps_to_request_dir(self) -> None:
-        db = self._db()
-        with tempfile.TemporaryDirectory() as storage:
-            self._write_script(storage, "16")
-            wrong = (
-                spec_change_dir("16", storage)
-                / ".specseed/storage/spec-change/16"
-                / DEFAULT_SCRIPT_NAME
-            )
-            task_id = enqueue_spec_change_run(
-                wrong, request_id="16", route="adapt", db=db, storage=storage
-            )
-            payload = db.get_task(task_id)["payload"]
-            self.assertEqual(payload["dir"], str(spec_change_dir("16", storage).resolve()))
-
-    def test_missing_script_fails_loud_at_enqueue(self) -> None:
-        db = self._db()
-        with tempfile.TemporaryDirectory() as storage:
-            with self.assertRaises(ValueError):
-                enqueue_spec_change_run(
-                    DEFAULT_SCRIPT_NAME, request_id="9", route="tweak", db=db, storage=storage
-                )
-            self.assertEqual(db.pending_count(), 0)
 
     def test_enqueue_propose_records_action_and_request(self) -> None:
         db = self._db()

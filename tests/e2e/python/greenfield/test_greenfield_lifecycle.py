@@ -18,11 +18,11 @@ Scenario (every approval step covered):
 2. fill the seeded draft adapt post with a bootstrap prompt, drop ``draft``.
 3. two discussion rounds (worker parks ``awaiting_input``; answers wake it).
 4. sprint-1 breakdown is PROPOSED (plan-first, runtime-owned gate): the worker only
-   STAGES the spec + writes plan.json/apply.py; the runtime posts the plan summary
+   STAGES the spec + writes plan.json; the runtime posts the plan summary
    + APR-0001 and parks the request ``awaiting_approval`` - NO work posts, live spec
    untouched.
 5. approve the request on its APR comment (promotes the staged spec into live spec/,
-   settles it, request -> done); only now does the deferred apply.py create the
+   settles it, request -> done); only now does JSON plan apply create the
    2 epics, 4 tickets, 4 sprint-1 issues (born todo).
 6. each sprint-1 issue passes two gates approved on the gate COMMENT: implement
    (``auto_implement_issue`` off) then merge (``merge_to_primary`` off). Issues merge
@@ -362,7 +362,7 @@ def test_greenfield_full_lifecycle(harness):
     assert (spec_dir / "vision.md").is_file() and (spec_dir / "srs.md").is_file()
     vision = (spec_dir / "vision.md").read_text(encoding="utf-8")
     assert "settled: true" in vision and "settled_at:" in vision
-    # Now the deferred apply.py has created the breakdown.
+    # Now JSON plan apply has created the breakdown.
     for title in [epic["title"] for epic in SCRIPT["epics"]] + _ticket_titles(1) + _ticket_titles(2):
         harness.wait_for(lambda t=title: find_post(boss, t), f"work post {title!r}")
     epic1_id = find_post(boss, SCRIPT["epics"][0]["title"]).id

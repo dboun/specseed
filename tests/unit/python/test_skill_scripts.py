@@ -354,9 +354,9 @@ class DependenciesValidateTest(unittest.TestCase):
         self.assertTrue(r["ok"], r["errors"])
 
     def test_create_with_no_labels_is_error(self):
-        # THE reported bug: apply.py's plan.json had every create with labels:None, so the
+        # THE reported bug: the runtime executor's plan.json had every create with labels:None, so the
         # posts were born without a tier/status label and the runtime never worked them
-        # (assignment + every other event was a silent no-op). Catch it before apply.py runs.
+        # (assignment + every other event was a silent no-op). Catch it before plan apply runs.
         plan = {"creates": [
             {"tier": "issue", "title": "FEAT-0001 Create HTML structure", "body": ""},
         ]}

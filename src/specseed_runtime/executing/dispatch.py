@@ -3,9 +3,7 @@
 The scheduler claims a task off the queue and hands it here. ``dispatch`` switches
 on ``task["action"]``:
 
-* ``apply_spec_change_plan`` -> apply normal ``plan.json`` remote mutations in code.
-* ``run_spec_change_script`` -> escape hatch: run generated ``apply.py`` as a gated
-  subprocess that mutates the remote (``run_spec_change_script``).
+* ``apply_spec_change_plan`` -> apply ``plan.json`` remote mutations in code.
 * every work handler (entry created/updated/reopened, label/comment/reaction
   added/removed) -> read the entity from the local mirror, judge its legal state
   with the state machine, and decide an :class:`AgentIntent`. A real intent builds
@@ -23,12 +21,8 @@ Only Python stdlib is used.
 from __future__ import annotations
 
 import json
-import os
 import re
-import subprocess
-import sys
 import threading
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -46,13 +40,10 @@ from specseed_runtime.executing.context import ExecutionContext
 from specseed_runtime.executing import prompts
 from specseed_runtime.db.database import LANE_WORK
 from specseed_runtime.scheduling.spec_change import (
-    DEFAULT_SCRIPT_NAME,
-    SPEC_CHANGE_ACTION,
     SPEC_CHANGE_PLAN_ACTION,
     SPEC_CHANGE_PROPOSE_ACTION,
     enqueue_spec_change_plan,
     enqueue_spec_change_propose,
-    enqueue_spec_change_run,
     spec_change_dir,
     staged_spec_files,
 )
@@ -63,14 +54,6 @@ from specseed_runtime.state_machines.approvals import (
 from specseed_runtime.state_machines.base import evaluate_entity_state
 from specseed_runtime.platform_identity import platform_comment
 from specseed_runtime import storage_paths
-from specseed_runtime.storage_paths import SPECSEED_STORAGE_ENV
-
-
-# How often the spec-change subprocess wait loop checks cancel/timeout.
-_POLL_INTERVAL_S = 0.25
-# Grace given to a terminate() before a kill().
-_GRACE_S = 10.0
-
 CLEANUP_ACTION = "cleanup"
 _SPEC_CHANGE_LABEL_PREFIX = "spec-change:"
 _SPEC_CHANGE_STATUS_PREFIX = "spec-change:status:"
@@ -226,14 +209,12 @@ def _spec_change_actionable(status: Optional[str], action: Optional[str]) -> boo
 
 
 def _has_pending_spec_change_run(ctx: "ExecutionContext", post_id: Any) -> bool:
-    """True if a follow-up for this request is already queued (apply.py OR a proposal).
+    """True if a proposal or plan apply is already queued for this request.
 
     Several distinct events (the body edit, the ``draft`` label removal) can each
     decide SPEC_CHANGE for one request before the runtime's follow-up executes. The
-    first run already wrote the files and the runtime enqueued the follow-up - a
-    proposal (``propose_spec_change``, which parks the request), a JSON plan apply,
-    or a script escape hatch. Any later trigger should wait for it
-    rather than re-running the (expensive) worker over the same request.
+    first run already wrote the files and the runtime enqueued the follow-up. Any
+    later trigger should wait for it rather than re-running the worker.
     """
     if post_id in (None, ""):
         return False
@@ -241,7 +222,7 @@ def _has_pending_spec_change_run(ctx: "ExecutionContext", post_id: Any) -> bool:
         rows = ctx.db.tasks_for(post_id)
     except Exception:
         return False
-    follow_up = {SPEC_CHANGE_ACTION, SPEC_CHANGE_PLAN_ACTION, SPEC_CHANGE_PROPOSE_ACTION}
+    follow_up = {SPEC_CHANGE_PLAN_ACTION, SPEC_CHANGE_PROPOSE_ACTION}
     for row in rows or []:
         if row.get("status") == "pending" and row.get("action") in follow_up:
             return True
@@ -366,166 +347,6 @@ def decide_intent(entity: Any, state_result: Any, task: Any) -> str:
     return AgentIntent.NONE
 
 
-def run_spec_change_script(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
-    """Run a generated spec-change ``apply.py`` as a gated subprocess.
-
-    Gated by ``ctx.permissions.can_run_spec_change()``. The script imports
-    ``specseed_runtime...`` (the engine, which is NOT in the target repo), so it
-    runs with ``cwd=ctx.repo_root`` and ``PYTHONPATH`` carrying the engine's
-    ``src/`` plus the repo root; the script path is the absolute join of the
-    payload's ``dir`` + ``script``. ``ctx.cancel`` and ``ctx.agent_timeout_s``
-    are honored via a terminate->wait->kill loop.
-    """
-    if not ctx.permissions.can_run_spec_change():
-        platform_log.log_event(
-            "spec_change_script_blocked",
-            task_id=task.get("task_id"),
-            reason="permission_denied",
-        )
-        return HandlerOutcome(
-            success=False,
-            error="spec-change remote writes not permitted by config",
-        )
-
-    payload = task.get("payload") or {}
-    script_dir = payload.get("dir")
-    script_name = payload.get("script")
-    if not script_dir or not script_name:
-        return HandlerOutcome(
-            success=False,
-            error="spec-change payload missing dir/script",
-        )
-    script_path = os.path.join(str(script_dir), str(script_name))
-    platform_log.log_event(
-        "spec_change_script_start",
-        task_id=task.get("task_id"),
-        post_id=task.get("post_id"),
-        script=script_path,
-        cwd=str(ctx.repo_root),
-    )
-
-    env = dict(os.environ)
-    repo_root = str(ctx.repo_root)
-    # The engine is not copied into the target, so the generated apply.py finds
-    # ``specseed_runtime`` via the engine's own src/ dir (this file: executing/ ->
-    # specseed_runtime/ -> src/). Repo root stays on the path for target-local imports.
-    engine_src = str(Path(__file__).resolve().parents[2])
-    existing = env.get("PYTHONPATH")
-    parts = [engine_src, repo_root] + ([existing] if existing else [])
-    env["PYTHONPATH"] = os.pathsep.join(parts)
-    # Point default_storage_dir() at the TARGET's storage: a bare
-    # resolve_remote()/Database in apply.py must not land in the engine repo.
-    storage = getattr(ctx, "storage", None)
-    if storage:
-        env[SPECSEED_STORAGE_ENV] = str(Path(storage).resolve())
-
-    argv = [sys.executable, script_path]
-    start = time.monotonic()
-    timeout_s = ctx.agent_timeout_s
-    deadline = start + timeout_s if timeout_s and timeout_s > 0 else None
-
-    try:
-        proc = subprocess.Popen(
-            argv,
-            cwd=repo_root,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-    except (OSError, ValueError) as exc:
-        platform_log.log_event(
-            "spec_change_script_launch_failed",
-            task_id=task.get("task_id"),
-            script=script_path,
-            error=repr(exc),
-        )
-        return HandlerOutcome(
-            success=False,
-            error="failed to launch spec-change script: {0}".format(exc),
-            retryable=True,
-        )
-
-    inflight.record(storage, task.get("task_id"), proc.pid, argv[0])
-    try:
-        cancelled = False
-        timed_out = False
-        while proc.poll() is None:
-            if ctx.cancel is not None and ctx.cancel.is_set():
-                cancelled = True
-                _stop_process(proc)
-                break
-            if deadline is not None and time.monotonic() >= deadline:
-                timed_out = True
-                _stop_process(proc)
-                break
-            time.sleep(_POLL_INTERVAL_S)
-
-        try:
-            stdout, stderr = proc.communicate(timeout=_GRACE_S)
-        except subprocess.TimeoutExpired:
-            _stop_process(proc)
-            stdout, stderr = proc.communicate()
-        returncode = proc.returncode
-    finally:
-        inflight.clear(storage, task.get("task_id"))
-
-    if cancelled:
-        platform_log.log_event(
-            "spec_change_script_cancelled",
-            task_id=task.get("task_id"),
-            script=script_path,
-            returncode=returncode,
-            output=_truncate(_combine_output(stdout, stderr)),
-        )
-        return HandlerOutcome(
-            success=False,
-            requeue=True,
-            error="spec-change script cancelled",
-            detail=_combine_output(stdout, stderr),
-        )
-    if timed_out:
-        platform_log.log_event(
-            "spec_change_script_timed_out",
-            task_id=task.get("task_id"),
-            script=script_path,
-            returncode=returncode,
-            timeout_s=timeout_s,
-            output=_truncate(_combine_output(stdout, stderr)),
-        )
-        return HandlerOutcome(
-            success=False,
-            requeue=True,
-            error="spec-change script timed out after {0:.0f}s".format(timeout_s),
-            detail=_combine_output(stdout, stderr),
-        )
-    if returncode == 0:
-        output = _combine_output(stdout, stderr)
-        platform_log.log_event(
-            "spec_change_script_complete",
-            task_id=task.get("task_id"),
-            script=script_path,
-            returncode=returncode,
-            output=_truncate(output),
-        )
-        _close_finalized_request(ctx, task)
-        return HandlerOutcome(success=True, detail=output)
-    output = _combine_output(stdout, stderr)
-    platform_log.log_event(
-        "spec_change_script_failed",
-        task_id=task.get("task_id"),
-        script=script_path,
-        returncode=returncode,
-        output=_truncate(output),
-    )
-    return HandlerOutcome(
-        success=False,
-        error="spec-change script exited with code {0}\n{1}".format(
-            returncode, output
-        ),
-        retryable=True,
-    )
-
 
 def _close_finalized_request(ctx: ExecutionContext, task: dict) -> None:
     """Close a spec-change request post after its approval-path apply succeeds.
@@ -602,10 +423,24 @@ def _plan_post_id(entry: dict, what: str) -> Any:
     raise _PlanApplyError("{0} missing post_id".format(what))
 
 
-def _replace_created_refs(body: str, created: dict[str, Any]) -> str:
+def _plan_ids(plan: dict, created: dict[str, Any]) -> dict[str, Any]:
+    ids: dict[str, Any] = {}
+    raw = plan.get("id_map") or {}
+    if isinstance(raw, dict):
+        ids.update({str(k): v for k, v in raw.items()})
+    ids.update({str(k): v for k, v in created.items()})
+    return ids
+
+
+def _resolve_plan_id(post_id: Any, ids: dict[str, Any]) -> Any:
+    return ids.get(str(post_id), post_id)
+
+
+def _replace_created_refs(body: str, ids: dict[str, Any]) -> str:
     out = body
-    for title, post_id in created.items():
-        out = out.replace("{id:" + str(title) + "}", str(post_id))
+    for key, post_id in ids.items():
+        out = out.replace("{id:" + str(key) + "}", str(post_id))
+        out = out.replace("@" + str(key) + "@", "#" + str(post_id))
     return out
 
 
@@ -617,17 +452,12 @@ def _is_request_scoped_plan(ctx: ExecutionContext, request_id: Any, plan: dict) 
     )
 
 
-def _plan_uses_script(plan: dict) -> bool:
-    return str(plan.get("executor") or "").strip().lower() == "script"
-
 
 def apply_spec_change_plan(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
     """Apply normal ``plan.json`` remote mutations in code.
 
-    This is the default replacement for generated ``apply.py``. It supports the
-    ordinary plan operations: creates, edits, labels, comments, closes, deletes.
-    The generated script path remains available only when ``plan.executor`` is
-    ``"script"`` and the scheduler enqueued ``run_spec_change_script``.
+    Supports the ordinary plan operations: creates, edits, labels, comments,
+    closes, deletes. Generated code is not supported.
     """
     if not ctx.permissions.can_run_spec_change():
         platform_log.log_event(
@@ -648,9 +478,6 @@ def apply_spec_change_plan(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
     plan = _read_plan(ctx, request_id)
     if plan is None:
         return HandlerOutcome(success=False, error="spec-change plan not readable for request {0}".format(request_id))
-    if _plan_uses_script(plan):
-        return HandlerOutcome(success=False, error="plan requests script executor but JSON executor was queued")
-
     try:
         _validate_depends_on_links(plan)
         if not payload.get("close_request") and not _is_request_scoped_plan(ctx, request_id, plan):
@@ -659,6 +486,7 @@ def apply_spec_change_plan(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
         created_path = plan_dir / "created.json"
         created_raw = _load_json_file(created_path, {})
         created: dict[str, Any] = created_raw if isinstance(created_raw, dict) else {}
+        ids = _plan_ids(plan, created)
         comments_path = plan_dir / "comments.json"
         comments_raw = _load_json_file(comments_path, {})
         comments_done: dict[str, Any] = comments_raw if isinstance(comments_raw, dict) else {}
@@ -672,7 +500,7 @@ def apply_spec_change_plan(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
                 raise _PlanApplyError("plan.create entry missing title")
             if title in created:
                 continue
-            body = _replace_created_refs(str(spec.get("body") or ""), created)
+            body = _replace_created_refs(str(spec.get("body") or ""), ids)
             data = _result_data(
                 ctx.remote.add_entry(
                     title,
@@ -682,53 +510,63 @@ def apply_spec_change_plan(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
                 ),
                 "create {0!r}".format(title),
             )
-            created[title] = getattr(data, "id", data)
+            new_id = getattr(data, "id", data)
+            created[title] = new_id
+            key = spec.get("key")
+            if key not in (None, ""):
+                created[str(key)] = new_id
+            ids = _plan_ids(plan, created)
             _write_json_file(created_path, created)
             counts["creates"] += 1
 
         for edit in _plan_list(plan, "edits"):
             if not isinstance(edit, dict):
                 raise _PlanApplyError("plan.edits entries must be objects")
-            post_id = _plan_post_id(edit, "edit")
+            raw_post_id = _plan_post_id(edit, "edit")
+            post_id = _resolve_plan_id(raw_post_id, ids)
             body = edit.get("body")
             if body is not None:
-                body = _replace_created_refs(str(body), created)
+                body = _replace_created_refs(str(body), ids)
             title = edit.get("title")
-            _result_data(ctx.remote.edit_entry(post_id, title=title, body=body), "edit {0}".format(post_id))
+            _result_data(ctx.remote.edit_entry(post_id, title=title, body=body), "edit {0}".format(raw_post_id))
             counts["edits"] += 1
 
         for change in _plan_list(plan, "labels"):
             if not isinstance(change, dict):
                 raise _PlanApplyError("plan.labels entries must be objects")
-            post_id = _plan_post_id(change, "label change")
+            raw_post_id = _plan_post_id(change, "label change")
+            post_id = _resolve_plan_id(raw_post_id, ids)
             for label in change.get("remove") or []:
-                _result_data(ctx.remote.remove_entry_label(post_id, str(label)), "-label {0} on {1}".format(label, post_id))
+                _result_data(ctx.remote.remove_entry_label(post_id, str(label)), "-label {0} on {1}".format(label, raw_post_id))
                 counts["labels"] += 1
             for label in change.get("add") or []:
-                _result_data(ctx.remote.add_entry_label(post_id, str(label)), "+label {0} on {1}".format(label, post_id))
+                _result_data(ctx.remote.add_entry_label(post_id, str(label)), "+label {0} on {1}".format(label, raw_post_id))
                 counts["labels"] += 1
 
         for comment in _plan_list(plan, "comments"):
             if not isinstance(comment, dict):
                 raise _PlanApplyError("plan.comments entries must be objects")
-            post_id = _plan_post_id(comment, "comment")
-            body = _replace_created_refs(str(comment.get("body") or ""), created)
+            raw_post_id = _plan_post_id(comment, "comment")
+            post_id = _resolve_plan_id(raw_post_id, ids)
+            body = _replace_created_refs(str(comment.get("body") or ""), ids)
             key = "{0}\0{1}".format(post_id, body)
             if key in comments_done:
                 continue
             data = _result_data(
                 ctx.remote.add_entry_comment(post_id, platform_comment(body, getattr(ctx, "config", None))),
-                "comment {0}".format(post_id),
+                "comment {0}".format(raw_post_id),
             )
             comments_done[key] = getattr(data, "id", data)
             _write_json_file(comments_path, comments_done)
             counts["comments"] += 1
 
-        for post_id in _plan_list(plan, "closes"):
-            _result_data(ctx.remote.set_entry_closed(post_id), "close {0}".format(post_id))
+        for raw_post_id in _plan_list(plan, "closes"):
+            post_id = _resolve_plan_id(raw_post_id, ids)
+            _result_data(ctx.remote.set_entry_closed(post_id), "close {0}".format(raw_post_id))
             counts["closes"] += 1
-        for post_id in _plan_list(plan, "deletes"):
-            _result_data(ctx.remote.delete_entry(post_id), "delete {0}".format(post_id))
+        for raw_post_id in _plan_list(plan, "deletes"):
+            post_id = _resolve_plan_id(raw_post_id, ids)
+            _result_data(ctx.remote.delete_entry(post_id), "delete {0}".format(raw_post_id))
             counts["deletes"] += 1
     except _PlanApplyError as exc:
         platform_log.log_event(
@@ -751,34 +589,6 @@ def apply_spec_change_plan(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
         detail="applied plan creates={creates} edits={edits} labels={labels} comments={comments} closes={closes} deletes={deletes}".format(**counts),
     )
 
-
-def _stop_process(proc: "subprocess.Popen[Any]") -> None:
-    try:
-        proc.terminate()
-    except (OSError, ValueError):
-        return
-    try:
-        proc.wait(timeout=_GRACE_S)
-    except subprocess.TimeoutExpired:
-        try:
-            proc.kill()
-        except (OSError, ValueError):
-            pass
-
-
-def _combine_output(stdout: Optional[str], stderr: Optional[str]) -> str:
-    parts = []
-    if stdout:
-        parts.append(stdout.strip())
-    if stderr:
-        parts.append(stderr.strip())
-    return "\n".join(p for p in parts if p)
-
-
-def _truncate(text: str, limit: int = 4000) -> str:
-    if len(text) <= limit:
-        return text
-    return text[:limit] + "...[truncated]"
 
 
 def _run_platform_error(
@@ -1446,7 +1256,7 @@ def _run_work(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
         )
         return HandlerOutcome(
             success=True,
-            detail="apply.py already queued for request {0}; skipping re-run".format(post_id),
+            detail="spec-change follow-up already queued for request {0}; skipping re-run".format(post_id),
         )
 
     # Control decided the intent and cleared every gate. The heavy agent run (and
@@ -1539,7 +1349,7 @@ def _classify_spec_change(ctx: ExecutionContext, request_id: Any) -> str:
       approves.
     * ``"direct"`` - a pure clarification round: it only comments on the request and
       flips the request's own status label, creating no work and staging no spec. Run
-      apply.py straight away so the question reaches the human.
+      request-scoped plan JSON straight away so the question reaches the human.
     * ``"none"`` - the run produced no actionable plan.
 
     Self-declared intent is a SIGNAL, not the verdict: a plan that says
@@ -1577,8 +1387,8 @@ def _classify_spec_change(ctx: ExecutionContext, request_id: Any) -> str:
 def _enqueue_spec_change_followup(ctx: ExecutionContext, entity: Any, request_id: Any) -> str:
     """Queue the runtime-owned follow-up to a finished spec-change run.
 
-    Plan-first, code-enforced: the agent wrote ``plan.json`` + ``apply.py`` (+ staged
-    spec) and stopped. The runtime - not the agent - now decides whether the run gates
+    Plan-first, code-enforced: the agent wrote ``plan.json`` (+ staged spec) and
+    stopped. The runtime - not the agent - now decides whether the run gates
     (``_classify_spec_change``) and enqueues the matching task. A proposal parks the
     request awaiting approval; a clarification applies directly.
     """
@@ -1617,9 +1427,8 @@ def propose_spec_change(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
 
     Deterministic, no agent, NO remote work posts. Reads the request's
     ``plan.json`` (``plan_summary`` + ``apr``), posts both onto the request post,
-    and parks it ``awaiting_approval``. The deferred ``apply.py`` - which actually
-    creates the epics/tickets/issues - runs only after a human approves
-    (``advance.resolve_spec_change_request`` enqueues it). Idempotent: a re-trigger
+    and parks it ``awaiting_approval``. The JSON plan executor creates the
+    epics/tickets/issues only after a human approves. Idempotent: a re-trigger
     that finds the ``APR-NNNN`` request already posted is a success no-op.
     """
     if not ctx.permissions.can_run_spec_change():
@@ -1695,9 +1504,6 @@ def dispatch(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
             success=True,
             detail="retry cancelled: error post closed by human",
         )
-
-    if action == SPEC_CHANGE_ACTION:
-        return run_spec_change_script(ctx, task)
 
     if action == SPEC_CHANGE_PLAN_ACTION:
         return apply_spec_change_plan(ctx, task)

@@ -2,7 +2,7 @@
 resolve_remote.py - build the *configured* tracker from storage config.
 
 The specseed skill, when it processes a spec-change, writes a small Python
-``apply.py`` script under ``storage/spec-change/<id>/``. That script mutates the
+runtime JSON executor for ``storage/spec-change/<id>/plan.json`` mutates the
 **remote** posts (epics/tickets/issues, labels, comments, dashboards). Which
 remote it talks to is a deployment choice the human made in ``configure.py``:
 local-only, GitHub, or GitLab. This module is the single seam those generated

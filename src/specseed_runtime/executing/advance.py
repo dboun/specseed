@@ -56,9 +56,7 @@ from specseed_runtime.platform_identity import (
     platform_username,
 )
 from specseed_runtime.scheduling.spec_change import (
-    DEFAULT_SCRIPT_NAME,
     enqueue_spec_change_plan,
-    enqueue_spec_change_run,
     spec_change_dir,
     spec_change_spec_dir,
     staged_spec_files,
@@ -1148,13 +1146,12 @@ def _plan_route(ctx: Any, request_id: Any) -> Optional[str]:
 
 
 def _enqueue_apply_on_approval(ctx: Any, request_id: Any, route: Optional[str]) -> bool:
-    """On approval, queue the request's remote mutation executor.
+    """On approval, queue JSON application for the request's remote mutations.
 
-    Plan-first: no remote work posts are created before approval. Normal plans are
-    applied by the runtime JSON executor. Generated ``apply.py`` is an explicit
-    escape hatch only when ``plan.executor == "script"``. Returns True if a run
-    was queued, so the caller leaves the request open for the executor to close on
-    success; spec-only runs close here.
+    Plan-first: no remote work posts are created before approval. The runtime
+    applies ``plan.json`` in code. Returns True if a run was queued, so the caller
+    leaves the request open for the executor to close on success; spec-only runs
+    close here.
     """
     plan_path = spec_change_dir(str(request_id), ctx.storage) / "plan.json"
     try:
@@ -1171,19 +1168,10 @@ def _enqueue_apply_on_approval(ctx: Any, request_id: Any, route: Optional[str]) 
     # the executor closes the request post on success - we don't trust the agent's
     # plan.json.closes to list it. resolve_spec_change_request's remote-truth guard
     # ensures only the first approval ever reaches here, so only ONE apply is tagged.
-    if str(plan.get("executor") or "").strip().lower() == "script":
-        script = spec_change_dir(str(request_id), ctx.storage) / DEFAULT_SCRIPT_NAME
-        if not script.exists():
-            return False
-        enqueue_spec_change_run(
-            script, request_id=request_id, route=route, db=ctx.db, close_request=True
-        )
-        platform_log.log_event("spec_change_script_enqueued", post_id=request_id, route=route)
-    else:
-        enqueue_spec_change_plan(
-            request_id=request_id, route=route, db=ctx.db, close_request=True
-        )
-        platform_log.log_event("spec_change_plan_enqueued", post_id=request_id, route=route)
+    enqueue_spec_change_plan(
+        request_id=request_id, route=route, db=ctx.db, close_request=True
+    )
+    platform_log.log_event("spec_change_plan_enqueued", post_id=request_id, route=route)
     return True
 
 
@@ -1254,7 +1242,7 @@ def resolve_spec_change_request(ctx: Any, entity: Any, state_result: Any) -> Opt
     # queued approval events for one request (a 👍 reaction AND an approve comment)
     # both see it `awaiting_approval`. Re-read the remote: if an earlier task already
     # resolved it, bow out - otherwise we would settle twice and, worse, enqueue the
-    # creating apply.py a SECOND time (duplicate posts).
+    # creating plan apply a SECOND time (duplicate posts).
     current = _remote_spec_change_status(ctx, entity.post_id)
     if current in ("done", "rejected"):
         return "stale spec-change approval; request already {0}".format(current)
@@ -1267,8 +1255,8 @@ def resolve_spec_change_request(ctx: Any, entity: Any, state_result: Any) -> Opt
         settled = _settle_docs_for_request(ctx, entity.post_id)
         _set_spec_change_status(ctx, entity, "done")
         route = _plan_route(ctx, entity.post_id)
-        # Plan-first: the approved plan's apply.py creates the work NOW (nothing
-        # was created before approval). When there is work to apply, apply.py owns
+        # Plan-first: the approved plan creates the work NOW (nothing was created
+        # before approval). When there is work to apply, the JSON executor owns
         # finalizing + closing the request; a spec-only run (nothing to apply) we
         # close here so the request doesn't linger open.
         apply_enqueued = _enqueue_apply_on_approval(ctx, entity.post_id, route)

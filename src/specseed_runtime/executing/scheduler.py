@@ -199,7 +199,7 @@ class Scheduler:
             current_control_task_id=self._current_control_task_id,
         )
         # Cancel whatever is in flight on either lane (the work task is the long one;
-        # a control item like apply.py polls the same cancel Event).
+        # a control item like plan apply polls the same cancel Event).
         for tid in (self._current_task_id, self._current_control_task_id):
             if tid is not None:
                 cancellation.cancel(tid)
@@ -625,7 +625,7 @@ class Scheduler:
         """Run a CONTROL-lane task inline on the control thread.
 
         Control items are fast and deterministic (decide state, write the remote,
-        schedule work). The one multi-second item - apply.py - self-limits via its
+        schedule work). The one multi-step control item - plan apply - self-limits via its
         own cancel/timeout loop, and the registered cancel Event is set on stop.
         """
         task_id = int(task["task_id"])

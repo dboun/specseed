@@ -1,6 +1,6 @@
 """inflight.py - which child processes a task run owns, durably.
 
-A task run spawns subprocesses (agent CLIs, generated apply.py). If the runner
+A task run spawns subprocesses (agent CLIs). If the runner
 process dies hard (kill -9, power), two things leak: the task row stays
 ``in_progress`` forever, and the child - which survives its parent - keeps
 mutating the repo with nobody supervising it.

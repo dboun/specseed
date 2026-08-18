@@ -7,7 +7,7 @@
   files directly from the test.
 - No real agents, no tokens. Agent runs go through a scripted CLI stand-in put first
   on PATH (see `greenfield/data/fake_agent/claude`); it follows the real skill
-  contract (plan.json + apply.py + enqueue).
+  contract (plan.json + runtime enqueue).
 - No real GitHub/GitLab. Remote stays `TrackingRemoteLocal`.
 - One scenario = one subdir: `test_<scenario>.py` + `data/` with everything it needs.
   Target repos are copied from `data/` into `tmp_path`; nothing runs inside the

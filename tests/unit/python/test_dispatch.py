@@ -580,7 +580,6 @@ class SpecChangeGateDecisionTest(DispatchTestBase):
         self.assertIn("proposal enqueued", out.detail)
         actions = self._actions(rid)
         self.assertIn("propose_spec_change", actions)
-        self.assertNotIn("run_spec_change_script", actions)  # nothing applied yet
 
     def test_clarification_run_enqueues_direct_apply(self) -> None:
         rid = self._seed_local_entry("Adapt", ["spec-change:adapt"])
@@ -593,7 +592,6 @@ class SpecChangeGateDecisionTest(DispatchTestBase):
         self.assertIn("plan apply", out.detail)
         actions = self._actions(rid)
         self.assertIn("apply_spec_change_plan", actions)
-        self.assertNotIn("run_spec_change_script", actions)
         self.assertNotIn("propose_spec_change", actions)
 
     def test_classify_clarification_status_request_scoped_is_direct(self) -> None:
@@ -854,12 +852,12 @@ class RetryGateTest(DispatchTestBase):
         self.assertEqual(self.runner.calls, [])  # handler never ran
 
     def test_open_error_post_lets_retry_run(self) -> None:
-        task = self._retried_task(action="run_spec_change_script")
+        task = self._retried_task(action="apply_spec_change_plan")
         self._error_post_for(task, closed=False)
         out = dispatch(self.ctx, task)
         # gate passed; the handler itself then rejects the empty payload
         self.assertFalse(out.success)
-        self.assertIn("payload missing", out.error)
+        self.assertIn("plan not readable", out.error)
 
 
 class ApplySpecChangePlanTest(DispatchTestBase):
@@ -919,69 +917,6 @@ class ApplySpecChangePlanTest(DispatchTestBase):
         out = dispatch_mod.apply_spec_change_plan(self.ctx, self._task(rid, False))
         self.assertFalse(out.success)
         self.assertIn("only touch the request", out.error)
-
-    def test_script_executor_plan_rejected_by_json_executor(self) -> None:
-        rid = self.remote.add_entry("adapt request", labels=[]).data.id
-        self._plan_dir(rid, {"executor": "script", "comments": [{"post": str(rid), "body": "q"}]})
-        out = dispatch_mod.apply_spec_change_plan(self.ctx, self._task(rid, False))
-        self.assertFalse(out.success)
-        self.assertIn("script executor", out.error)
-
-
-class RunSpecChangeScriptFinalizeTest(DispatchTestBase):
-    """The approval-path apply (close_request flag) closes the request post on a
-    successful run; a mechanical run (no flag) or a failed run leaves it open. The
-    request's close is the runtime's job, not the agent-emitted plan.json.closes."""
-
-    def _apply_dir(self, rid, script="print('noop')\n"):
-        d = Path(self.ctx.storage) / "spec-change" / str(rid)
-        d.mkdir(parents=True, exist_ok=True)
-        (d / "apply.py").write_text(script, encoding="utf-8")
-        return d
-
-    def _request(self):
-        return self.remote.add_entry("adapt request", labels=[]).data.id
-
-    def _task(self, rid, d, close_request):
-        return {
-            "task_id": 1,
-            "action": "run_spec_change_script",
-            "post_id": str(rid),
-            "payload": {
-                "dir": str(d), "script": "apply.py", "route": "adapt",
-                "request_id": str(rid), "close_request": close_request,
-            },
-        }
-
-    def test_finalizing_apply_closes_request(self) -> None:
-        rid = self._request()
-        d = self._apply_dir(rid)
-        out = dispatch_mod.run_spec_change_script(self.ctx, self._task(rid, d, True))
-        self.assertTrue(out.success)
-        self.assertFalse(self.remote.get_entry(rid).data.is_open)
-
-    def test_mechanical_run_leaves_request_open(self) -> None:
-        rid = self._request()
-        d = self._apply_dir(rid)
-        out = dispatch_mod.run_spec_change_script(self.ctx, self._task(rid, d, False))
-        self.assertTrue(out.success)
-        self.assertTrue(self.remote.get_entry(rid).data.is_open)
-
-    def test_already_closed_request_is_noop(self) -> None:
-        rid = self._request()
-        self.remote.set_entry_closed(rid)
-        d = self._apply_dir(rid)
-        out = dispatch_mod.run_spec_change_script(self.ctx, self._task(rid, d, True))
-        self.assertTrue(out.success)
-        self.assertFalse(self.remote.get_entry(rid).data.is_open)
-
-    def test_failed_apply_does_not_close_request(self) -> None:
-        rid = self._request()
-        d = self._apply_dir(rid, script="import sys; sys.exit(1)\n")
-        out = dispatch_mod.run_spec_change_script(self.ctx, self._task(rid, d, True))
-        self.assertFalse(out.success)
-        self.assertTrue(self.remote.get_entry(rid).data.is_open)
-
 
 import shutil
 from specseed_runtime.executing import git_ops as _git_ops
