@@ -1,3 +1,150 @@
+# Working agreement for this project
+
+This project is tracked by **dev_track_9001**. The `dt` command is the only
+memory that survives between sessions. If it is not in `dt`, it did not happen.
+
+The project is identified by this directory's path — `dt` works that out from
+your working directory, so you never pass it explicitly.
+
+---
+
+## The rules
+
+These are not suggestions. Follow them even when the work seems too small to
+bother.
+
+1. **Start every session with `dt sync`.** It tells you what the user said
+   since you last looked, what is in flight, and what to do next. Never guess
+   the state of the project from the conversation or from the files.
+2. **Nothing gets worked on that is not a task.** Before you touch a file,
+   there is a task for it and it is `in_progress`. If the user asks for
+   something and there is no task, create one first.
+3. **Every task belongs to a ticket.** A ticket is a body of work with a
+   description; a task is one concrete piece of it. The user only files tasks —
+   filing them under the right ticket is your job. If no ticket fits, create
+   one, then attach the task. Tasks in the "not filed under a ticket yet" pile
+   are a bug in your process.
+4. **Report as you go, not at the end.** Post an update at every real step:
+   what you found, what you decided, what you changed. `dt task progress T-n 40
+   -m "..."`. A task that sits `in_progress` for 45 minutes with no update is
+   flagged stale in the UI and in the next `dt sync`.
+5. **Ask instead of guessing — and do not block on the answer.** `dt ask T-n -m
+   "..."` puts a question in the user's UI. Then park that task and do
+   something else, or work the parts that do not depend on the answer. The
+   answer arrives in your next `dt sync`.
+6. **Run `dt check` before you stop talking.** It fails if the tracker is
+   behind reality. Fix what it lists, then finish your reply.
+7. **One task in progress at a time.** Finish it, park it (`--status todo`), or
+   block it (`dt task block`) before starting another.
+8. **Descriptions support Markdown.** Use Markdown when it makes a ticket or
+   task easier to scan: short lists, emphasis, links, quotes, tables and code
+   are all fine. Keep descriptions brief, though. They are working context, not
+   long documents, and most descriptions do not need section headings.
+
+---
+
+## Change hats, and drop the old context when you do
+
+The three jobs below need different context. Mixing them makes you plan around
+what you just read and implement around what you just argued about.
+
+**Project manager.** Read `dt sync`. Triage what the user filed. Group loose
+tasks under tickets, create tickets that are missing, split anything vague into
+tasks that have an obvious "done", set priorities. Write the ticket description
+so somebody who was not in this conversation can act on it. Do not open source
+files to do this beyond a quick look.
+
+**Then start fresh.** Hand off with `dt brief T-n` — it prints a self-contained
+bundle: the ticket, the task, its notes and its siblings. Either spawn a
+sub-agent whose entire input is that brief, or tell the user to `/clear` and
+say `continue`. Do not implement in the same context you planned in.
+
+**Implementer.** Your input is one brief. Read it, `dt task start T-n`, do only
+that task, post updates as you go, `dt task done T-n -m "what changed"`. If the
+work reveals more work, file it as a new task — do not silently widen the one
+you are on.
+
+**Reviewer.** Fresh context again, `dt brief T-n` for what was claimed done,
+check it against the ticket. Reopen the task or file a follow-up.
+
+---
+
+## The loop
+
+The user opens a new session and says "continue". You:
+
+```
+dt sync                      # what changed, what is in flight
+```
+
+- New user comments? Read them, then act on them — reprioritise, edit a task's
+  description, or file a new task.
+- Answers to your questions? They are in the sync output. Continue what was
+  blocked.
+- A task already `in_progress`? Resume it unless the user redirected you.
+- Loose tasks the user filed? Put your PM hat on and file them under tickets.
+- Nothing open? Ask the user what is next with `dt ask`.
+
+---
+
+## Command reference
+
+```bash
+dt sync                       # start here every session; marks new items seen
+dt sync --peek                # same, without marking them seen
+dt status                     # full board for this project
+dt next                       # the task to work on now
+dt brief T-3                  # self-contained context bundle for one task
+dt check                      # non-zero if the tracker is behind; run before stopping
+
+dt ticket add "Settings redesign" -d "Rework the settings page to the v2 spec." -p p1 -l ui
+dt ticket list --tasks
+dt ticket show TKT-1
+dt ticket set TKT-1 --status done -m "shipped"
+
+dt labels                                       # every label in this project
+dt ticket set TKT-1 --add-label backend         # unknown labels are created on the spot
+dt ticket set TKT-1 --rm-label ui               # off this ticket; the label itself stays
+dt ticket set TKT-1 --label backend --label ui  # replace the set ('none' clears it)
+
+dt task add "Wire up the form" --ticket TKT-1 -p p1 -d "acceptance criteria..."
+dt task list --status open
+dt task show T-3
+dt task start T-3 -m "starting: reading the existing component"
+dt task progress T-3 60 -m "form renders, validation left"
+dt task block T-3 -m "needs the staging API key"
+dt task done T-3 -m "merged; covered by tests in test_form.py"
+dt task set T-3 --ticket TKT-1 --priority p0
+
+dt note T-3 -m "the v1 endpoint is deprecated, using v2"   # status update
+dt note . -m "..." --kind decision                          # project-level
+dt ask T-3 -m "Which redirect target after login?"          # question to the user
+dt notes T-3                                                # read the thread
+dt log -n 30                                                # recent activity
+```
+
+Priorities are `p0` (urgent) to `p3` (low), default `p2`.
+Labels are free text on **tickets** — tasks take their grouping from the ticket
+they are filed under. Use them for the cross-cutting things a status cannot say
+(`backend`, `needs-design`, `flaky`). Check `dt labels` before inventing a new
+one; three spellings of the same idea help nobody. Only the user deletes them.
+Task statuses: `todo`, `in_progress`, `blocked`, `review`, `done`, `cancelled`.
+Ticket statuses: `open`, `in_progress`, `blocked`, `done`, `cancelled`.
+Add `--json` to any command for machine-readable output.
+
+---
+
+## When the engine is down
+
+`dt` exits with code 3 and says so. Do not work around it, do not keep notes in
+a file, do not carry on untracked. Tell the user:
+
+> The dev_track_9001 engine is not running — start it with `dt engine start`.
+
+Then wait.
+
+---
+
 # CLAUDE.md
 
 **Write caveman.** Every doc, comment, commit body, PR, and reply: terse, signal-dense, no
@@ -6,9 +153,9 @@ the skill *emits* (vision/SAD/SDD/entity bodies/ADR) ALSO gets the humanizer pas
 `references_ext/humanizer.md`. Tell spawned agents the same. This rule saves tokens on every edit.
 Memory: when asking for feedback/clarifications, use `skills/specseed/references/reply-protocol-base.md`.
 
-Planning memory: use top-level `PLANNING.md` for user ideas, active work, backlog, and repo
-status notes. Add/update planning entries on `dev` first, then return to the active branch and
-merge/rebase `dev` back when useful.
+Planning memory: `dt` (dev_track_9001), per the working agreement at the top of this file. User
+ideas, active work, backlog and repo status notes all live there, not in a file. The old
+`PLANNING.md` ledger is gone.
 
 ## What this repo is
 
