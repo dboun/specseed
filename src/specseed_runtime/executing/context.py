@@ -74,6 +74,9 @@ def load_entity(ctx: ExecutionContext, post_id: Optional[str]) -> tuple[Optional
     # Assignees gate work: an issue is only implemented (auto or via the approval
     # gate) once the agent is among them. Carry them so dispatch can judge that.
     entity.assignees = list(getattr(details, "assignees", []) or [])
+    # Open/closed: a REJECTED spec-change request stays open and re-runs on the next
+    # comment, so closing the post is what finally ends it (dispatch.decide_intent).
+    entity.is_open = bool(getattr(details, "is_open", True))
     # Dependencies + parent are body links (remote-posts.md); parse them so the
     # dispatcher can hold an issue until its own deps AND its parent ticket's
     # dependency-tickets are done.

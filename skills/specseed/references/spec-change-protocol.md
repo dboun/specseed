@@ -177,7 +177,11 @@ Two outcomes the runtime can pick:
   the UI button) or rejects (`reject APR-NNNN` / 👎). On approval the runtime promotes
   the staged spec into live `spec/`, stamps `settled`, swaps the request to
   `spec-change:status:done`, and applies `plan.json` (which NOW creates the
-  epics/tickets/issues). On rejection nothing is created or promoted and the request closes.
+  epics/tickets/issues). On rejection nothing is created or promoted; the request is
+  swapped to `spec-change:status:rejected` but stays OPEN, and the runtime asks the human
+  what to change. Their next comment re-runs you on the SAME request, with the rejection
+  and their reason in the thread: draft a fresh plan (a new `APR-NNNN`, never the rejected
+  one) that answers it. The human ends a request for good by closing the post.
 - **Direct (clarification round, no approval).** The ONE ungated run: it touches ONLY
   the request post (a clarifying comment plus flipping the request's own
   `spec-change:status` label), creates no work and stages no spec. The runtime applies

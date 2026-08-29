@@ -205,8 +205,9 @@ the spec-change request and parks it `awaiting_approval`. A human approves the t
 (`approve APR-NNNN` comment **or** 👍 on the request) or rejects it (`reject APR-NNNN` /
 👎). On approval the runtime settles the docs and applies `plan.json`, which creates the
 epics/tickets/issues — issues born `issue:status:todo`, immediately claimable. Nothing
-exists before approval; rejection creates nothing. Contract + helpers:
-`spec-change-protocol.md` ("Approval gate (APR-NNNN)").
+exists before approval; rejection creates nothing and leaves the request OPEN and parked
+`rejected`, so the human's next comment wakes you to redraft the plan under a NEW
+`APR-NNNN`. Contract + helpers: `spec-change-protocol.md` ("Approval gate (APR-NNNN)").
 
 ## Draft / ignore
 
