@@ -145,11 +145,26 @@ class DecideIntentTest(DispatchTestBase):
             )
             self.assertEqual(intent, AgentIntent.NONE, action)
 
-    def test_spec_change_rejected_status_is_not_rerun(self) -> None:
-        _, intent = self._intent_for(
-            ["spec-change:adapt", "spec-change:status:rejected"], action="handle_entry_updated"
+    def test_spec_change_rejected_only_wakes_on_comment(self) -> None:
+        # Rejecting a plan means "redraft it", not "abandon the request": the request
+        # stays open and the human's next comment re-runs the worker. Label churn or an
+        # updated_at bump still must not.
+        labels = ["spec-change:adapt", "spec-change:status:rejected"]
+        _, churn = self._intent_for(labels, action="handle_entry_updated")
+        self.assertEqual(churn, AgentIntent.NONE)
+        _, reply = self._intent_for(labels, action="handle_comment_added")
+        self.assertEqual(reply, AgentIntent.SPEC_CHANGE)
+
+    def test_closed_rejected_spec_change_never_reruns(self) -> None:
+        # Closing the post is how a human drops a rejected request for good.
+        entity = Entity.for_labels(
+            post_id="1", labels=["spec-change:adapt", "spec-change:status:rejected"], title="t"
         )
-        self.assertEqual(intent, AgentIntent.NONE)
+        entity.is_open = False
+        sr = evaluate_entity_state(entity, self.config, [])
+        self.assertEqual(
+            decide_intent(entity, sr, {"action": "handle_comment_added"}), AgentIntent.NONE
+        )
 
     def test_spec_change_awaiting_approval_only_wakes_on_comment(self) -> None:
         labels = ["spec-change:adapt", "spec-change:status:awaiting_approval"]

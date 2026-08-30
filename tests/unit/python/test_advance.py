@@ -963,7 +963,13 @@ class SpecChangeRequestSettleTest(_Base):
         apply_tasks = [t for t in self.db.tasks_for(rid) if t["action"] == "apply_spec_change_plan"]
         self.assertEqual(len(apply_tasks), 1)
 
-    def test_rejection_marks_rejected_and_does_not_settle(self) -> None:
+    def _bodies(self, rid):
+        return [c.body or "" for c in self._remote_details(rid).comments]
+
+    def test_rejection_parks_request_open_and_asks_what_to_change(self) -> None:
+        # Reject = "redraft this plan", not "abandon the request". Nothing is settled,
+        # but the request stays OPEN and carries a deterministic prompt, so the human's
+        # next comment has somewhere to land (it used to close, stranding every reply).
         ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
         rid, entity = self._request_entity()
         self._write_doc(ctx, "api-srs.md")
@@ -972,7 +978,67 @@ class SpecChangeRequestSettleTest(_Base):
         self.assertIn("rejected", detail)
         self.assertIn("spec-change:status:rejected", self._remote_labels(rid))
         self.assertNotIn("settled: true", (self._live_spec(ctx) / "api-srs.md").read_text(encoding="utf-8"))
-        self.assertFalse(self._remote_details(rid).is_open)  # request closed on rejection
+        self.assertTrue(self._remote_details(rid).is_open)  # left open for the redraft
+        prompts = [b for b in self._bodies(rid) if advance.SPEC_CHANGE_REJECT_MARKER in b]
+        self.assertEqual(len(prompts), 1)
+        self.assertIn("You rejected this plan", prompts[0])
+
+    def test_rejection_prompt_is_posted_once(self) -> None:
+        # A 👎 reaction and a `reject APR-0001` comment can both be queued for one
+        # request; the remote-truth guard must keep the prompt to a single post.
+        ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
+        rid, entity = self._request_entity()
+        advance.resolve_spec_change_request(ctx, entity, _SR2(rejected_by=["alice"]))
+        again = advance.resolve_spec_change_request(ctx, entity, _SR2(rejected_by=["alice"]))
+        self.assertIn("stale", again)
+        self.assertEqual(
+            len([b for b in self._bodies(rid) if advance.SPEC_CHANGE_REJECT_MARKER in b]), 1
+        )
+
+    def test_rejection_with_guidance_falls_through_to_the_worker(self) -> None:
+        # `reject APR-0001 <what to change>` already says what to change: park the
+        # request and return None so dispatch re-runs the worker off that same comment,
+        # instead of asking for a comment we are holding.
+        ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
+        rid, entity = self._request_entity()
+        conversation = [{"author": "alice", "body": "reject APR-0001 do it with java and spring boot"}]
+        detail = advance.resolve_spec_change_request(
+            ctx, entity, _SR2(rejected_by=["alice"]), conversation, "handle_comment_added"
+        )
+        self.assertIsNone(detail)  # caller falls through to decide_intent
+        self.assertIn("spec-change:status:rejected", self._remote_labels(rid))
+        self.assertTrue(self._remote_details(rid).is_open)
+        self.assertFalse([b for b in self._bodies(rid) if advance.SPEC_CHANGE_REJECT_MARKER in b])
+
+    def test_stale_reject_does_not_carry_to_the_redrafted_gate(self) -> None:
+        # The redraft loop leaves `reject APR-0001` in the thread forever. The verdict
+        # must be read against the LIVE approval request (APR-0002), or every redraft
+        # would be auto-rejected the moment it was proposed.
+        ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
+        rid, entity = self._request_entity()
+        conversation = [
+            {"author": "specseed", "body": "Approval required: APR-0001\n"
+                                           "<!-- specseed:approval-request APR-0001 -->"},
+            {"author": "alice", "body": "reject APR-0001 do it with java and spring boot"},
+            {"author": "specseed", "body": "Approval required: APR-0002\n"
+                                           "<!-- specseed:approval-request APR-0002 -->"},
+        ]
+        detail = advance.resolve_spec_change_request(
+            ctx, entity, _SR2(rejected_by=["alice"]), conversation, "handle_comment_added"
+        )
+        self.assertIsNone(detail)  # no verdict on the live gate yet
+        self.assertIn("spec-change:status:awaiting_approval", self._remote_labels(rid))
+
+    def test_bare_reject_comment_still_gets_the_prompt(self) -> None:
+        # `reject APR-0001` with nothing after the id carries no guidance.
+        ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))
+        rid, entity = self._request_entity()
+        conversation = [{"author": "alice", "body": "reject APR-0001"}]
+        detail = advance.resolve_spec_change_request(
+            ctx, entity, _SR2(rejected_by=["alice"]), conversation, "handle_comment_added"
+        )
+        self.assertIn("awaiting your comment", detail)
+        self.assertTrue([b for b in self._bodies(rid) if advance.SPEC_CHANGE_REJECT_MARKER in b])
 
     def test_no_verdict_returns_none(self) -> None:
         ctx = self._ctx(self._config(), FakeAgentRunner(AgentResult(ok=True)))

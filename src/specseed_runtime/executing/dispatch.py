@@ -59,16 +59,19 @@ CLEANUP_ACTION = "cleanup"
 _SPEC_CHANGE_LABEL_PREFIX = "spec-change:"
 _SPEC_CHANGE_STATUS_PREFIX = "spec-change:status:"
 
-# Spec-change request statuses that still want a worker run. ``done``/``rejected``
-# are terminal: the request is settled and must never re-run the agent. The route
-# label (``spec-change:adapt`` etc.) never goes away, so without this gate every
-# later edit / label churn on a finished request re-ran the whole worker.
-_SPEC_CHANGE_TERMINAL_STATUSES = {"done", "rejected"}
+# Spec-change request statuses that still want a worker run. ``done`` is terminal:
+# the request is settled and must never re-run the agent. The route label
+# (``spec-change:adapt`` etc.) never goes away, so without this gate every later
+# edit / label churn on a finished request re-ran the whole worker.
+_SPEC_CHANGE_TERMINAL_STATUSES = {"done"}
 # Parked statuses: ``awaiting_input`` = the worker asked the human a question;
-# ``awaiting_approval`` = an APR-NNNN plan approval is pending. Both wake only on
-# a fresh comment (the human's answer / a plan objection); an ``updated_at`` bump
-# or a status-label swap must not re-run the worker.
-_SPEC_CHANGE_PARKED_STATUSES = {"awaiting_input", "awaiting_approval"}
+# ``awaiting_approval`` = an APR-NNNN plan approval is pending; ``rejected`` = a
+# human turned the plan down and we are waiting to hear why. All wake only on a
+# fresh comment (the human's answer / a plan objection); an ``updated_at`` bump
+# or a status-label swap must not re-run the worker. ``rejected`` is parked and
+# not terminal on purpose: rejecting a plan means "redraft it", and the human
+# ends the request for good by CLOSING the post (see _spec_change_actionable).
+_SPEC_CHANGE_PARKED_STATUSES = {"awaiting_input", "awaiting_approval", "rejected"}
 _SPEC_CHANGE_WAKE_ACTIONS = {"handle_comment_added", "handle_comment_updated"}
 
 
@@ -195,14 +198,22 @@ def _spec_change_status(entity: Any) -> Optional[str]:
     return None
 
 
-def _spec_change_actionable(status: Optional[str], action: Optional[str]) -> bool:
+def _spec_change_actionable(
+    status: Optional[str], action: Optional[str], is_open: bool = True
+) -> bool:
     """Whether a spec-change event should (re)run the worker.
 
     A request only runs while it is open/approved (or has no status yet). A
     terminal request never runs again. A parked request (``awaiting_input`` /
-    ``awaiting_approval``) runs only when woken by a new comment (the human's answer).
+    ``awaiting_approval`` / ``rejected``) runs only when woken by a new comment
+    (the human's answer, or what they want changed about a plan they rejected).
+
+    A CLOSED rejected request is the "no, really, drop it" signal: closing the post
+    is how a human ends a request the runtime no longer closes for them.
     """
     if status in _SPEC_CHANGE_TERMINAL_STATUSES:
+        return False
+    if status == "rejected" and not is_open:
         return False
     if status in _SPEC_CHANGE_PARKED_STATUSES:
         return action in _SPEC_CHANGE_WAKE_ACTIONS
@@ -324,7 +335,8 @@ def decide_intent(entity: Any, state_result: Any, task: Any) -> str:
     route = _spec_change_route(entity)
     if route is not None:
         action = task.get("action") if isinstance(task, dict) else getattr(task, "action", None)
-        if _spec_change_actionable(_spec_change_status(entity), action):
+        is_open = bool(getattr(entity, "is_open", True))
+        if _spec_change_actionable(_spec_change_status(entity), action, is_open):
             return AgentIntent.SPEC_CHANGE
         return AgentIntent.NONE
 
@@ -1090,11 +1102,14 @@ def _run_work(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
     )
 
     # A spec-change REQUEST parked awaiting_approval is finalized deterministically:
-    # an approval settles its spec docs (plan.json.settle_docs) and moves it to done; a
-    # rejection moves it to rejected. No agent run. Only when it is NOT an approval (a
-    # wake comment that is a clarification answer) do we fall through and re-run the worker.
+    # an approval settles its spec docs (plan.json.settle_docs) and moves it to done. No
+    # agent run. A rejection parks it `rejected` but leaves it OPEN and returns None when
+    # the rejecting comment already said what to change, so we fall through and redraft.
+    # Same fall-through for a plain wake comment that is a clarification answer.
     if _spec_change_route(entity) is not None and _spec_change_status(entity) == "awaiting_approval":
-        settled = advance.resolve_spec_change_request(ctx, entity, state_result)
+        settled = advance.resolve_spec_change_request(
+            ctx, entity, state_result, conversation, task.get("action")
+        )
         if settled is not None:
             platform_log.log_event(
                 "spec_change_request_resolved",

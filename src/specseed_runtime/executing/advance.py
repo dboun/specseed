@@ -82,6 +82,10 @@ from specseed_runtime.executing.user_action import (
 REVIEW_MARKER = "<!-- specseed:review-attempt -->"
 # Stamped on the "you rejected without guidance" prompt so it posts at most once.
 OPTIONS_MARKER = "<!-- specseed:reject-options -->"
+# Same idea for a rejected spec-change REQUEST. A rejection there means "redraft
+# this plan", not "abandon the request", so the request stays open and parked and
+# this prompt tells the human how to continue. Marker-guarded: posted at most once.
+SPEC_CHANGE_REJECT_MARKER = "<!-- specseed:spec-change-reject -->"
 _STATUS_INFIX = ":" + STATUS_LABEL_PREFIX  # ":status:"
 
 # Comment-bearing sync actions: only these may carry a human directive (prose /
@@ -468,8 +472,8 @@ def _human_directive(conversation: Any, config: Any) -> tuple[Optional[str], Opt
     return "guidance", stripped
 
 
-def _options_already_posted(ctx: Any, post_id: Any) -> bool:
-    """True if the reject-options prompt is already on the post (remote = truth).
+def _options_already_posted(ctx: Any, post_id: Any, marker: str = OPTIONS_MARKER) -> bool:
+    """True if a marker-stamped prompt is already on the post (remote = truth).
 
     Reading the remote (not the local snapshot, which lags a poll) keeps a 👎 then a
     second event before the next sync from posting the prompt twice.
@@ -480,9 +484,29 @@ def _options_already_posted(ctx: Any, post_id: Any) -> bool:
         return False
     data = getattr(res, "data", None)
     for item in getattr(data, "comments", None) or []:
-        if OPTIONS_MARKER in str(_comment_field(item, "body") or ""):
+        if marker in str(_comment_field(item, "body") or ""):
             return True
     return False
+
+
+def _post_spec_change_reject_prompt(ctx: Any, entity: Any) -> None:
+    """Tell a human who rejected a plan how to continue. Deterministic, no agent.
+
+    A rejected REQUEST is not dead: it stays open, parked, and the next comment
+    re-runs the spec-change worker with that comment as the guidance. Say so in
+    fixed words, so the human is never left guessing whether anything is listening
+    (before this, reject closed the request and every later comment was ignored).
+    """
+    _comment(
+        ctx, entity.post_id,
+        "**You rejected this plan.** Nothing was created and the spec was not "
+        "touched.\n\n"
+        "The request is still open and waiting on you:\n"
+        "- **reply** with what to change - the plan is redrafted from your comment.\n"
+        "- comment **`retry`** - the plan is redrafted with no new feedback.\n"
+        "- **close this post** - the request is dropped for good.\n\n"
+        "Nothing runs until you comment.\n\n" + SPEC_CHANGE_REJECT_MARKER,
+    )
 
 
 def _post_reject_options(ctx: Any, entity: Any) -> None:
@@ -1269,17 +1293,37 @@ def _settle_docs_for_request(ctx: Any, request_id: Any) -> list[str]:
     return done
 
 
-def resolve_spec_change_request(ctx: Any, entity: Any, state_result: Any) -> Optional[str]:
+def resolve_spec_change_request(
+    ctx: Any, entity: Any, state_result: Any,
+    conversation: Any = None, action: Any = None,
+) -> Optional[str]:
     """Finalize an ``awaiting_approval`` spec-change REQUEST once an approver acts.
 
     Deterministic, no agent: an approval settles the spec docs the worker listed in
-    ``plan.json.settle_docs`` and moves the request to ``done``; a rejection moves it to
-    ``rejected``. Returns a detail string if a transition was applied, else None (still
-    waiting - the caller then lets a wake comment re-run the worker, e.g. a clarification
-    answer that is not an approval).
+    ``plan.json.settle_docs`` and moves the request to ``done``. Returns a detail string
+    if a transition was applied, else None (still waiting - the caller then lets a wake
+    comment re-run the worker, e.g. a clarification answer that is not an approval).
+
+    A REJECTION means "redraft this plan", not "abandon the request": the request moves
+    to ``rejected`` but stays OPEN and parked, so the next human comment wakes the worker
+    again. When the rejection itself arrived as a comment carrying guidance (``reject
+    APR-0001 use java instead``, or plain prose), we return None so the caller falls
+    through to ``decide_intent`` and the worker re-runs off that same comment straight
+    away. A bare reject (a 👎 reaction, or ``reject APR-0001`` with nothing after the id)
+    gets the deterministic prompt instead and waits.
     """
     approved = getattr(state_result, "approved_by", None)
     rejected = getattr(state_result, "rejected_by", None)
+    # Scope the verdict to the LIVE approval request when we can see the thread. A
+    # rejected request is redrafted under a NEW APR now, so the old `reject APR-0001`
+    # comment stays in the conversation forever - and `state_result` reads commands
+    # against the union of every APR ever armed on the post, which would re-reject
+    # (or re-approve) each later gate on sight. `_gate_signals` reads only the latest
+    # approval-request comment and the ids IT names. No marker comment (a freehand
+    # request) -> fall back to the unscoped read.
+    signals = _gate_signals(ctx, entity, conversation, APPROVAL_REQUEST_MARKER) if conversation else None
+    if signals is not None:
+        approved, rejected = signals.approve, signals.reject
     if not approved and not rejected:
         return None
     if not _can_write(ctx):
@@ -1323,11 +1367,28 @@ def resolve_spec_change_request(ctx: Any, entity: Any, state_result: Any) -> Opt
             len(promoted), len(settled), "apply enqueued" if apply_enqueued else "done (closed)"
         )
     rejecter = rejected[0]
-    # Rejected before any work exists (plan-first): nothing to tear down, just close.
+    # Rejected before any work exists (plan-first): nothing to tear down. Park the
+    # request rather than closing it - the human still owns whether this dies or gets
+    # redrafted, and closing it stranded every follow-up comment they wrote.
     _set_spec_change_status(ctx, entity, "rejected")
-    _comment(ctx, entity.post_id, "Rejected by {0}; request rejected. No work was created.".format(rejecter))
-    _close(ctx, entity.post_id)
-    return "spec-change rejected (closed)"
+    _comment(ctx, entity.post_id, "Rejected by {0}. No work was created.".format(rejecter))
+    kind, _text = (None, None)
+    if action in _COMMENT_ACTIONS:
+        kind, _text = _human_directive(conversation, getattr(ctx, "config", {}))
+    if kind in ("guidance", "retry"):
+        # The rejecting comment carries its own instructions; hand it straight back to
+        # the worker (the caller falls through to decide_intent, which sees a parked
+        # request woken by a comment) instead of asking for a comment we already have.
+        platform_log.log_event(
+            "spec_change_rejected", post_id=entity.post_id, rejecter=rejecter, directive=kind,
+        )
+        return None
+    if not _options_already_posted(ctx, entity.post_id, SPEC_CHANGE_REJECT_MARKER):
+        _post_spec_change_reject_prompt(ctx, entity)
+    platform_log.log_event(
+        "spec_change_rejected", post_id=entity.post_id, rejecter=rejecter, directive=None,
+    )
+    return "spec-change rejected; request left open, awaiting your comment"
 
 
 def _review_summary(stdout: str, limit: int = 1500) -> str:
