@@ -95,8 +95,8 @@ def approval_request_comment(apr_id: str, summary: str, config: dict[str, Any] |
         f"{summary.strip()}\n\n"
         f"This work is **not started** until a human approves. To approve, either:\n"
         f"- comment `approve {apr_id}` on this post, or\n"
-        f"- react 👍 (thumbs up) to this post.\n\n"
-        f"To reject, comment `reject {apr_id}` or react 👎. Until then this request "
+        f"- react 👍 (thumbs up) on this comment.\n\n"
+        f"To reject, comment `reject {apr_id}` or react 👎 on this comment. Until then this request "
         f"stays `spec-change:status:awaiting_approval`.\n\n"
         f"<!-- {APPROVAL_REQUEST_MARKER} {apr_id} -->",
         config,

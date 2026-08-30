@@ -68,6 +68,19 @@ class TokenVocabularyTest(unittest.TestCase):
         self.assertIn("Approval required: `APR-0005`", body)
         self.assertNotIn("—", body)
 
+    def test_request_comment_points_reactions_at_the_comment(self) -> None:
+        """The 👍/👎 instructions must name the COMMENT, not the post.
+
+        `base._gate_reaction_users` reads reactions on the approval-request comment
+        whenever one exists (deliberately: a new gate is a new comment, so a standing
+        post reaction never bleeds into the next gate). Telling the human to react on
+        the post therefore sends them to a signal nothing reads.
+        """
+        body = approvals.approval_request_comment("APR-0005", "Do the thing.")
+        self.assertIn("react 👍 (thumbs up) on this comment", body)
+        self.assertIn("react 👎 on this comment", body)
+        self.assertNotIn("to this post", body)
+
 
 class AllocatorTest(unittest.TestCase):
     def test_next_apr_id_is_monotonic_and_persistent(self) -> None:
