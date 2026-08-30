@@ -92,6 +92,7 @@ LABEL_SPECS = [
             "todo": "ededed",
             "in_progress": "1d76db",
             "blocked": "b60205",
+            "needs_user_action": "e99695",
             "in_review": "fbca04",
             "awaiting_approval": "d93f0b",
             "awaiting_merge": "fef2c0",

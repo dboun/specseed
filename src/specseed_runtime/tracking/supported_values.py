@@ -58,6 +58,10 @@ WORK_STATUS_LABELS = frozenset(
             "todo",
             "in_progress",
             "blocked",
+            # Parked on a HUMAN doing something to the machine (install a toolchain,
+            # grant a directory). Distinct from `blocked`: it names an action and
+            # carries a check that clears it. See state_machines/user_action.py.
+            "needs_user_action",
             "in_review",
             "awaiting_approval",
             "awaiting_merge",

@@ -32,6 +32,7 @@ export function createTracker({ repo, ctx, sub }) {
     seenCommentIds: null, // baseline of comment ids on the open post (radar sweep on new ones)
     fb: {}, // per-feedback-comment answer drafts, keyed by comment id (survives repaints)
     popupStack: [], // stacked read-only post popups opened from #NN refs (top = last)
+    uaBusy: null, // {cid, act} of a user-action button mid-flight (its command is running)
   };
 
   async function load() {
@@ -152,7 +153,10 @@ export function createTracker({ repo, ctx, sub }) {
       .join("")}</div>`;
   }
 
-  const STATE_TABS = { open: "open", closed: "closed", all: "all", need_approval: "approvals" };
+  // "need feedback" is every state where the HUMAN is the blocker: an approval gate,
+  // a merge gate, or a user-action request (install a toolchain, grant a directory).
+  // The server's needs_approval flag is that union.
+  const STATE_TABS = { open: "open", closed: "closed", all: "all", need_approval: "need feedback" };
 
   // Split available label names into the human-facing "important" set (kept in the
   // server's order) and the rest (alphabetical), so every picker leads with what a
@@ -485,6 +489,85 @@ export function createTracker({ repo, ctx, sub }) {
       <button type="button" class="btn btn-danger" data-gate-react="thumbs_down" data-gate-comment="${cid}">Reject</button>`;
   }
 
+  // -- user-action request (needs_user_action) -------------------------- #
+  // The agent could not proceed because of the MACHINE, not the code: no toolchain, no
+  // service, or a directory outside the repo it may not touch. The request comment
+  // carries a `<!-- specseed:user-action UA-NNNN {json} -->` marker (see
+  // state_machines/user_action.py); we render the payload as a card so the human gets
+  // instructions plus one button instead of a paragraph of prose.
+  const UA_MARKER_RE = /<!--\s*specseed:user-action\s+(UA-\d{4,})\s+(\{[\s\S]*?\})\s*-->/i;
+
+  function userActionRequest(comment) {
+    const m = UA_MARKER_RE.exec(comment?.body || "");
+    if (!m) return null;
+    try {
+      const payload = JSON.parse(m[2]);
+      if (!payload || !payload.title || !payload.instructions) return null;
+      return { ...payload, id: m[1].toUpperCase() };
+    } catch {
+      return null;
+    }
+  }
+
+  // Cleared once the post leaves needs_user_action (the check passed, the directory was
+  // granted, or a human bypassed it) - read off the post, not off a reaction.
+  const userActionPending = (post) => !!post?.needs_user_action;
+
+  // One button per thing the human can do from here, so nothing sends them to a terminal:
+  // Run setup (when the agent supplied a setup command), Check, or Approve directory.
+  function uaButton(cid, ua, act, label, busyLabel, { primary = false, busyAct, busy } = {}) {
+    return `<button type="button" class="btn ${primary ? "btn-primary" : ""}" data-ua-act="${act}" data-ua-comment="${cid}" data-ua-id="${ua}" ${
+      busy ? "disabled" : ""
+    }>${busyAct === act ? busyLabel : label}</button>`;
+  }
+
+  function userActionBox(comment, request, post) {
+    const pending = userActionPending(post);
+    const cid = escapeHtml(String(comment.id));
+    const ua = escapeHtml(request.id);
+    const isDir = request.kind === "directory";
+    // Any in-flight command on this card disables all of its buttons; only the one that
+    // was pressed says what it is doing.
+    const busy = String(comment.id) === String(state.uaBusy?.cid);
+    const busyAct = busy ? state.uaBusy.act : null;
+    // Optional: some environment work genuinely cannot be scripted (plug in a key, buy a
+    // licence), and then the card degrades to instructions + Check.
+    const setupCmd = (!isDir && request.setup && request.setup.command) || "";
+    const setupBlock = setupCmd
+      ? `<div class="ua-target">Setup command <span class="ua-run-as">— <strong>Run setup</strong> runs exactly this, as you</span>${
+          request.setup.description ? `<div class="ua-why">${escapeHtml(request.setup.description)}</div>` : ""
+        }<pre class="ua-cmd"><code>${escapeHtml(setupCmd)}</code></pre></div>`
+      : "";
+    const detail = isDir
+      ? `<div class="ua-target">Directory requested: <code>${escapeHtml(request.path || "")}</code></div>`
+      : `${setupBlock}<div class="ua-target">Check command:<pre class="ua-cmd"><code>${escapeHtml(
+          (request.check && request.check.command) || ""
+        )}</code></pre></div>`;
+    const opts = { busy, busyAct };
+    const button = isDir
+      ? uaButton(cid, ua, "approve_directory", "Approve directory", "Approving…", { ...opts, primary: true })
+      : setupCmd
+        ? uaButton(cid, ua, "run_setup", "Run setup", "Running setup…", { ...opts, primary: true }) +
+          uaButton(cid, ua, "check", "Check", "Checking…", opts)
+        : uaButton(cid, ua, "check", "Check", "Checking…", { ...opts, primary: true });
+    const note = setupCmd
+      ? "or run it yourself and press Check — comment below if anything here is unclear"
+      : "or comment below if anything here is unclear";
+    return `
+      <article class="approval-box user-action ${pending ? "" : "resolved"}" data-comment-id="${cid}">
+        <div class="approval-body">
+          <div class="ua-title">Needs you · ${ua}: ${escapeHtml(request.title)}</div>
+          ${renderMarkdown(request.instructions || "", { postRefs: true })}
+          ${request.reason ? `<div class="ua-why">Why: ${escapeHtml(request.reason)}</div>` : ""}
+          ${detail}
+          ${request.hint ? `<div class="ua-hint">If it fails: ${escapeHtml(request.hint)}</div>` : ""}
+        </div>
+        ${pending
+          ? `<div class="button-row">${button}<span class="ua-note">${note}</span></div>`
+          : `<div class="approval-status">✅ Done</div>`}
+      </article>`;
+  }
+
   function approvalBox(comment, post) {
     const resolved = approvalResolution(post, comment);
     const body = (comment.body || "")
@@ -508,6 +591,8 @@ export function createTracker({ repo, ctx, sub }) {
   }
 
   function commentHtml(comment, post, activeFb) {
+    const ua = userActionRequest(comment);
+    if (ua) return userActionBox(comment, ua, post);
     if (isApprovalComment(comment)) return approvalBox(comment, post);
     const entry = feedbackEntry(comment);
     if (entry) {
@@ -764,6 +849,57 @@ export function createTracker({ repo, ctx, sub }) {
     }
   }
 
+  // The outcome toast for each button. A failing check (or setup) is a NORMAL result,
+  // not an error - the comment the server posted explains how to proceed - so it is a
+  // warning, and the human is pointed at the comment rather than at a red cross.
+  const UA_TOAST = {
+    check: { ok: "check passed", no: "check failed - see the comment" },
+    run_setup: { ok: "setup ran, check passed", no: "setup did not clear it - see the comment" },
+    approve_directory: { ok: "directory approved", no: "not approved - see the comment" },
+  };
+
+  // A press runs a real command on the server, which can take seconds (a check) or
+  // minutes (an install) - hold the card's buttons disabled meanwhile, then repaint from
+  // the outcome comment the server posted.
+  //
+  // Run setup confirms first. It is the one button here that CHANGES the machine, so the
+  // human should see the command they are about to run once more before it happens; the
+  // press is the whole gate on an agent-written command.
+  async function handleUserAction(el) {
+    const commentId = el.dataset.uaComment;
+    const act = el.dataset.uaAct;
+    if (act === "run_setup") {
+      const cmd = userActionRequest(
+        (state.selected?.comments || []).find((c) => String(c.id) === String(commentId))
+      )?.setup?.command;
+      const ok = await confirmDialog(
+        `Run this on your machine, as you?\n\n${cmd || ""}`,
+        { confirmLabel: "Run setup", cancelLabel: "Cancel" }
+      );
+      if (!ok) return;
+    }
+    state.uaBusy = { cid: commentId, act };
+    repaintDrawer();
+    try {
+      const data = await api.userAction(repo.id, state.selectedId, {
+        ua: el.dataset.uaId,
+        action: act,
+      });
+      state.uaBusy = null;
+      await reloadPosts();
+      if (state.selectedId) state.selected = await api.getPost(repo.id, state.selectedId);
+      repaintList();
+      repaintDrawer();
+      const t = UA_TOAST[act] || UA_TOAST.check;
+      if (data.cleared) toast(t.ok, "ok");
+      else toast(t.no, "warn");
+    } catch (err) {
+      state.uaBusy = null;
+      repaintDrawer();
+      ctx.onError(err);
+    }
+  }
+
   // -- feedback (interactive reply-protocol card) ----------------------- #
   // Look up the live envelope for an active feedback comment by id.
   function feedbackEntryById(cid) {
@@ -892,6 +1028,8 @@ export function createTracker({ repo, ctx, sub }) {
     if (fb) return handleFeedbackClick(fb);
     const gr = t.closest("[data-gate-react]");
     if (gr) return mutate(() => api.reactComment(repo.id, state.selectedId, gr.dataset.gateComment, gr.dataset.gateReact));
+    const ua = t.closest("[data-ua-act]");
+    if (ua) return handleUserAction(ua);
     const stateSeg = t.closest("[data-state]");
     if (stateSeg) {
       state.stateFilter = stateSeg.dataset.state;

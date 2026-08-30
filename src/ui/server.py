@@ -46,6 +46,9 @@ from specseed_runtime import storage_paths
 from specseed_runtime.configuring import configure
 from specseed_runtime.executing import agent_runner
 from specseed_runtime.executing import runner_control
+from specseed_runtime.executing import user_action
+from specseed_runtime.platform_identity import is_platform_comment, platform_comment
+from specseed_runtime.state_machines.user_action import NEEDS_USER_ACTION
 from specseed_runtime.db.database import DEFAULT_PRIORITY, LANE_CONTROL, LANE_WORK, LANES
 from specseed_runtime.tracking import populate_defaults
 from specseed_runtime.tracking.tracking_remote_local import TrackingRemoteLocal
@@ -506,14 +509,38 @@ def _touch_entry(db: Path, entry_id) -> None:
         conn.execute("UPDATE entries SET updated_at = ? WHERE id = ?", (_now(), entry_id))
 
 
+def _label_names(post: dict) -> list[str]:
+    names = []
+    for label in post.get("labels") or []:
+        name = label.get("name") if isinstance(label, dict) else label
+        if name:
+            names.append(str(name))
+    return names
+
+
+def _needs_user_action(post: dict) -> bool:
+    """A post parked on a HUMAN changing the machine (``<tier>:status:needs_user_action``).
+
+    Not an approval - nobody is signing anything off - but it belongs in the same tab:
+    both are "this stops until you do something". See state_machines/user_action.py."""
+    return any(name.endswith(":status:" + NEEDS_USER_ACTION) for name in _label_names(post))
+
+
 def _needs_approval(post: dict) -> bool:
     """A post awaits a human gate when any of its labels end ``:status:awaiting_approval``
     (the request post's ``spec-change:status:awaiting_approval`` or a work post's
     ``<tier>:status:awaiting_approval``), or ``:status:awaiting_merge`` (work accepted but
-    not yet on primary - the human merges it or approves the merge)."""
-    for label in post.get("labels") or []:
-        name = label.get("name") if isinstance(label, dict) else None
-        if name and (name.endswith(":status:awaiting_approval") or name.endswith(":status:awaiting_merge")):
+    not yet on primary - the human merges it or approves the merge), or
+    ``:status:needs_user_action`` (parked on the human doing something to the machine).
+
+    Drives the Need feedback tab, so it is the union of every "you are the blocker" state.
+    """
+    for name in _label_names(post):
+        if (
+            name.endswith(":status:awaiting_approval")
+            or name.endswith(":status:awaiting_merge")
+            or name.endswith(":status:" + NEEDS_USER_ACTION)
+        ):
             return True
     return False
 
@@ -581,6 +608,7 @@ def _enrich_list(record: dict, posts: object) -> object:
         post["comment_count"] = count
         post["comments_text"] = bodies
         post["needs_approval"] = _needs_approval(post)
+        post["needs_user_action"] = _needs_user_action(post)
         _agent_running_fields(post, running)
         stamps = [s for s in (post.get("updated_at"), last_comment_at) if s]
         post["last_activity_at"] = max(stamps) if stamps else post.get("updated_at")
@@ -588,10 +616,144 @@ def _enrich_list(record: dict, posts: object) -> object:
 
 
 def _enrich_one(record: dict, post: object) -> object:
-    """Stamp agent_running + agent_task_id on a single post detail (drawer view)."""
+    """Stamp agent_running + agent_task_id + the gate flags on a single post detail."""
     if isinstance(post, dict):
         _agent_running_fields(post, _in_progress_post_tasks(record["storage"]))
+        post["needs_approval"] = _needs_approval(post)
+        post["needs_user_action"] = _needs_user_action(post)
     return post
+
+
+# -- user actions ----------------------------------------------------------- #
+def _post_tier(post: dict) -> str:
+    """The work tier of a post, for rebuilding its status label. Defaults to issue -
+    only work posts ever park ``needs_user_action``."""
+    for name in _label_names(post):
+        marker = ":status:"
+        idx = name.find(marker)
+        if idx != -1 and name[:idx] in ("epic", "ticket", "issue"):
+            return name[:idx]
+        if name in ("epic", "ticket", "issue"):
+            return name
+    return "issue"
+
+
+def _live_user_action(record: dict, post: dict, ua_id: object) -> dict:
+    """The user-action request on ``post``, or raise.
+
+    Only a request stamped by the PLATFORM user counts: the payload carries a shell
+    command the Check button runs, so a human (or anything else able to comment) must
+    not be able to introduce one.
+    """
+    username = _platform_user(record["storage"])
+    candidates = []
+    for comment in post.get("comments") or []:
+        if not isinstance(comment, dict):
+            continue
+        if not is_platform_comment(
+            author=comment.get("author"), body=comment.get("body"), username=username
+        ):
+            continue
+        request = user_action.parse_request(comment.get("body"))
+        if request:
+            candidates.append(request)
+    if not candidates:
+        raise RuntimeError("no user-action request on this post")
+    wanted = str(ua_id or "").strip().upper()
+    if wanted:
+        for request in candidates:
+            if request.get("id") == wanted:
+                return request
+        raise RuntimeError(f"no user-action request {wanted} on this post")
+    return candidates[-1]
+
+
+def _clear_user_action(tracker, post: dict, post_id: str) -> None:
+    """Un-park the post: drop the needs_user_action label, put it back to ``todo`` so the
+    scheduler claims it on the next poll."""
+    tier = _post_tier(post)
+    for name in _label_names(post):
+        if name.endswith(":status:" + NEEDS_USER_ACTION) or name == "status:" + NEEDS_USER_ACTION:
+            tracker.remove_entry_label(post_id, name)
+    tracker.add_entry_label(post_id, f"{tier}:status:todo")
+
+
+def _user_action(record: dict, tracker, post_id: str, body: dict) -> dict:
+    """Run a Check or Run-setup press (or grant a directory) for a parked post.
+
+    Every path posts its outcome as a comment on the post, so the decision is on the
+    record next to the request rather than living only in a toast the human clicks away.
+
+    ``run_setup`` is the privileged one: it executes the agent's setup command, which
+    mutates the machine. The gate is the same as Check's - the command is rendered
+    verbatim next to the button, only a PLATFORM-authored request is honoured, and a
+    human has to press (the UI confirms first). What it does NOT get is authority over
+    the issue: the check still decides, so a setup that "succeeds" without actually
+    making the toolchain present leaves the issue parked.
+    """
+    post = _ok(tracker.get_entry(post_id))
+    if not isinstance(post, dict):
+        raise RuntimeError("post not found")
+    request = _live_user_action(record, post, body.get("ua"))
+    action = str(body.get("action") or "check").strip().lower()
+    ua_id = request.get("id") or ""
+
+    if action == "approve_directory":
+        if request.get("kind") != user_action.KIND_DIRECTORY:
+            raise RuntimeError("this request is not a directory request")
+        granted = user_action.grant_directory(record["storage"], request.get("path") or "")
+        tracker.add_entry_comment(
+            post_id,
+            platform_comment(
+                "**Directory approved** ({0}). `{1}` is now in "
+                "`permissions.agents.allowed_directories`; the issue is back to `todo`.".format(
+                    ua_id, granted["granted"]
+                ),
+                configure.load_config(record["storage"]),
+            ),
+        )
+        _clear_user_action(tracker, post, post_id)
+        return {"cleared": True, "request": request, **granted}
+
+    if request.get("kind") != user_action.KIND_ENVIRONMENT:
+        raise RuntimeError(
+            "this request runs no commands; approve the directory instead"
+            if action == "run_setup"
+            else "this request has no check to run; approve the directory instead"
+        )
+
+    if action == "run_setup":
+        if not user_action.has_setup(request):
+            raise RuntimeError("this request carries no setup command; run it yourself and press Check")
+        target = _git_target(record)
+        setup = user_action.run_setup(request, target)
+        # Verify automatically: pressing one button should answer "am I unblocked?", not
+        # hand the human a transcript and a second button. A failed setup skips the
+        # check - there is nothing to verify yet, and its output is the useful answer.
+        result = user_action.run_check(request, target) if setup["ok"] else None
+        tracker.add_entry_comment(
+            post_id,
+            platform_comment(
+                user_action.setup_result_comment(ua_id, request, setup, result),
+                configure.load_config(record["storage"]),
+            ),
+        )
+        cleared = bool(result and result["ok"])
+        if cleared:
+            _clear_user_action(tracker, post, post_id)
+        return {"cleared": cleared, "request": request, "setup": setup, "result": result}
+
+    result = user_action.run_check(request, _git_target(record))
+    tracker.add_entry_comment(
+        post_id,
+        platform_comment(
+            user_action.check_result_comment(ua_id, request, result),
+            configure.load_config(record["storage"]),
+        ),
+    )
+    if result["ok"]:
+        _clear_user_action(tracker, post, post_id)
+    return {"cleared": bool(result["ok"]), "request": request, "result": result}
 
 
 def _read_agent_output(storage: str | Path, task_id: object, tail_bytes: int = 256 * 1024) -> str:
@@ -1483,6 +1645,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": True, "data": _toggle_entry_reaction(record, post_id, reaction)})
                 return
             self._json({"ok": True, "data": _ok(tracker.add_entry_reaction(post_id, reaction))}, status=201)
+            return
+        if sub == ["user-action"] and self.command == "POST":
+            self._json({"ok": True, "data": _user_action(record, tracker, post_id, self._body())})
             return
         if len(sub) == 3 and sub[0] == "comments" and sub[2] == "reactions" and self.command == "POST":
             body = self._body()

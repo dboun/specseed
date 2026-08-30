@@ -37,6 +37,17 @@ build/test commands; the skill's spec scripts do not apply.
 - **Honor the action-class gates** the runtime renders into your prompt (container,
   heavy_compute, network, deps, data_destructive, external_publish, outside_repo,
   secrets). When an action hits a gate, park; do not force it.
+- **Parking is not the end of it.** When what stops you is the MACHINE — a toolchain
+  that is not installed, a service that is not running, one specific directory outside
+  the repo you need — report `status: "needs_user_action"` with a `user_action` object
+  (the RESULT FILE schema in your prompt has the shape). Give instructions a human can
+  follow, a cheap read-only `check` command that proves it is done, and — whenever one
+  command would do it — the `setup` command itself, so the human clicks **Run setup**
+  instead of opening a terminal. Omit `setup` only when nothing could be scripted (plug
+  in a device, obtain a licence). A `directory` request names the ONE path you want and a
+  human grants exactly that. The human gets a card with buttons in the Need feedback tab,
+  and your branch resumes the moment the check passes. Prose explaining what you are not permitted to do is the wrong answer:
+  nothing can clear it, and every issue depending on yours waits behind it.
 - Never review your own work. A `type:spike` issue captures a spike report before it can
   be done.
 - **Gated/destructive work is NOT impl.** Dependency changes, data mutation, system

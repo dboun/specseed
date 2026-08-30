@@ -40,3 +40,14 @@ approval ask. **Work that needs an approval ask (dependency changes, data mutati
 install, environment/playground setup, running an experiment) is not impl work — it is an
 `operate` work item** (see `references/work-breakdown.md`). So this route has no
 `approval` section.
+
+## Needing the human is a REPORT, not a comment
+
+There is one more way to stop: the machine is missing something only a human can supply
+(a toolchain, a running service, a directory outside the repo). That is not a question
+and not an approval ask, so it does not go in a `questions` round — it goes in your
+result file as `status: "needs_user_action"` with a `user_action` object — including the
+`setup` command when one exists, so the human can fix it with a button instead of a
+terminal. The runtime posts the card, parks the issue, and un-parks it when the human's
+Check passes. Keep the `summary` short: the instructions live in the request, not in a
+comment.

@@ -230,7 +230,9 @@ def _load_json_object(path, label):
 # defaults — everything that can act is OFF until the human turns it on
 # --------------------------------------------------------------------------- #
 def default_agent_gates():
-    return dict(DEFAULT_AGENT_GATES)
+    # Plus the carve-out list `outside_repo` is refined by: specific directories outside
+    # the repo a human approved, one at a time (see executing/permissions.py).
+    return dict(DEFAULT_AGENT_GATES, allowed_directories=[])
 
 
 def default_config():
@@ -754,6 +756,13 @@ def section_agents(cfg):
             AGENT_LEVELS,
             gates.get(category) or DEFAULT_AGENT_GATES.get(category, "block"),
         )
+    # Not asked here: approved directories are granted one at a time from the UI's
+    # Need feedback tab, in response to the agent naming the one it needs.
+    approved = gates.setdefault("allowed_directories", [])
+    if not isinstance(approved, list):
+        approved = gates["allowed_directories"] = []
+    if approved:
+        print("  approved directories outside the repo: " + ", ".join(str(d) for d in approved))
 
 
 def section_approvals(cfg):

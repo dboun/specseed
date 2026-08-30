@@ -120,9 +120,26 @@ def render_action_gates(ctx: Any) -> str:
         lines.append(
             "- {0} ({1}) -> {2} [{3}]".format(category, desc, _GATE_RULE.get(level, level), level)
         )
+    approved = perms.agent_allowed_directories()
+    if approved:
+        lines.append(
+            "Approved directories outside the repo (a human granted each one; you may read "
+            "and write there despite the `outside_repo` gate): " + ", ".join(approved)
+        )
     lines.append(
         "When unsure which class an action falls in, treat it as the stricter case. These "
         "gates fire mid-work regardless of which issue is active."
+    )
+    lines.append(
+        "Hitting a gate is NOT a dead end. When the obstacle is the MACHINE rather than the "
+        "code - a toolchain that is not installed, a service that is not running, or one "
+        "specific directory outside the repo you need - do not write a paragraph about what "
+        "you are not permitted to do. Finish and commit whatever work does not depend on it, "
+        "then report `status: \"needs_user_action\"` with a `user_action` object (see the "
+        "RESULT FILE schema). Name the setup command in it whenever one exists: the human "
+        "gets a Run setup button that runs it as them, plus a Check button, and the issue "
+        "resumes from your branch the moment the check passes. A request that could have "
+        "carried a command and instead only described one is a worse request."
     )
     return "\n".join(lines)
 

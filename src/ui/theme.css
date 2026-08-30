@@ -458,6 +458,19 @@ button.chip { cursor: pointer; }
 .approval-box .approval-body { margin-bottom: 8px; }
 .approval-status { font-weight: 700; color: var(--muted); }
 
+/* A user-action request is an approval box with a different job: the human DOES
+   something (installs a toolchain, grants a directory) and then presses one button.
+   Blue identity so it never reads as "sign this off" - nothing is being approved. */
+.approval-box.user-action { border-color: var(--accent-2); background: rgba(91,157,255,0.06); }
+.approval-box.user-action.resolved { border-color: var(--line-2); background: transparent; }
+.ua-title { font-weight: 700; margin-bottom: 6px; }
+.ua-target { margin-top: 8px; }
+.ua-cmd { margin: 6px 0 0; padding: 8px 10px; border-radius: 8px; background: var(--bg-2); overflow-x: auto; }
+.ua-why, .ua-hint { margin-top: 8px; color: var(--muted); font-size: 13px; }
+.ua-note { color: var(--muted); font-size: 12px; align-self: center; }
+/* Run setup sits next to Check, so the card says which command each button owns. */
+.ua-run-as { color: var(--muted); font-weight: 400; font-size: 12px; }
+
 /* ---------- structured feedback (reply-protocol) ----------
    The agent's question round rendered as an interactive card. Teal identity = the
    agent speaking (amber stays reserved for approval gates, so the two never blur).
@@ -949,6 +962,9 @@ textarea { resize: vertical; min-height: 70px; }
 .modal-backdrop { position: fixed; inset: 0; z-index: 100; background: rgba(4,6,10,0.7); backdrop-filter: blur(4px); display: grid; place-items: center; padding: 20px; }
 .modal-card { background: var(--panel); border: 1px solid var(--line-2); border-radius: 16px; padding: 24px; width: 100%; max-width: 440px; max-height: 90vh; overflow: auto; box-shadow: 0 40px 100px -30px #000; }
 .modal-card.wide { max-width: 560px; }
+/* A confirm can quote what it is about to run (the Run setup command), so its own
+   line breaks have to survive - it is escaped text, not markdown. */
+[data-submodal] .modal-card p { white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* Inline #NN post ref -> opens a stacked read-only popup of that post. */
 .post-ref { color: var(--accent-2); cursor: pointer; font-family: var(--mono); text-decoration: none; border-bottom: 1px dotted currentColor; }
@@ -989,6 +1005,7 @@ textarea { resize: vertical; min-height: 70px; }
 }
 .toast-error { border-color: var(--bad); color: #ffb3bf; }
 .toast-ok { border-color: var(--ok); color: var(--ok); }
+.toast-warn { border-color: var(--warn); color: var(--warn); }
 
 /* ---------- configuration: runner chains + agent gates ---------- */
 .runner-fn { border: 1px solid var(--line); border-radius: 11px; padding: 12px 14px; margin-bottom: 12px; background: var(--bg-2); }

@@ -21,6 +21,8 @@ import json
 from pathlib import Path
 from typing import Any, Optional, Tuple
 
+from specseed_runtime.state_machines.user_action import validate_request
+
 # Env var the runtime sets per run; the agent writes its JSON result here.
 RESULT_FILE_ENV = "SPECSEED_RESULT_FILE"
 
@@ -31,7 +33,7 @@ SPEC_CHANGE = "spec_change"
 ASK = "ask"
 PLATFORM_ERROR = "platform_error"
 
-IMPLEMENT_STATUSES = ("done", "blocked", "needs_input")
+IMPLEMENT_STATUSES = ("done", "blocked", "needs_input", "needs_user_action")
 REVIEW_VERDICTS = ("approve", "changes")
 ASK_STATUSES = ("answered", "needs_input")
 
@@ -104,14 +106,23 @@ def _validate(data: dict, intent: str) -> Tuple[Optional[dict], Optional[str]]:
             return None, "implement result needs status in {0}".format(IMPLEMENT_STATUSES)
         files = data.get("files_changed")
         files = [str(f) for f in files] if isinstance(files, list) else []
-        return {
+        report = {
             "status": status,
             "summary": str(data.get("summary") or "").strip(),
             "files_changed": files,
             # Implementer's up-front "I can't satisfy this; the spec is wrong" flag.
             # When set, the runtime blocks + drafts an adapt instead of reviewing.
             "recommend_spec_change": _as_bool(data.get("recommend_spec_change")),
-        }, None
+        }
+        # A needs_user_action run must say WHAT the human should do and how the runtime
+        # will know it is done. Without that it is just `blocked` with extra prose - the
+        # exact failure this status exists to replace - so the report is rejected.
+        if status == "needs_user_action":
+            request, error = validate_request(data.get("user_action"))
+            if error:
+                return None, "implement result status=needs_user_action: {0}".format(error)
+            report["user_action"] = request
+        return report, None
     if intent == ASK:
         status = str(data.get("status") or "").strip().lower()
         if status not in ASK_STATUSES:
@@ -130,15 +141,39 @@ def _validate(data: dict, intent: str) -> Tuple[Optional[dict], Optional[str]]:
 
 _SCHEMA_BLOCK = {
     IMPLEMENT: (
-        '  {"status": "done"|"blocked"|"needs_input", "summary": "<one paragraph: '
-        'what you did, or why you are blocked>", "files_changed": ["<path>", ...], '
-        '"recommend_spec_change": false}\n'
+        '  {"status": "done"|"blocked"|"needs_input"|"needs_user_action", "summary": '
+        '"<one paragraph: what you did, or why you are blocked>", "files_changed": '
+        '["<path>", ...], "recommend_spec_change": false}\n'
         "  Use status=done ONLY if you actually edited the repo to satisfy the issue and "
         "left it building/test-passing. Use status=blocked if you could not make the "
         "change (say why in summary); status=needs_input if you need a human decision. "
         "Set recommend_spec_change=true ONLY when the issue cannot be done as written "
         "because the SPEC itself is wrong/unclear (not a coding obstacle) - it blocks the "
-        "issue and opens a draft spec-adapt for a human instead of reviewing."
+        "issue and opens a draft spec-adapt for a human instead of reviewing.\n"
+        "  Use status=needs_user_action when the obstacle is the MACHINE, not the code or "
+        "the spec: a toolchain that is not installed, a service that is not running, or a "
+        "directory outside the repo you need. Do NOT write a paragraph about what you are "
+        "not allowed to do - add a `user_action` object and the human gets a card with a "
+        "button instead of prose:\n"
+        '    "user_action": {"kind": "environment", "title": "<short imperative, e.g. '
+        'Install a JDK and Maven>", "instructions": "<markdown steps the human follows>", '
+        '"setup": {"command": "<the ONE command that would do it, e.g. apt-get install -y '
+        'default-jdk maven>", "description": "<one line: what it does>"}, '
+        '"check": {"command": "<read-only shell probe that exits 0 once it is done, e.g. '
+        'which mvn && mvn -v>", "timeout_seconds": 60}, "hint": "<what to try if the check '
+        'fails>"}\n'
+        '    "user_action": {"kind": "directory", "title": "<short imperative>", '
+        '"instructions": "<why you need it / what you will write there>", "path": '
+        '"<the ONE absolute directory outside the repo you need>", "reason": "<one line>"}\n'
+        "  The check command is what un-parks the issue, so make it CHEAP and read-only "
+        "(a `which`/`--version` probe, not a full build) - a human presses a button to run "
+        "it, and it runs on their machine. ALWAYS include `setup` when the fix is a command "
+        "you could name: a Run setup button then does it for the human in one click instead "
+        "of sending them to a terminal, and the check runs straight after. It is not you "
+        "running the command - a human presses the button and it runs as them. Omit `setup` "
+        "ONLY when no single command could do it (plug in a device, obtain a licence, free "
+        "up disk). Commit whatever work you did finish first: the issue resumes from your "
+        "branch once the check passes."
     ),
     REVIEW: (
         '  {"verdict": "approve"|"changes", "confidence": <0.0-1.0>, "summary": '

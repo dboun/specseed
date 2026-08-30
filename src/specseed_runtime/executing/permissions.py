@@ -13,7 +13,8 @@ Shape of ``configuration.json`` permissions::
         "platform": {"auto_assign_agent": true,
                      "auto_implement_issue": true,
                      "auto_proceed_to_next_sprint_if_available": false},
-        "agents":   {"<action-class>": "block"|"surface"|"auto"|"require_human_approval", ...},
+        "agents":   {"<action-class>": "block"|"surface"|"auto"|"require_human_approval", ...,
+                     "allowed_directories": ["<absolute dir outside the repo a human approved>"]},
     }
 
 The local-vs-remote choice (``enabled`` + ``provider``) lives in ``remote.json``, not
@@ -150,6 +151,24 @@ class Permissions:
     def agents_policy(self) -> dict[str, str]:
         """Resolved level for every known action class (config over defaults)."""
         return {cat: self.agent_gate(cat) for cat in AGENT_CATEGORIES}
+
+    def agent_allowed_directories(self) -> list[str]:
+        """Directories outside the repo root a human has explicitly approved.
+
+        ``outside_repo`` is a blanket gate, and blanket is the wrong shape: blocking it
+        outright stops legitimate work (a tmp dir, a data dir), while opening it hands
+        the agent the whole machine. So the agent names ONE specific directory it needs
+        (a ``directory`` user-action request, see ``state_machines/user_action``) and a
+        human approves that path; the approval lands here and is durable per repo.
+
+        The gate level itself is untouched: an approved directory is a carve-out from
+        ``outside_repo``, not a reason to relax it. Dependency installs stay out - they
+        are a user action, not something the agent does (TKT-14 decision 4).
+        """
+        raw = self._agents.get("allowed_directories")
+        if not isinstance(raw, list):
+            return []
+        return [str(item).strip() for item in raw if str(item).strip()]
 
     # -- approvals / generic -------------------------------------------- #
     def approver_usernames(self) -> set[str]:

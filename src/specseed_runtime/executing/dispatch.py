@@ -35,6 +35,7 @@ from specseed_runtime.executing import inflight
 from specseed_runtime.executing import recovery
 from specseed_runtime.executing import platform_log
 from specseed_runtime.executing import priorities
+from specseed_runtime.executing import user_action
 from specseed_runtime.executing import work_lane
 from specseed_runtime.executing.context import ExecutionContext
 from specseed_runtime.executing import prompts
@@ -1123,8 +1124,13 @@ def _run_work(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
 
     # A blocked issue is not dead: a human can approve it through (force done) or
     # hand the implementer guidance to retry. Only fires when something was applied;
-    # otherwise fall through to the no-action path.
-    if _spec_change_route(entity) is None and getattr(entity, "status", None) == "blocked":
+    # otherwise fall through to the no-action path. `needs_user_action` normally clears
+    # from the Check button, but the same comment bypass applies - the human is not stuck
+    # behind a probe the agent wrote.
+    if _spec_change_route(entity) is None and getattr(entity, "status", None) in (
+        "blocked",
+        user_action.NEEDS_USER_ACTION,
+    ):
         transition = advance.resolve_blocked(ctx, entity, state_result, conversation, action)
         # nothing applied (no detail/prepare/merge) = fall through to the work path.
         if transition.detail is not None or transition.merge or transition.prepare:

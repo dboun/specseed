@@ -36,8 +36,12 @@ shipped capabilities as plain titles, with no child posts — see `spec_subroute
 ## Status labels
 
 `<tier>:status:<status>` where status is one of:
-`todo, in_progress, blocked, in_review, awaiting_approval, awaiting_merge, done, wont_do, deprecated`.
+`todo, in_progress, blocked, needs_user_action, in_review, awaiting_approval, awaiting_merge,
+done, wont_do, deprecated`.
 (`in_review` + `awaiting_merge` are meaningful for issues; epics use a coarse subset in practice.)
+`needs_user_action` is runtime-managed: an issue parks there when the agent needs a HUMAN to
+change the machine (install a toolchain, grant a directory), and it un-parks itself when the
+human's Check passes. Never plan a post into it.
 Terminal = `{done, wont_do, deprecated}`. `wont_do` = never built; `deprecated`
 = was real, now retired. `done` means MERGED to primary — an accepted-but-unmerged
 issue is `awaiting_merge` (runtime-managed), never `done`, so a dependent stays held

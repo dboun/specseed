@@ -70,6 +70,11 @@ from specseed_runtime.state_machines.base import (
 )
 from specseed_runtime.state_machines.approvals import apr_ids_in_text
 from specseed_runtime.executing.approvals import APPROVAL_REQUEST_MARKER, next_apr_id
+from specseed_runtime.executing.user_action import (
+    NEEDS_USER_ACTION,
+    next_ua_id,
+    request_comment as user_action_comment,
+)
 
 
 # Hidden marker stamped on every review comment so attempts can be counted from
@@ -539,6 +544,36 @@ def apply_ask_answer(ctx: Any, entity: Any, result: Any) -> str:
     return "ask answer posted ({0})".format(status or "answered")
 
 
+def _park_needs_user_action(ctx: Any, entity: Any, report: dict) -> WorkTransition:
+    """Park an issue on a human changing the environment, with a clearable request.
+
+    ``agent_report`` already validated the ``user_action`` object, so a report that
+    reaches here always names an action; a request that somehow lost it degrades to a
+    plain ``blocked`` rather than parking in a state nothing can clear.
+    """
+    request = report.get("user_action")
+    if not request:
+        detail = report.get("summary") or "(no detail provided)"
+        _comment(
+            ctx, entity.post_id,
+            "Implementation reported it needs a user action but did not say which one:"
+            "\n\n{0}".format(detail),
+        )
+        _set_status(ctx, entity, "blocked")
+        return WorkTransition("implement reported needs_user_action without a request -> blocked")
+    ua_id = next_ua_id(ctx.storage)
+    summary = report.get("summary") or ""
+    if summary:
+        _comment(ctx, entity.post_id, "Implementation paused:\n\n{0}".format(summary))
+    _comment(ctx, entity.post_id, user_action_comment(ua_id, request))
+    _set_status(ctx, entity, NEEDS_USER_ACTION)
+    return WorkTransition(
+        "implement needs user action -> needs_user_action ({0} {1})".format(
+            ua_id, request.get("kind")
+        )
+    )
+
+
 def _advance_after_implement(
     ctx: Any, entity: Any, state_result: Any, result: Any = None
 ) -> WorkTransition:
@@ -569,6 +604,13 @@ def _advance_after_implement(
         )
         return WorkTransition("implement recommends spec-change -> blocked + draft adapt")
     status = str(report.get("status") or "").lower()
+    # The obstacle is the MACHINE (no toolchain, no service, a directory the agent may
+    # not touch), and the agent said exactly what a human should do about it. Park on a
+    # named action with a check that clears it, not on a paragraph of prose. Dependents
+    # stay held on the dependency gate - the request itself is the visible "waiting on
+    # you" signal, so there is nothing to propagate.
+    if status == NEEDS_USER_ACTION:
+        return _park_needs_user_action(ctx, entity, report)
     if status in ("blocked", "needs_input"):
         detail = report.get("summary") or "(no detail provided)"
         word = "blocked" if status == "blocked" else "a human decision"
@@ -1014,8 +1056,12 @@ def resolve_blocked(
     block: that was the merge loop (a standing 👍 re-firing every poll). A force-approve
     routes through readiness (``prepare``), so an overridden block never lands code on
     primary without a clean merge.
+
+    ``needs_user_action`` takes the same bypass. Pressing **Check** is the normal way out,
+    but a human who did the work and disagrees with the agent's probe (or wants the issue
+    dropped) must not be stuck behind a command the agent wrote.
     """
-    if getattr(entity, "status", None) != "blocked":
+    if getattr(entity, "status", None) not in ("blocked", NEEDS_USER_ACTION):
         return WorkTransition(None)
     if action not in _COMMENT_ACTIONS:
         return WorkTransition(None)

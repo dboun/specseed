@@ -82,4 +82,8 @@ export const api = {
     post(`${base(id)}/posts/${enc(postId)}/reactions`, { reaction, toggle }),
   reactComment: (id, postId, commentId, reaction, toggle = true) =>
     post(`${base(id)}/posts/${enc(postId)}/comments/${enc(commentId)}/reactions`, { reaction, toggle }),
+  // Resolve a needs_user_action request: run the agent's check, run its setup command
+  // for the human (which then checks), or grant the one directory it asked for.
+  // body = { ua: "UA-0001", action: "check"|"run_setup"|"approve_directory" }.
+  userAction: (id, postId, body) => post(`${base(id)}/posts/${enc(postId)}/user-action`, body),
 };

@@ -136,6 +136,34 @@ existing repo whose layout is already set (adopt route). Then fold the minimal s
 manufacture a ceremonial scaffold issue. Naming is a soft convention (a clear title,
 optional `-scaffold` suffix), not enforced.
 
+### The scaffold issue owns the toolchain check
+
+The spec picks a stack; nothing checks the stack is actually installed. That gap is
+expensive because it surfaces LATE: a scaffold issue can write a perfect Maven layout
+and only then discover there is no JDK on the machine, by which time every issue that
+depends on it is already waiting.
+
+So make it the scaffold issue's FIRST step, and write it into the acceptance criteria:
+
+- **Probe before building.** List the commands the chosen stack needs to build and test
+  (`java -version`, `mvn -v`, `node -v`, `cargo --version`, …) and run them first.
+- **Missing toolchain → a user action, not a block.** Installing it is not agent work:
+  system installs are gated (`deps`, `outside_repo`) and route to **operate**, not impl.
+  Report `status: "needs_user_action"` with a `user_action` object — instructions the
+  human follows, a cheap `check` command that proves it worked, and the `setup` command
+  that would install it (`apt-get install -y default-jdk maven`). The human presses **Run
+  setup** and specseed runs it as them, then checks; without a `setup` they have to go
+  type it themselves, which is the same context switch in a nicer wrapper. Commit
+  whatever does not depend on the toolchain first; the issue resumes from your branch
+  once the check passes. Do NOT write a paragraph about what you are not allowed to install: that
+  parks the issue in prose nothing can clear, and starves everything that depends on it.
+- **Then build.** Layout, build/test config, manifest, `.gitignore` — as above — and
+  verify it with the real build/test command, which now exists.
+
+This does NOT belong in spec-change. A spec-change run is about the SPEC; making it
+probe the machine would couple the two for no gain, and the answer would go stale
+between planning and execution anyway.
+
 ## Issue dependencies (declare them — the runtime only enforces what you write)
 
 Every issue branch is cut fresh from primary, so an issue can only see code that has

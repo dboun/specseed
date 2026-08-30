@@ -16,6 +16,7 @@ Only Python stdlib is used.
 from __future__ import annotations
 
 import fcntl
+import os
 from pathlib import Path
 
 from specseed_runtime.storage_paths import spec_change_root
@@ -59,10 +60,11 @@ def next_apr_id(storage: str | Path) -> str:
     """
     path = counter_path(storage)
     path.parent.mkdir(parents=True, exist_ok=True)
-    # r+ needs the file to exist; create it empty first if missing.
-    if not path.exists():
-        path.write_text("0", encoding="utf-8")
-    with open(path, "r+", encoding="utf-8") as handle:
+    # O_CREAT without O_TRUNC: the file is created only if missing and NEVER clobbered.
+    # A separate exists()-then-write_text("0") loses the race - two allocators can both
+    # see it missing, and the loser's write resets the counter after the winner bumped it.
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+    with os.fdopen(fd, "r+", encoding="utf-8") as handle:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         try:
             raw = handle.read().strip()
