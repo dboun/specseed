@@ -325,11 +325,14 @@ def process_work_result(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
         try:
             detail = dispatch._enqueue_spec_change_followup(ctx, entity, post_id)
         except Exception as exc:
+            # A rejected plan is a defect in what the agent wrote; re-reading the same
+            # plan.json cannot change the verdict, so route it to recovery now instead
+            # of spending the retry budget first.
             return HandlerOutcome(
                 success=False,
                 error="spec-change follow-up failed: {0!r}".format(exc),
                 detail="spec-change follow-up failed",
-                retryable=True,
+                retryable=not isinstance(exc, dispatch.PlanRejected),
             )
         platform_log.log_event(
             "work_result_processed", task_id=task.get("task_id"), post_id=post_id, intent=intent, detail=detail

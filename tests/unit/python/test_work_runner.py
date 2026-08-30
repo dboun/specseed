@@ -220,6 +220,50 @@ class ProcessWorkResultTest(WorkRunnerBase):
         # the outcome file is consumed exactly once.
         self.assertIsNone(work_runner.read_work_outcome(ctx, 50))
 
+    def test_rejected_spec_change_plan_is_not_retryable(self) -> None:
+        """A plan defect reads back the same on every retry: route it to recovery now
+        rather than spending the retry budget re-reading the same plan.json."""
+        from specseed_runtime.executing import dispatch as dispatch_mod
+
+        eid = self._seed_both("Adapt", ["spec-change:adapt"])
+        ctx = self._ctx(FakeAgentRunner())
+        work_runner.write_work_outcome(
+            ctx, 51, "spec_change", eid, AgentResult(ok=True, report={"status": "done"})
+        )
+        original = dispatch_mod._enqueue_spec_change_followup
+        dispatch_mod._enqueue_spec_change_followup = lambda *a, **k: (_ for _ in ()).throw(
+            dispatch_mod.PlanRejected("bad plan")
+        )
+        try:
+            out = work_runner.process_work_result(
+                ctx, {"task_id": 3, "payload": {"work_task_id": 51, "intent": "spec_change", "post_id": str(eid)}}
+            )
+        finally:
+            dispatch_mod._enqueue_spec_change_followup = original
+        self.assertFalse(out.success)
+        self.assertFalse(out.retryable)
+
+    def test_transient_spec_change_followup_failure_stays_retryable(self) -> None:
+        from specseed_runtime.executing import dispatch as dispatch_mod
+
+        eid = self._seed_both("Adapt", ["spec-change:adapt"])
+        ctx = self._ctx(FakeAgentRunner())
+        work_runner.write_work_outcome(
+            ctx, 52, "spec_change", eid, AgentResult(ok=True, report={"status": "done"})
+        )
+        original = dispatch_mod._enqueue_spec_change_followup
+        dispatch_mod._enqueue_spec_change_followup = lambda *a, **k: (_ for _ in ()).throw(
+            OSError("db locked")
+        )
+        try:
+            out = work_runner.process_work_result(
+                ctx, {"task_id": 4, "payload": {"work_task_id": 52, "intent": "spec_change", "post_id": str(eid)}}
+            )
+        finally:
+            dispatch_mod._enqueue_spec_change_followup = original
+        self.assertFalse(out.success)
+        self.assertTrue(out.retryable)
+
 
 class OutcomeRoundTripTest(WorkRunnerBase):
     def test_round_trip(self) -> None:

@@ -581,6 +581,12 @@ class SpecChangeGateDecisionTest(DispatchTestBase):
         self._write_plan(rid, {"creates": ["make a feature"]})
         self.assertEqual(dispatch_mod._classify_spec_change(self.ctx, str(rid)), "propose")
 
+    def test_classify_non_list_section_gates_as_propose(self) -> None:
+        """A section that is not even a list cannot be proven request-scoped."""
+        rid = self._seed_local_entry("Adapt", ["spec-change:adapt"])
+        self._write_plan(rid, {"comments": "oops"})
+        self.assertEqual(dispatch_mod._classify_spec_change(self.ctx, str(rid)), "propose")
+
     def test_classify_string_comment_gates_as_propose(self) -> None:
         # A non-object comment can't be proven to target the request -> gate it.
         rid = self._seed_local_entry("Adapt", ["spec-change:adapt"])
@@ -595,6 +601,48 @@ class SpecChangeGateDecisionTest(DispatchTestBase):
         self.assertIn("proposal enqueued", out.detail)
         actions = self._actions(rid)
         self.assertIn("propose_spec_change", actions)
+
+    def test_pre_approval_bar_no_work_posts_no_live_spec_write(self) -> None:
+        """The whole point of TKT-1, driven end to end: a spec-change run that plans
+        real work must reach the human having created NOTHING.
+
+        Runs the scheduler path AND the proposal task it enqueues, then asserts the
+        three things approval is supposed to be the only gate for: live ``spec/`` is
+        untouched, no work post exists, and the request is parked awaiting_approval.
+        """
+        from specseed_runtime import storage_paths
+        from specseed_runtime.db.database import LANE_CONTROL
+
+        live_spec = storage_paths.spec_dir(self.ctx.storage)
+        live_spec.mkdir(parents=True, exist_ok=True)
+        (live_spec / "sad.md").write_text("# live, untouched\n", encoding="utf-8")
+
+        # propose reads the REMOTE post; _run's load_entity reads the local mirror.
+        # Seed both so the request exists on either side under one id.
+        rid = self._seed_local_entry("Adapt", ["spec-change:adapt"])
+        self.remote.create_label("spec-change:adapt")
+        self.assertEqual(
+            self.remote.add_entry("Adapt", labels=["spec-change:adapt"]).data.id, rid
+        )
+        self._write_plan(rid, {
+            "creates": [{"title": "FEAT-0001", "body": "new work"}],
+            "plan_summary": "adds one feature",
+            "apr": {"id": "APR-0001", "summary": "approve to create FEAT-0001"},
+        })
+        self._stage_spec(rid)
+        before = {e.title for e in self.remote.list_entries().data}
+
+        self.assertIn("proposal enqueued", self._run(rid).detail)
+        propose = self.db.claim_next(LANE_CONTROL)
+        self.assertIsNotNone(propose, "the gate should enqueue propose_spec_change")
+        self.assertEqual(propose["action"], "propose_spec_change")
+        _o = dispatch(self.ctx, propose)
+        self.assertTrue(_o.success, _o.error)
+
+        self.assertEqual((live_spec / "sad.md").read_text(encoding="utf-8"), "# live, untouched\n")
+        self.assertEqual({e.title for e in self.remote.list_entries().data}, before)
+        labels = [str(getattr(l, "name", l)) for l in self.remote.get_entry(rid).data.labels]
+        self.assertIn("spec-change:status:awaiting_approval", labels)
 
     def test_clarification_run_enqueues_direct_apply(self) -> None:
         rid = self._seed_local_entry("Adapt", ["spec-change:adapt"])
@@ -932,6 +980,88 @@ class ApplySpecChangePlanTest(DispatchTestBase):
         out = dispatch_mod.apply_spec_change_plan(self.ctx, self._task(rid, False))
         self.assertFalse(out.success)
         self.assertIn("only touch the request", out.error)
+
+    def test_direct_plan_rejects_id_map_redirect(self) -> None:
+        """The scope bar is the id the remote is CALLED with, not the id in the plan.
+
+        A plan may name the request post and then map it elsewhere through
+        ``id_map``; comparing only the written id would call that request-scoped and
+        let an unapproved run comment on someone else's post.
+        """
+        rid = self.remote.add_entry("adapt request", labels=[]).data.id
+        other = self.remote.add_entry("other", labels=[]).data.id
+        self._plan_dir(rid, {
+            "id_map": {str(rid): str(other)},
+            "comments": [{"post": str(rid), "body": "redirected"}],
+        })
+        self.assertEqual(dispatch_mod._classify_spec_change(self.ctx, str(rid)), "propose")
+        out = dispatch_mod.apply_spec_change_plan(self.ctx, self._task(rid, False))
+        self.assertFalse(out.success)
+        self.assertIn("only touch the request", out.error)
+        self.assertEqual(self.remote.get_entry(other).data.comments, [])
+
+    def test_direct_plan_rejects_id_map_redirect_on_labels(self) -> None:
+        rid = self.remote.add_entry("adapt request", labels=[]).data.id
+        other = self.remote.add_entry("other", labels=["keep"]).data.id
+        self._plan_dir(rid, {
+            "id_map": {str(rid): str(other)},
+            "labels": [{"post": str(rid), "remove": ["keep"], "add": ["spec-change:status:x"]}],
+        })
+        out = dispatch_mod.apply_spec_change_plan(self.ctx, self._task(rid, False))
+        self.assertFalse(out.success)
+        self.assertIn("keep", [str(getattr(l, "name", l)) for l in self.remote.get_entry(other).data.labels])
+
+    def test_scope_refusal_is_not_retryable(self) -> None:
+        """A plan cannot re-read differently, so retrying a refusal only burns attempts."""
+        rid = self.remote.add_entry("adapt request", labels=[]).data.id
+        other = self.remote.add_entry("other", labels=[]).data.id
+        self._plan_dir(rid, {"comments": [{"post": str(other), "body": "no"}]})
+        out = dispatch_mod.apply_spec_change_plan(self.ctx, self._task(rid, False))
+        self.assertFalse(out.success)
+        self.assertFalse(out.retryable)
+
+    def test_malformed_plan_is_not_retryable(self) -> None:
+        rid = self.remote.add_entry("adapt request", labels=[]).data.id
+        self._plan_dir(rid, {"creates": "not-a-list"})
+        out = dispatch_mod.apply_spec_change_plan(self.ctx, self._task(rid, True))
+        self.assertFalse(out.success)
+        self.assertFalse(out.retryable)
+
+    def test_bad_dependency_link_fails_the_handler_not_the_worker(self) -> None:
+        """Dep validation must come back as an outcome; escaping the handler as a bare
+        exception loses the task instead of routing it to recovery."""
+        rid = self.remote.add_entry("adapt request", labels=[]).data.id
+        self._plan_dir(rid, {"creates": [{"title": "X", "body": "Depends on: FEAT-1"}]})
+        out = dispatch_mod.apply_spec_change_plan(self.ctx, self._task(rid, True))
+        self.assertFalse(out.success)
+        self.assertFalse(out.retryable)
+        self.assertIn("dependency links", out.error)
+        self.assertEqual([e.title for e in self.remote.list_entries().data].count("X"), 0)
+
+    def test_remote_failure_stays_retryable(self) -> None:
+        """The retryable split must not swallow genuinely transient remote failures."""
+        rid = self.remote.add_entry("adapt request", labels=[]).data.id
+        self._plan_dir(rid, {"closes": [str(rid)]})
+        def _boom(*a, **k):
+            return type("R", (), {"ok": False, "error": "network down", "data": None})()
+        self.remote.set_entry_closed = _boom
+        out = dispatch_mod.apply_spec_change_plan(self.ctx, self._task(rid, True))
+        self.assertFalse(out.success)
+        self.assertTrue(out.retryable)
+
+    def test_plan_retry_does_not_repeat_closes_and_deletes(self) -> None:
+        """Closes and deletes are one-way: replaying them against an already-gone post
+        fails the retry, so a plan that dies part-way could never finish."""
+        rid = self.remote.add_entry("adapt request", labels=[]).data.id
+        victim = self.remote.add_entry("victim", labels=[]).data.id
+        doomed = self.remote.add_entry("doomed", labels=[]).data.id
+        self._plan_dir(rid, {"closes": [str(doomed)], "deletes": [str(victim)]})
+        out = dispatch_mod.apply_spec_change_plan(self.ctx, self._task(rid, True))
+        self.assertTrue(out.success, out.error)
+        again = dispatch_mod.apply_spec_change_plan(self.ctx, self._task(rid, True))
+        self.assertTrue(again.success, again.error)
+        self.assertIn("closes=0", again.detail)
+        self.assertIn("deletes=0", again.detail)
 
 import shutil
 from specseed_runtime.executing import git_ops as _git_ops
