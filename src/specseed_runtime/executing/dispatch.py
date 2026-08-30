@@ -401,7 +401,16 @@ def _close_finalized_request(ctx: ExecutionContext, task: dict) -> None:
 
 
 class _PlanApplyError(Exception):
-    pass
+    """A plan step failed against the remote. Transient - worth retrying."""
+
+
+class PlanRejected(_PlanApplyError, ValueError):
+    """The plan itself is defective or out of scope. Retrying re-reads the same
+    ``plan.json`` and fails the same way, so these are terminal, not retryable.
+
+    Also a ``ValueError`` because the classification path (``_classify_spec_change``
+    -> ``work_runner``) has always surfaced plan defects that way.
+    """
 
 
 def _result_data(result: Any, what: str) -> Any:
@@ -424,7 +433,7 @@ def _write_json_file(path: Path, data: Any) -> None:
 def _plan_list(plan: dict, key: str) -> list[Any]:
     value = plan.get(key) or []
     if not isinstance(value, list):
-        raise _PlanApplyError("plan.{0} must be a list".format(key))
+        raise PlanRejected("plan.{0} must be a list".format(key))
     return value
 
 
@@ -433,7 +442,7 @@ def _plan_post_id(entry: dict, what: str) -> Any:
         return entry["post_id"]
     if "post" in entry:
         return entry["post"]
-    raise _PlanApplyError("{0} missing post_id".format(what))
+    raise PlanRejected("{0} missing post_id".format(what))
 
 
 def _plan_ids(plan: dict, created: dict[str, Any]) -> dict[str, Any]:
@@ -494,7 +503,7 @@ def apply_spec_change_plan(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
     try:
         _validate_depends_on_links(plan)
         if not payload.get("close_request") and not _is_request_scoped_plan(ctx, request_id, plan):
-            raise _PlanApplyError("direct spec-change plan may only touch the request post")
+            raise PlanRejected("direct spec-change plan may only touch the request post")
 
         created_path = plan_dir / "created.json"
         created_raw = _load_json_file(created_path, {})
@@ -503,14 +512,43 @@ def apply_spec_change_plan(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
         comments_path = plan_dir / "comments.json"
         comments_raw = _load_json_file(comments_path, {})
         comments_done: dict[str, Any] = comments_raw if isinstance(comments_raw, dict) else {}
+        # Closes and deletes are one-way: replaying them against an already-closed or
+        # already-gone post fails the whole retry, so a plan that dies part-way could
+        # never finish. Ledger them like creates and comments.
+        retired_path = plan_dir / "retired.json"
+        retired_raw = _load_json_file(retired_path, {})
+        retired: dict[str, Any] = retired_raw if isinstance(retired_raw, dict) else {}
+
+        def _mark_done(op: str, post_id: Any) -> bool:
+            """True if ``op`` already ran on ``post_id``; otherwise record it and return False."""
+            key = "{0}:{1}".format(op, post_id)
+            if key in retired:
+                return True
+            retired[key] = True
+            _write_json_file(retired_path, retired)
+            return False
+
+        # A direct (pre-approval) apply may only ever write to its own request post.
+        # The plan-level check above reads the plan as written; this one re-checks the
+        # id the remote call actually receives, after ``id_map``/``created.json``
+        # substitution, so no mapping can smuggle a write onto another post.
+        request_scoped_only = not payload.get("close_request")
+
+        def _scoped(post_id: Any, what: str) -> Any:
+            if request_scoped_only and str(post_id) != str(request_id):
+                raise PlanRejected(
+                    "direct spec-change plan may only touch the request post "
+                    "(refused {0} on {1})".format(what, post_id)
+                )
+            return post_id
 
         counts = {"creates": 0, "edits": 0, "labels": 0, "comments": 0, "closes": 0, "deletes": 0}
         for spec in _plan_list(plan, "creates"):
             if not isinstance(spec, dict):
-                raise _PlanApplyError("plan.creates entries must be objects")
+                raise PlanRejected("plan.creates entries must be objects")
             title = str(spec.get("title") or "").strip()
             if not title:
-                raise _PlanApplyError("plan.create entry missing title")
+                raise PlanRejected("plan.create entry missing title")
             if title in created:
                 continue
             body = _replace_created_refs(str(spec.get("body") or ""), ids)
@@ -534,9 +572,9 @@ def apply_spec_change_plan(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
 
         for edit in _plan_list(plan, "edits"):
             if not isinstance(edit, dict):
-                raise _PlanApplyError("plan.edits entries must be objects")
+                raise PlanRejected("plan.edits entries must be objects")
             raw_post_id = _plan_post_id(edit, "edit")
-            post_id = _resolve_plan_id(raw_post_id, ids)
+            post_id = _scoped(_resolve_plan_id(raw_post_id, ids), "edit")
             body = edit.get("body")
             if body is not None:
                 body = _replace_created_refs(str(body), ids)
@@ -546,9 +584,9 @@ def apply_spec_change_plan(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
 
         for change in _plan_list(plan, "labels"):
             if not isinstance(change, dict):
-                raise _PlanApplyError("plan.labels entries must be objects")
+                raise PlanRejected("plan.labels entries must be objects")
             raw_post_id = _plan_post_id(change, "label change")
-            post_id = _resolve_plan_id(raw_post_id, ids)
+            post_id = _scoped(_resolve_plan_id(raw_post_id, ids), "label change")
             for label in change.get("remove") or []:
                 _result_data(ctx.remote.remove_entry_label(post_id, str(label)), "-label {0} on {1}".format(label, raw_post_id))
                 counts["labels"] += 1
@@ -558,9 +596,9 @@ def apply_spec_change_plan(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
 
         for comment in _plan_list(plan, "comments"):
             if not isinstance(comment, dict):
-                raise _PlanApplyError("plan.comments entries must be objects")
+                raise PlanRejected("plan.comments entries must be objects")
             raw_post_id = _plan_post_id(comment, "comment")
-            post_id = _resolve_plan_id(raw_post_id, ids)
+            post_id = _scoped(_resolve_plan_id(raw_post_id, ids), "comment")
             body = _replace_created_refs(str(comment.get("body") or ""), ids)
             key = "{0}\0{1}".format(post_id, body)
             if key in comments_done:
@@ -574,21 +612,29 @@ def apply_spec_change_plan(ctx: ExecutionContext, task: dict) -> HandlerOutcome:
             counts["comments"] += 1
 
         for raw_post_id in _plan_list(plan, "closes"):
-            post_id = _resolve_plan_id(raw_post_id, ids)
+            post_id = _scoped(_resolve_plan_id(raw_post_id, ids), "close")
+            if _mark_done("close", post_id):
+                continue
             _result_data(ctx.remote.set_entry_closed(post_id), "close {0}".format(raw_post_id))
             counts["closes"] += 1
         for raw_post_id in _plan_list(plan, "deletes"):
-            post_id = _resolve_plan_id(raw_post_id, ids)
+            post_id = _scoped(_resolve_plan_id(raw_post_id, ids), "delete")
+            if _mark_done("delete", post_id):
+                continue
             _result_data(ctx.remote.delete_entry(post_id), "delete {0}".format(raw_post_id))
             counts["deletes"] += 1
     except _PlanApplyError as exc:
+        # A defective or out-of-scope plan reads back identically on every retry, so
+        # retrying only burns attempts and remote calls before landing in the same
+        # place. Only a remote-call failure is worth another go.
+        rejected = isinstance(exc, PlanRejected)
         platform_log.log_event(
-            "spec_change_plan_failed",
+            "spec_change_plan_rejected" if rejected else "spec_change_plan_failed",
             task_id=task.get("task_id"),
             post_id=request_id,
             error=str(exc),
         )
-        return HandlerOutcome(success=False, error=str(exc), retryable=True)
+        return HandlerOutcome(success=False, error=str(exc), retryable=not rejected)
 
     platform_log.log_event(
         "spec_change_plan_complete",
@@ -1331,7 +1377,7 @@ def _validate_depends_on_links(plan: dict) -> None:
                 if not _PLAN_VALID_DEP_RE.match(ref):
                     bad.append("{0}: {1}".format(title, ref))
     if bad:
-        raise ValueError(
+        raise PlanRejected(
             "dependency links must use # refs, e.g. `Depends on: #{id:Title}`; bad: "
             + "; ".join(bad[:5])
         )
@@ -1343,19 +1389,28 @@ def _touches_other_posts(plan: dict, request_id: Any) -> bool:
     A clarification round only comments on the request post and flips its own
     ``spec-change:status`` label; that is the human interaction, not an apply, so it
     is the one run that does not gate. Anything aimed at another post is real work.
+
+    Targets are compared AFTER ``id_map`` substitution, because that is the id the
+    executor actually mutates. A plan that names the request but maps it elsewhere
+    (``id_map: {"<request>": "<other>"}``) touches the other post, and saying
+    otherwise here would hand an unapproved run a write outside its request.
     """
     req = str(request_id)
-    for entry in (plan.get("edits") or []) + (plan.get("comments") or []):
+    ids = _plan_ids(plan, {})
+
+    def _off_request(entry: Any) -> bool:
         if not isinstance(entry, dict):
             return True  # can't prove it stays on the request -> gate it (safe default)
-        if str(entry.get("post_id") if "post_id" in entry else entry.get("post")) != req:
-            return True
-    for change in plan.get("labels") or []:
-        if not isinstance(change, dict):
-            return True
-        if str(change.get("post_id") if "post_id" in change else change.get("post")) != req:
-            return True
-    return False
+        raw = entry.get("post_id") if "post_id" in entry else entry.get("post")
+        return str(_resolve_plan_id(raw, ids)) != req
+
+    entries: list[Any] = []
+    for key in ("edits", "comments", "labels"):
+        value = plan.get(key) or []
+        if not isinstance(value, list):
+            return True  # a malformed section can't be proven request-scoped -> gate it
+        entries.extend(value)
+    return any(_off_request(entry) for entry in entries)
 
 
 def _classify_spec_change(ctx: ExecutionContext, request_id: Any) -> str:

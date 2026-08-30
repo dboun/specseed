@@ -306,6 +306,14 @@ tests/integration/python/            # opt-in integration tests (marker: integra
   adapt is the only route that reopens a settled doc. **Spec is STAGED, never edited live** - an unapproved or
   buggy run can't corrupt `spec/` (matters now that spec is out of git). Helpers in `scheduling/spec_change.py`:
   `spec_change_spec_dir`/`staged_spec_files`.
+  Two things the executor enforces on top (0.22.5). **Scope is checked on the id the remote is
+  CALLED with**, after `id_map`/`created.json` substitution - both when classifying and again at
+  each mutation - so a plan that names the request post but maps it elsewhere is gated, not
+  applied. **A defective or out-of-scope plan is terminal, not retryable** (`dispatch.PlanRejected`):
+  re-reading the same `plan.json` cannot change the verdict, so it goes straight to recovery
+  instead of spending the retry budget. Ledgers under `storage/spec-change/<id>/` make a retried
+  apply idempotent: `created.json` (creates), `comments.json` (comments) and `retired.json`
+  (closes + deletes, which are one-way and would otherwise fail every replay).
 - **merge gate** (`advance.WorkTransition{prepare,merge}` + `_settle_or_merge`/`open_merge_gate_ready`, run by
     `dispatch._run_gate_action`/`_prepare_and_gate`/`_execute_merge`) - advance owns remote STATE + decides whether a
     finished issue READIES/merges NOW; dispatch owns git + runs it. An issue is NOT done until its code is on primary,
