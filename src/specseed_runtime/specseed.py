@@ -261,7 +261,12 @@ def _start(args: argparse.Namespace) -> int:
         print("specseed: not configured yet. Run `specseed configure` first.", file=sys.stderr)
         return 1
     status = runner_control.start_runner(record, interval=getattr(args, "interval", None))
-    if status.get("alive") and status.get("pid"):
+    if status.get("state") == "busy" and status.get("pid"):
+        print(
+            f"runner for '{record['name']}' is still finishing its last job "
+            f"(pid {status['pid']}); nothing new started."
+        )
+    elif status.get("alive") and status.get("pid"):
         print(f"runner for '{record['name']}' running (pid {status['pid']}).")
     else:
         print(f"runner for '{record['name']}' starting...")

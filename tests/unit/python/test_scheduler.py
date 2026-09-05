@@ -309,7 +309,11 @@ class SchedulerTest(unittest.TestCase):
         sched._heartbeat(force=True)
         status = runner_control.read_runner_status(storage)
         self.assertEqual(status.get("pid"), os.getpid())
-        self.assertTrue(status.get("alive"))
+        # The heartbeat reaches the reader, and a runner that reports "stopped"
+        # does not read as alive even while its process lingers (TKT-15) - the
+        # live-process guard against double-spawn is pid_is_runner, not `alive`.
+        self.assertEqual(status.get("state"), runner_control.STOPPED)
+        self.assertFalse(status.get("alive"))
 
 
 class HeartbeatDuringTaskTest(unittest.TestCase):

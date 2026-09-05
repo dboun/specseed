@@ -3,8 +3,8 @@
 Each repo's runner is its own ``specseed run`` process (see registry.py). Nobody
 holds its handle: the CLI and the web service command it by writing a small
 control file in the repo's storage, and observe it by reading a heartbeat file
-the running scheduler stamps each tick. Liveness = the pid is alive AND the
-heartbeat is fresh.
+the running scheduler stamps each tick. Liveness = the pid is alive (and not a
+zombie) AND the heartbeat is fresh AND the heartbeat does not say ``stopped``.
 
 Two files in ``<storage>/``:
 
@@ -100,6 +100,29 @@ def write_runner_status(storage: str | Path, status: dict[str, Any]) -> None:
         pass
 
 
+def _pid_state(pid: int) -> Optional[str]:
+    """The kernel's single-letter state for ``pid`` (``Z`` = zombie), or None."""
+    proc_stat = Path("/proc") / str(pid) / "stat"
+    if proc_stat.parent.parent.is_dir():
+        try:
+            text = proc_stat.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+        # "<pid> (<comm>) <state> ..." - comm may itself contain spaces and ')'.
+        fields = text.rpartition(")")[2].split()
+        return fields[0] if fields else None
+    try:
+        out = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "state="],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return ((out.stdout or "").strip()[:1]) or None
+
+
 def is_pid_alive(pid: Optional[int]) -> bool:
     if not pid:
         return False
@@ -111,7 +134,10 @@ def is_pid_alive(pid: Optional[int]) -> bool:
         return True
     except (OSError, ValueError):
         return False
-    return True
+    # A child that exited but has not been waited on still answers kill(0). It is
+    # a zombie, not a runner: without this, a restart within STALE_AFTER_S of a
+    # stop reads its own corpse as alive and silently spawns nothing.
+    return _pid_state(int(pid)) != "Z"
 
 
 def pid_is_runner(pid: Optional[int]) -> bool:
@@ -149,7 +175,13 @@ def read_runner_status(storage: str | Path) -> dict[str, Any]:
     if doc is None:
         return {"state": STOPPED, "alive": False, "pid": None, "desired": desired}
     pid = doc.get("pid")
-    alive = is_pid_alive(pid) and _heartbeat_fresh(doc.get("updated_at"))
+    # A heartbeat that says "stopped" is the runner's own last word - it is on its
+    # way out, however fresh the stamp and whatever its pid still answers.
+    alive = (
+        doc.get("state") != STOPPED
+        and is_pid_alive(pid)
+        and _heartbeat_fresh(doc.get("updated_at"))
+    )
     out = dict(doc)
     out["alive"] = alive
     out["desired"] = desired
